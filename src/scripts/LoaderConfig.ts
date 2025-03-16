@@ -92,6 +92,8 @@ export const LoaderConfig = {
     pushPopup: require("../sprites/popups/PushPopup.png"),
     burstPopup: require("../sprites/popups/burstPopup.png"),
     surrenderPopup: require("../sprites/popups/surrenderPopup.png"),
+    LoosePopup: require("../sprites/popups/LoosePopup.png"),
+
 
     insuranceWonPopup: require("../sprites/popups/BlackJack_insurance.png"),
     insuranceLostPopup: require("../sprites/popups/NoBlackJack_insurance.png"),
@@ -110,13 +112,18 @@ export const LoaderConfig = {
     Playon: require("../sprites/ui/playon.png"),
     PointsHolder: require("../sprites/ui/PointsHolder.png"),
     BetHolder: require("../sprites/ui/BetHolder.png"),
-    
+    LeaderBoard: require("../sprites/ui/LeaderBoard.png"),
+    LeaderBoardBG: require("../sprites/LeaderBoardBG.png"),
     // Menu Popup
     MenuCloseBtn: require("../sprites/MenuPopup/MenuCloseBtn.png"),
     Sound: require("../sprites/MenuPopup/Sound.png"),
+    Sound_Off: require("../sprites/MenuPopup/Sound_off.png"),
     Home: require("../sprites/MenuPopup/Home.png"),
     Info: require("../sprites/MenuPopup/Info.png"),
     Music: require("../sprites/MenuPopup/Music.png"),
+    Music_Off: require("../sprites/MenuPopup/Music_off.png"),
+
+    avatar: require("../sprites/avatar.png"),
   }
   
 export const staticData = {

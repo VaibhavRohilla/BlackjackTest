@@ -1,4 +1,3 @@
-
 import { Howl } from 'howler';
 import * as PIXI from 'pixi.js';
 import { Assets} from 'pixi.js';
@@ -19,6 +18,7 @@ type globalDataType = {
   Balance : number;
   currentBet : number;
   gameStarted : boolean;
+  dealer: any; // Reference to the BlackjackDealer instance
 };
 
 export const Globals: globalDataType = {
@@ -36,6 +36,7 @@ export const Globals: globalDataType = {
   Balance : 200000,
   currentBet : 0,
   gameStarted : false,
+  dealer: null, // Initialize as null
 };
 
 export const formatNumber = (num: number): string => {

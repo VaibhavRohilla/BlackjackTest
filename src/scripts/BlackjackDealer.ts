@@ -129,6 +129,9 @@ export class BlackjackDealer {
     /** Split hand points text */
     private splitPointsText: TextLabel | null = null;
     
+    /** Last bet amount for rebet functionality */
+    private lastBetAmount: number = 0;
+    
 
     
     /**
@@ -294,6 +297,9 @@ export class BlackjackDealer {
             console.warn('No bet placed');
             return false;
         }
+        
+        // Store the current bet as the last bet amount for rebet functionality
+        this.lastBetAmount = Globals.currentBet;
         
         this.gameInProgress = true;
         Globals.gameStarted = true;
@@ -522,7 +528,7 @@ export class BlackjackDealer {
         const cardScale = baseScale / 225; // Assuming the card texture is roughly 225px wide
         
         // Add minimum scale to prevent cards from being too small on any device
-        const minScale = 0.5; // Minimum scale factor
+        const minScale = 0.7; // Minimum scale factor
         
         // Return the larger of the calculated scale and minimum scale
         return Math.max(cardScale * config.scaleFactor, minScale);
@@ -1473,6 +1479,8 @@ export class BlackjackDealer {
                 break;
         }
         
+        // Note: We don't reset lastBetAmount here to allow for rebet functionality
+        
         // Reset current bet but keep points display visible
         Globals.currentBet = 0;
         this.updatePointsDisplay();
@@ -1619,7 +1627,7 @@ export class BlackjackDealer {
         
         // Calculate display scale - make it larger for better visibility
         // Increase scale for mobile devices
-        const scale = isPortrait ? 0.5 : 0.8; // Increased from 0.6 to 0.8 for mobile
+        const scale = isPortrait ? 0.7 : 0.9; // Increased from 0.6 to 0.8 for mobile
         
         // Set scale first so positioning is accurate
         this.playerPointsDisplay.scale.set(scale);
@@ -1640,7 +1648,7 @@ export class BlackjackDealer {
         console.log("Positioning player points above card at:", playerY);
         
         // Position higher above cards on mobile
-        dealerY = this.dealerHand.container.position.y - cardHeight * 0.35;
+        dealerY = this.dealerHand.container.position.y + cardHeight * 0.35;
         console.log("Positioning dealer points above card at:", dealerY);
         
         // Set positions
@@ -1840,6 +1848,9 @@ export class BlackjackDealer {
         Globals.currentBet = amount;
         Globals.Balance -= amount;
         
+        // Store the bet amount for rebet functionality
+        this.lastBetAmount = amount;
+        
         // Update displays
         this.updatePointsDisplay();
         
@@ -1879,7 +1890,7 @@ export class BlackjackDealer {
         // Reset hands
         this.resetHands();
         
-        // Reset current bet
+        // Reset current bet (but keep lastBetAmount for rebet functionality)
         Globals.currentBet = 0;
         this.updatePointsDisplay();
         
@@ -2137,5 +2148,34 @@ export class BlackjackDealer {
         if (dealerCard2.sprite) this.dealerHand.container.addChild(dealerCard2.sprite);
         
         console.log("Both scenarios set up: Player has a pair of Queens and dealer has Ace up card");
+    }
+    
+    /**
+     * Get the last bet amount for rebet functionality
+     * @returns The last bet amount
+     */
+    public getLastBetAmount(): number {
+        return this.lastBetAmount;
+    }
+    
+    /**
+     * Rebet with the same amount as the last bet
+     * @returns Whether the rebet was successful
+     */
+    public rebet(): boolean {
+        // Check if there was a previous bet
+        if (this.lastBetAmount <= 0) {
+            console.warn("No previous bet to rebet with");
+            return false;
+        }
+        
+        // Check if player has enough balance
+        if (this.lastBetAmount > Globals.Balance) {
+            console.warn("Not enough balance to rebet");
+            return false;
+        }
+        
+        // Place the bet with the last bet amount
+        return this.placeBet(this.lastBetAmount);
     }
 } 

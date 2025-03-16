@@ -102,7 +102,7 @@ export class PopupManager extends Container {
                 console.log("Selected burst popup");
                 break;
             case GameOutcome.DEALER_WIN:
-                popupTexture = Globals.resources.burstPopup;
+                popupTexture = Globals.resources.LoosePopup;
                 console.log("Selected lost popup");
                 break;
             case GameOutcome.SURRENDER:

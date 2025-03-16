@@ -58,6 +58,61 @@ export class CenterChip extends Sprite {
     }
 
     /**
+     * Show the bet display with the specified amount
+     * @param amount - The bet amount to display
+     */
+    showBetDisplay(amount: number): void {
+        console.log("Showing bet display with amount:", amount);
+        
+        // Format the amount for display
+        const formattedAmount = this.formatBetAmount(amount);
+        
+        // Update the text
+        this.betHolder.middleChipsCountTxt.updateLabelText(`${formattedAmount} Chips`);
+        
+        // Make sure it's visible
+        this.betHolder.isVisible(true);
+        
+        // Ensure proper positioning
+        this.resize();
+        
+        // Add a small animation to draw attention
+        const originalScale = this.betHolder.scale.clone();
+        
+        // Create a pulse animation
+        new Tween(this.betHolder.scale, Globals.SceneManager?.tweenGroup)
+            .to({ 
+                x: originalScale.x * 1.2, 
+                y: originalScale.y * 1.2 
+            }, 200)
+            .easing(Easing.Cubic.Out)
+            .yoyo(true)
+            .repeat(1)
+            .onComplete(() => {
+                // Reset to original scale
+                this.betHolder.scale.copyFrom(originalScale);
+                
+                // Double-check visibility after animation
+                if (!this.betHolder.visible) {
+                    this.betHolder.isVisible(true);
+                }
+            })
+            .start();
+    }
+    
+    /**
+     * Format a bet amount for display (e.g. 1000 -> 1k)
+     * @param amount - The bet amount to format
+     * @returns Formatted bet amount as a string
+     */
+    private formatBetAmount(amount: number): string {
+        if (amount >= 1000) {
+            return (amount / 1000).toFixed(2).replace(/\.?0+$/, '') + 'k';
+        }
+        return amount.toString();
+    }
+
+    /**
      * Stop all active tweens
      */
     private stopActiveTweens(): void {

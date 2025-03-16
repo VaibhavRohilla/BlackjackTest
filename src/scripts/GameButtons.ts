@@ -14,7 +14,9 @@ export enum GameButtonType {
     DOUBLE = 'double',
     SPLIT = 'split',
     SURRENDER = 'surrender',
-    INSURANCE = 'insurance'
+    INSURANCE = 'insurance',
+    PLAY = 'play',
+    REBET = 'rebet'
 }
 
 // Button position constants
@@ -58,9 +60,9 @@ export class GameButtonContainer extends Container {
     // Animation duration for tweens
     private readonly ANIMATION_DURATION = 400;
     // Easing for button entry
-    private readonly ENTRY_EASING = Easing.Back.Out;
+    private readonly ENTRY_EASING = Easing.Quadratic.Out;
     // Easing for button exit
-    private readonly EXIT_EASING = Easing.Back.In;
+    private readonly EXIT_EASING = Easing.Quadratic.InOut;
     // Flag to track if game is ending (to prevent button conflicts)
     private isGameEnding: boolean = false;
     // Timeout IDs for safety timeouts
@@ -184,6 +186,34 @@ export class GameButtonContainer extends Container {
             }
         });
         
+        // Create Rebet button (left side, green)
+        this.createButton({
+            type: GameButtonType.REBET,
+            normalTexture: Globals.resources.GreenNormal,
+            hoverTexture: Globals.resources.GreenHover,
+            iconTexture: Globals.resources.Playon, // Using PlayOn icon as placeholder
+            text: "REBET",
+            position: ButtonPosition.LEFT,
+            callback: () => { 
+                console.log("Rebet button clicked");
+                Globals.emitter?.Call('rebetClicked');
+            }
+        });
+        
+        // Create Play button (right side, green)
+        this.createButton({
+            type: GameButtonType.PLAY,
+            normalTexture: Globals.resources.GreenNormal,
+            hoverTexture: Globals.resources.GreenHover,
+            iconTexture: Globals.resources.Playon, // Using PlayOn icon as placeholder
+            text: "PLAY",
+            position: ButtonPosition.RIGHT,
+            callback: () => { 
+                console.log("Play button clicked");
+                Globals.emitter?.Call('playClicked');
+            }
+        });
+        
         // Add Surrender button if texture is available
         if (Globals.resources.Surrender) {
             this.createButton({
@@ -237,47 +267,53 @@ export class GameButtonContainer extends Container {
         // Define common button groups
         this.buttonGroups.set('betting', {
             name: 'Betting Buttons',
-            buttons: [GameButtonType.CLEAR, GameButtonType.HIT]
+            buttons: [GameButtonType.CLEAR, GameButtonType.PLAY]
         });
         
         this.buttonGroups.set('gameplay', {
             name: 'Gameplay Buttons',
-            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.DOUBLE]
+            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.DOUBLE, GameButtonType.SURRENDER]
         });
         
         this.buttonGroups.set('gameplayNoDouble', {
             name: 'Gameplay Buttons Without Double',
-            buttons: [GameButtonType.HIT, GameButtonType.STAND]
+            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.SURRENDER]
+        });
+        
+        // New group for gameplay after player has hit (no double/split/insurance)
+        this.buttonGroups.set('gameplayAfterHit', {
+            name: 'Gameplay Buttons After Hit',
+            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.SURRENDER]
         });
         
         this.buttonGroups.set('splitEligible', {
             name: 'Split Eligible Buttons',
-            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.DOUBLE, GameButtonType.SPLIT]
+            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.DOUBLE, GameButtonType.SPLIT, GameButtonType.SURRENDER]
         });
         
         this.buttonGroups.set('splitEligibleNoDouble', {
             name: 'Split Eligible Buttons Without Double',
-            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.SPLIT]
+            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.SPLIT, GameButtonType.SURRENDER]
         });
         
         this.buttonGroups.set('insuranceEligible', {
             name: 'Insurance Eligible Buttons',
-            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.DOUBLE, GameButtonType.INSURANCE]
+            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.DOUBLE, GameButtonType.INSURANCE, GameButtonType.SURRENDER]
         });
         
         this.buttonGroups.set('insuranceEligibleNoDouble', {
             name: 'Insurance Eligible Buttons Without Double',
-            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.INSURANCE]
+            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.INSURANCE, GameButtonType.SURRENDER]
         });
         
         this.buttonGroups.set('gameEnd', {
             name: 'Game End Buttons',
-            buttons: [GameButtonType.PLAYON, GameButtonType.SURRENDER]
+            buttons: [GameButtonType.PLAYON, GameButtonType.REBET]
         });
         
         this.buttonGroups.set('startGame', {
             name: 'Start Game Buttons',
-            buttons: [GameButtonType.HIT, GameButtonType.CLEAR]
+            buttons: [GameButtonType.PLAY, GameButtonType.CLEAR]
         });
         
         // Create 'all' group with all available buttons
@@ -645,7 +681,31 @@ export class GameButtonContainer extends Container {
             return;
         }
         
-        // Check if player has enough balance to double down
+        // Check if player has already hit (via Globals.dealer)
+        const dealer = Globals.dealer as any;
+        console.log("Checking if player has hit:", dealer?.hasPlayerHit ? dealer.hasPlayerHit() : "hasPlayerHit method not found");
+        console.log("Dealer object:", dealer);
+        
+        // Ensure we have a valid dealer reference with the hasPlayerHit method
+        if (!dealer || typeof dealer.hasPlayerHit !== 'function') {
+            console.warn("Cannot check if player has hit - dealer reference or method missing");
+            // Default to showing buttons without double as a fallback
+            this.showButtonGroup('gameplayNoDouble');
+            return;
+        }
+        
+        // Get the current state of the playerHasHit flag
+        const playerHasHit = dealer.hasPlayerHit();
+        console.log("Player has hit flag value:", playerHasHit);
+        
+        // If player has already hit, show gameplay buttons without double
+        if (playerHasHit) {
+            console.log("Player has already hit, showing gameplay buttons without double");
+            this.showButtonGroup('gameplayAfterHit');
+            return;
+        }
+        
+        // Player hasn't hit yet, check if they have enough balance to double down
         const canDoubleDown = Globals.Balance >= Globals.currentBet;
         
         // Show appropriate button group based on balance
@@ -667,6 +727,29 @@ export class GameButtonContainer extends Container {
         
         // Reset game ending state to ensure buttons can be shown
         this.setGameEnding(false);
+        
+        // Check if player has already hit (via Globals.dealer)
+        const dealer = Globals.dealer as any;
+        console.log("Checking if player has hit for split:", dealer?.hasPlayerHit ? dealer.hasPlayerHit() : "hasPlayerHit method not found");
+        
+        // Ensure we have a valid dealer reference with the hasPlayerHit method
+        if (!dealer || typeof dealer.hasPlayerHit !== 'function') {
+            console.warn("Cannot check if player has hit - dealer reference or method missing");
+            // Default to showing buttons without split/double as a fallback
+            this.showButtonGroup('gameplayNoDouble');
+            return;
+        }
+        
+        // Get the current state of the playerHasHit flag
+        const playerHasHit = dealer.hasPlayerHit();
+        console.log("Player has hit flag value for split:", playerHasHit);
+        
+        // If player has already hit, show regular gameplay buttons without double/split
+        if (playerHasHit) {
+            console.log("Player has already hit, showing gameplay buttons without split/double");
+            this.showButtonGroup('gameplayAfterHit');
+            return;
+        }
         
         // Check if player has enough balance to double down
         const canDoubleDown = Globals.Balance >= Globals.currentBet;
@@ -701,6 +784,29 @@ export class GameButtonContainer extends Container {
         
         // Reset game ending state to ensure buttons can be shown
         this.setGameEnding(false);
+        
+        // Check if player has already hit (via Globals.dealer)
+        const dealer = Globals.dealer as any;
+        console.log("Checking if player has hit for insurance:", dealer?.hasPlayerHit ? dealer.hasPlayerHit() : "hasPlayerHit method not found");
+        
+        // Ensure we have a valid dealer reference with the hasPlayerHit method
+        if (!dealer || typeof dealer.hasPlayerHit !== 'function') {
+            console.warn("Cannot check if player has hit - dealer reference or method missing");
+            // Default to showing buttons without insurance/double as a fallback
+            this.showButtonGroup('gameplayNoDouble');
+            return;
+        }
+        
+        // Get the current state of the playerHasHit flag
+        const playerHasHit = dealer.hasPlayerHit();
+        console.log("Player has hit flag value for insurance:", playerHasHit);
+        
+        // If player has already hit, show regular gameplay buttons without double/insurance
+        if (playerHasHit) {
+            console.log("Player has already hit, showing gameplay buttons without insurance/double");
+            this.showButtonGroup('gameplayAfterHit');
+            return;
+        }
         
         // Check if player has enough balance to double down
         const canDoubleDown = Globals.Balance >= Globals.currentBet;
@@ -817,7 +923,7 @@ export class GameButtonContainer extends Container {
      */
     private getScaleFactor(): number {
         const isPortrait = window.innerWidth < window.innerHeight;
-        const baseFactor = isPortrait ? 0.8 : 1;
+        const baseFactor = isPortrait ? 1.2 : 1;
         return 0.9 * appConfig.scaleFactor * baseFactor;
     }
     

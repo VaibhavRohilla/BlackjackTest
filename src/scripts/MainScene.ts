@@ -134,6 +134,12 @@ export class MainScene extends Scene
           this.gameButtonsContainer.setGameEnding(false);
         }
         
+        // Handle balance change events
+        if (eventType === 'balanceChanged') {
+          console.log("Balance changed event received:", data);
+          this.uiContainer.updateBalance();
+        }
+        
         // Handle special game events after a short delay to ensure buttons are hidden
         setTimeout(() => {
           switch (eventType) {
@@ -228,6 +234,9 @@ export class MainScene extends Scene
         }, 300); // Increased delay to ensure buttons are properly hidden first
       }
     );
+    
+    // Store the dealer reference in Globals for access from other components
+    Globals.dealer = this.dealer;
   }
   
   /**
@@ -300,6 +309,9 @@ export class MainScene extends Scene
       case "playOnClicked":
         this.onPlayOnClicked();
         break;
+      case "playClicked":
+        this.onPlayClicked();
+        break;
       case "surrenderClicked":
         this.onSurrenderClicked();
         break;
@@ -311,6 +323,9 @@ export class MainScene extends Scene
         break;
       case "insuranceClicked":
         this.onInsuranceClicked();
+        break;
+      case "rebetClicked":
+        this.onRebetClicked();
         break;
     }
   }
@@ -326,7 +341,7 @@ export class MainScene extends Scene
     this.TableText.zIndex = Z_INDEX.TABLE;
     this.addChildToFullScene(this.TableText);
     
-    this.uiContainer.zIndex = Z_INDEX.BUTTONS - 5;
+    this.uiContainer.zIndex = Z_INDEX.BUTTONS +5;
     this.addChildToFullScene(this.uiContainer);
     
     this.cardContainer.zIndex = Z_INDEX.CARDS;
@@ -394,24 +409,28 @@ export class MainScene extends Scene
   // Button click handlers
   private onHitClicked(): void {
     if (!this.dealer.gameInProgress) {
-        if (Globals.currentBet > 0) {
-            // Start a new game with the current bet
-            this.startNewGame();
-        } else {
-            console.log("Place a bet first");
-        }
+        console.log("Game not in progress, Hit button should only be used during gameplay");
         return;
     }
     
-    console.log("Hit clicked");
-    
-    // Close any active popups (including insurance popup) before proceeding
-    this.popupManager.hidePopup();
+    console.log("Hit clicked - calling dealer.playerHit()");
+    console.log("Before hit - playerHasHit flag:", this.dealer.playerHit());
     
     // Player hits for another card
     // Note: If player busts, the dealer will call endGame which will
     // trigger handleGameEnd and set the game ending state
     this.dealer.playerHit();
+    
+    console.log("After hit - playerHasHit flag:", this.dealer.playerHit());
+    
+    // Force update of gameplay buttons to reflect the new state
+    // Only if the game is still in progress (player didn't bust)
+    if (this.dealer.gameInProgress) {
+      setTimeout(() => {
+        console.log("Updating gameplay buttons after hit");
+        this.gameButtonsContainer.showGameplayButtons();
+      }, 500);
+    }
   }
   
   /**
@@ -483,23 +502,44 @@ export class MainScene extends Scene
   private onPlayOnClicked(): void {
     console.log("Play On action");
     
+    // Prevent multiple rapid clicks
+    if ((this as any)._processingPlayOn) {
+      console.log("Already processing Play On action, ignoring duplicate click");
+      return;
+    }
+    
+    // Set flag to prevent multiple calls
+    (this as any)._processingPlayOn = true;
+    
     // Reset game ending state since we're starting a new round
     this.gameButtonsContainer.setGameEnding(false);
     
     // Hide any active popups
     this.popupManager.hidePopup();
     
+    // Hide all buttons to prevent UI conflicts
+    this.gameButtonsContainer.hideAllButtons();
+    
     // Reset the game for a new round
     this.resetGame();
     
     // Show betting buttons after a short delay to ensure animations complete
     setTimeout(() => {
+      // Don't automatically show betting buttons - they should only appear when a bet is placed
+      // Instead, just enable chip selection
+      
       // Animate chips back up to their original position
       this.table.animateChipsUp();
+      
       // Enable chip selection
       this.table.makeButtonsActive(true);
       
       console.log("Ready for next round");
+      
+      // Clear the processing flag after a delay to prevent rapid clicks
+      setTimeout(() => {
+        (this as any)._processingPlayOn = false;
+      }, 500);
     }, 500);
   }
   
@@ -516,19 +556,16 @@ export class MainScene extends Scene
       // Set game ending state to prevent button conflicts
       this.gameButtonsContainer.setGameEnding(true);
       
+      // Hide all buttons
+      this.gameButtonsContainer.hideAllButtons();
+      
       // Surrender (give up half the bet)
       this.dealer.playerSurrender();
       
-      // Reset the game for a new round
-      this.resetGame();
-      
-      // Show betting buttons after a short delay to ensure animations complete
-      setTimeout(() => {
-        // Enable chip selection
-        this.table.makeButtonsActive(true);
-        
-        console.log("Ready for next round");
-      }, 500);
+      // Note: We don't call resetGame() here anymore
+      // The dealer.playerSurrender() will call endGame with SURRENDER outcome
+      // which will trigger handleGameEnd and show the proper popup
+      // This matches the flow of other game end scenarios
     }
   }
   
@@ -599,6 +636,10 @@ export class MainScene extends Scene
       
       // Take insurance if dealer's up card is an Ace
       this.dealer.playerInsurance();
+      
+      // Update the UI balance display immediately after taking insurance
+      this.uiContainer.updateBalance();
+      console.log("Balance updated after insurance deduction:", Globals.Balance);
       
       // Note: The dealer will handle showing the appropriate buttons after insurance is processed
     } else {
@@ -954,10 +995,10 @@ export class MainScene extends Scene
     // Update bet amount display
     this.chips_zone.betHolder.middleChipsCountTxt.updateLabelText(`${this.formatBetAmount(Globals.currentBet)} Chips`);
     
-    // Show bet holder and game buttons if not already visible
+    // Show bet holder and betting buttons if not already visible
     if(!this.chips_zone.betHolder.visible) {
       this.chips_zone.betHolder.isVisible(true);
-      this.gameButtonsContainer.showStartGameButtons();
+      this.gameButtonsContainer.showButtonGroup('betting');
     }
   }
   
@@ -1048,6 +1089,155 @@ export class MainScene extends Scene
       this.chips_zone.betHolder.isVisible(true);
     } else {
       console.error(`Failed to start test scenario '${scenario}'`);
+    }
+  }
+
+  /**
+   * Handle Play button click
+   */
+  private onPlayClicked(): void {
+    console.log("Play button clicked");
+    
+    // Check if there's a bet placed
+    if (Globals.currentBet <= 0) {
+      console.log("No bet placed, can't start game");
+      return;
+    }
+    
+    // Start a new game with the current bet
+    this.startNewGame();
+  }
+  
+  /**
+   * Handle Rebet button click
+   */
+  private onRebetClicked(): void {
+    console.log("Rebet button clicked");
+    
+    // Prevent multiple rapid clicks
+    if ((this as any)._processingRebet) {
+      console.log("Already processing Rebet action, ignoring duplicate click");
+      return;
+    }
+    
+    // Set flag to prevent multiple calls
+    (this as any)._processingRebet = true;
+    
+    try {
+      // Reset game ending state since we're starting a new round
+      this.gameButtonsContainer.setGameEnding(false);
+      
+      // Hide any active popups
+      this.popupManager.hidePopup();
+      
+      // Hide all buttons to prevent UI conflicts
+      this.gameButtonsContainer.hideAllButtons();
+      
+      // Get the last bet amount from the dealer
+      const lastBetAmount = this.dealer.getLastBetAmount();
+      
+      if (lastBetAmount <= 0) {
+        console.log("No previous bet amount available for rebet");
+        
+        // Re-enable chip selection
+        this.table.makeButtonsActive(true);
+        
+        // Show betting buttons
+        this.gameButtonsContainer.showBettingButtons();
+        return;
+      }
+      
+      // Check if player has enough balance for the rebet
+      if (lastBetAmount > Globals.Balance) {
+        console.log("Insufficient balance for rebet");
+        
+        // Re-enable chip selection
+        this.table.makeButtonsActive(true);
+        
+        // Show betting buttons
+        this.gameButtonsContainer.showBettingButtons();
+        return;
+      }
+      
+      // Reset the game state
+      this.resetGame();
+      
+      // Create and add chips to the betting area
+      this.createChipsForBet(lastBetAmount);
+      
+      // Explicitly show the bet display with the correct amount
+      this.chips_zone.showBetDisplay(lastBetAmount);
+      
+      // Now directly call the play button function to start the game
+      setTimeout(() => {
+        console.log("Starting game after rebet");
+        this.onPlayClicked();
+      }, 300);
+    } finally {
+      // Clear the processing flag after a delay to prevent rapid clicks
+      setTimeout(() => {
+        (this as any)._processingRebet = false;
+      }, 500);
+    }
+  }
+  
+  /**
+   * Create and display chips for a bet amount
+   * @param betAmount - The bet amount to create chips for
+   */
+  private createChipsForBet(betAmount: number): void {
+    console.log("Creating chips for bet amount:", betAmount);
+    
+    // Get available chip values from the table
+    const availableChips = this.table.chips.map(chip => chip.value).sort((a, b) => b - a);
+    
+    if (availableChips.length === 0) {
+      console.warn("No chips available to create bet");
+      return;
+    }
+    
+    // Calculate how many of each chip to use (greedy algorithm)
+    let remainingAmount = betAmount;
+    const chipsToCreate: { value: number, count: number }[] = [];
+    
+    for (const chipValue of availableChips) {
+      if (remainingAmount >= chipValue) {
+        const count = Math.floor(remainingAmount / chipValue);
+        chipsToCreate.push({ value: chipValue, count });
+        remainingAmount -= count * chipValue;
+      }
+    }
+    
+    // If there's still a remaining amount, add the smallest chip
+    if (remainingAmount > 0 && availableChips.length > 0) {
+      const smallestChip = availableChips[availableChips.length - 1];
+      chipsToCreate.push({ value: smallestChip, count: 1 });
+    }
+    
+    console.log("Chips to create:", chipsToCreate);
+    
+    // Create and add each chip
+    chipsToCreate.forEach(chipInfo => {
+      for (let i = 0; i < chipInfo.count; i++) {
+        // Find the matching chip in the table
+        const tableChip = this.table.chips.find(c => c.value === chipInfo.value);
+        
+        if (tableChip) {
+          // Create chip data with the same properties as the table chip
+          const chipData = {
+            value: tableChip.value,
+            texture: tableChip.texture
+          };
+          
+          // Add the chip to the betting area
+          this.addChip(chipData);
+        }
+      }
+    });
+    
+    // Ensure the bet display is visible after creating all chips
+    if (Globals.currentBet > 0 && !this.chips_zone.betHolder.visible) {
+      this.chips_zone.showBetDisplay(Globals.currentBet);
     }
   }
 }
