@@ -70,11 +70,16 @@ export class CenterChip extends Sprite {
         // Update the text
         this.betHolder.middleChipsCountTxt.updateLabelText(`${formattedAmount} Chips`);
         
-        // Make sure it's visible
+        // Make sure it's visible and reset alpha/scale
         this.betHolder.isVisible(true);
+        this.betHolder.alpha = 1;
+        this.betHolder.scale.set(1 * config.scaleFactor);
         
         // Ensure proper positioning
         this.resize();
+        
+        // Log visibility state for debugging
+        console.log("Bet holder visibility:", this.betHolder.visible, "Alpha:", this.betHolder.alpha);
         
         // Add a small animation to draw attention
         const originalScale = this.betHolder.scale.clone();
@@ -94,7 +99,9 @@ export class CenterChip extends Sprite {
                 
                 // Double-check visibility after animation
                 if (!this.betHolder.visible) {
+                    console.log("Bet holder not visible after animation, forcing visibility");
                     this.betHolder.isVisible(true);
+                    this.betHolder.alpha = 1;
                 }
             })
             .start();
@@ -115,7 +122,7 @@ export class CenterChip extends Sprite {
     /**
      * Stop all active tweens
      */
-    private stopActiveTweens(): void {
+    public stopActiveTweens(): void {
         this.activeTweens.forEach(tween => {
             if (tween) tween.stop();
         });
@@ -125,8 +132,9 @@ export class CenterChip extends Sprite {
     /**
      * Animate chips flying out of the canvas when clearing
      * @param onComplete - Callback to execute when animation completes
+     * @param hideBetHolder - Whether to hide the bet holder after animation (default: true)
      */
-    tweenChipsOut(onComplete: () => void = () => {}): void {
+    tweenChipsOut(onComplete: () => void = () => {}, hideBetHolder: boolean = true): void {
         // Edge case: If already animating, don't start another animation
         if (this.isAnimating) {
             // Still call the callback to ensure the flow continues
@@ -148,7 +156,7 @@ export class CenterChip extends Sprite {
         this.stopActiveTweens();
         
         // Animate the bet holder
-        this.animateBetHolder();
+        this.animateBetHolder(hideBetHolder);
         
         // Set up animation tracking
         let completedAnimations = 0;
@@ -195,8 +203,9 @@ export class CenterChip extends Sprite {
     
     /**
      * Animate the bet holder when clearing
+     * @param hideAfterAnimation - Whether to hide the bet holder after animation (default: true)
      */
-    private animateBetHolder(): void {
+    private animateBetHolder(hideAfterAnimation: boolean = true): void {
         if (!this.betHolder.visible) return;
         
         // First, create a "pulse" effect
@@ -209,21 +218,24 @@ export class CenterChip extends Sprite {
             .yoyo(true)
             .repeat(1)
             .onComplete(() => {
-                // Then fade out and scale up
-                const fadeTween = new Tween(this.betHolder, Globals.SceneManager?.tweenGroup)
-                    .to({ 
-                        alpha: 0,
-                        scale: { x: this.betHolder.scale.x * 1.3, y: this.betHolder.scale.y * 1.3 }
-                    }, 400)
-                    .onComplete(() => {
-                        this.betHolder.isVisible(false);
-                        this.betHolder.alpha = 1;
-                        this.betHolder.scale.set(1 * config.scaleFactor);
-                    })
-                    .easing(Easing.Back.In)
-                    .start();
-                
-                this.activeTweens.push(fadeTween);
+                // Only hide if hideAfterAnimation is true
+                if (hideAfterAnimation) {
+                    // Then fade out and scale up
+                    const fadeTween = new Tween(this.betHolder, Globals.SceneManager?.tweenGroup)
+                        .to({ 
+                            alpha: 0,
+                            scale: { x: this.betHolder.scale.x * 1.3, y: this.betHolder.scale.y * 1.3 }
+                        }, 400)
+                        .onComplete(() => {
+                            this.betHolder.isVisible(false);
+                            this.betHolder.alpha = 1;
+                            this.betHolder.scale.set(1 * config.scaleFactor);
+                        })
+                        .easing(Easing.Back.In)
+                        .start();
+                    
+                    this.activeTweens.push(fadeTween);
+                }
             })
             .start();
         
@@ -310,6 +322,8 @@ export class CenterChip extends Sprite {
      * Clear all chips from the center area
      */
     clearChips(): void {
+        console.log("Clearing all chips from center area");
+        
         // Stop any active tweens
         this.stopActiveTweens();
         
@@ -328,6 +342,8 @@ export class CenterChip extends Sprite {
             }
         });
         this.investedChips = [];
+        
+        console.log("All chips cleared from center area");
     }
     
     /**

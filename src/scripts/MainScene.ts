@@ -47,6 +47,9 @@ export class MainScene extends Scene
   /** Shop popup for unlocking premium chips */
   shopPopup!: ShopPopup;
 
+  private _lastEventTime: number | null = null;
+  private _lastEventType: string | null = null;
+
   constructor() {
     super(false);
     
@@ -58,6 +61,7 @@ export class MainScene extends Scene
     
     // Set up keyboard test shortcuts
     this.setupTestShortcuts();
+  
   }
 
   /**
@@ -78,12 +82,14 @@ export class MainScene extends Scene
   private initializeComponents(): void {
     this.table = new Table(Globals.resources.table);
     this.chips_zone = new CenterChip();
+    Globals.centerChip = this.chips_zone;
     this.TableText = new Sprite(Globals.resources.table_text);
     this.TableText.anchor.set(0.5);
     this.uiContainer = new UiContainer();
     this.gameButtonsContainer = new GameButtonContainer();
     this.cardContainer = new Container();
     this.popupManager = new PopupManager();
+    Globals.uiContainer = this.uiContainer;
     
     // Initialize the shop popup with callbacks
     this.shopPopup = new ShopPopup(
@@ -125,8 +131,29 @@ export class MainScene extends Scene
         // Game event callback
         console.log(`Game event: ${eventType}`, data);
         
-        // First, hide any existing buttons to prevent conflicts
-        this.gameButtonsContainer.hideAllButtons();
+        // Prevent multiple rapid updates by tracking the last event time
+        const now = Date.now();
+        if (this._lastEventTime && now - this._lastEventTime < 100 && eventType === this._lastEventType) {
+            console.log(`Ignoring duplicate event ${eventType} (too soon after previous one)`);
+            return;
+        }
+        
+        this._lastEventTime = now;
+        this._lastEventType = eventType;
+        
+        // IMPORTANT: Don't hide buttons for every event - this is causing the jitter
+        // Only hide buttons for specific events that require a complete UI change
+        const requiresButtonReset = [
+          'splitAvailable', 
+          'insuranceAvailable', 
+          'showGameplayButtons',
+          'switchToSplitHand'
+        ];
+        
+        if (requiresButtonReset.includes(eventType)) {
+          // Only hide buttons for these specific events
+          this.gameButtonsContainer.hideAllButtons();
+        }
         
         // For special events like split and insurance, explicitly reset game ending state
         if (eventType === 'splitAvailable' || eventType === 'insuranceAvailable' || eventType === 'showGameplayButtons') {
@@ -140,7 +167,7 @@ export class MainScene extends Scene
           this.uiContainer.updateBalance();
         }
         
-        // Handle special game events after a short delay to ensure buttons are hidden
+        // Handle special game events after a short delay to ensure buttons are hidden first
         setTimeout(() => {
           switch (eventType) {
             case 'splitAvailable':
@@ -226,12 +253,42 @@ export class MainScene extends Scene
                 }, 500);
               }, 200);
               break;
+            case 'switchToSplitHand':
+              console.log("Switching to second split hand");
+              // Hide all buttons first
+              this.gameButtonsContainer.hideAllButtons();
+              
+              // Force a small delay to ensure previous buttons are fully hidden
+              setTimeout(() => {
+                  // Explicitly reset game ending state to ensure buttons can be shown
+                  this.gameButtonsContainer.setGameEnding(false);
+                  
+                  // Show gameplay buttons for second hand
+                  const canDoubleDown = Globals.Balance >= Globals.currentBet;
+                  if (canDoubleDown) {
+                      console.log("Player can double down on second hand, showing double button");
+                      this.gameButtonsContainer.showButtonGroup('gameplay');
+                  } else {
+                      console.log("Player cannot double down on second hand, hiding double button");
+                      this.gameButtonsContainer.showButtonGroup('gameplayNoDouble');
+                  }
+              }, 300);
+              break;
+            case 'showSplitHandOptions':
+              console.log("Showing options for split hand:", data.hand);
+              // Show appropriate buttons based on hand state
+              if (data.canDouble) {
+                  this.gameButtonsContainer.showButtonGroup('gameplay');
+              } else {
+                  this.gameButtonsContainer.showButtonGroup('gameplayNoDouble');
+              }
+              break;
             default:
               // For any other events, show regular gameplay buttons
               console.log("Unknown game event, showing regular gameplay buttons");
               this.gameButtonsContainer.showGameplayButtons();
           }
-        }, 300); // Increased delay to ensure buttons are properly hidden first
+        }, requiresButtonReset.includes(eventType) ? 300 : 50); // Use shorter delay for events that don't reset buttons
       }
     );
     
@@ -246,32 +303,6 @@ export class MainScene extends Scene
     if (Globals.emitter) {
       console.log("Event listeners set up");
     }
-  }
-
-  /**
-   * Handle chip click events from the table
-   */
-  private onChipClicked(chipData: any): void {
-    // Check if we can place a bet
-    if (Globals.gameStarted) {
-      console.log("Game already in progress, can't place bet");
-      return;
-    }
-    
-    // Check if player has enough balance
-    if (Globals.Balance < chipData.value) {
-      console.log("Not enough balance to place this bet");
-      return;
-    }
-    
-    // Deduct chip value from balance
-    Globals.Balance -= chipData.value;
-    
-    // Add to current bet (don't update Globals.currentBet directly here)
-    // Let the addChip method handle this to avoid double counting
-    
-    // Add the chip to the betting area
-    this.addChip(chipData);
   }
 
   recievedMessage(msgType: string, msgParams: any): void {
@@ -326,6 +357,9 @@ export class MainScene extends Scene
         break;
       case "rebetClicked":
         this.onRebetClicked();
+        break;
+      case "addDoubleChip":
+        this.addChip(undefined,true);
         break;
     }
   }
@@ -413,28 +447,28 @@ export class MainScene extends Scene
         return;
     }
     
-    console.log("Hit clicked - calling dealer.playerHit()");
-    console.log("Before hit - playerHasHit flag:", this.dealer.playerHit());
+    console.log("Hit clicked");
     
-    // Player hits for another card
-    // Note: If player busts, the dealer will call endGame which will
-    // trigger handleGameEnd and set the game ending state
-    this.dealer.playerHit();
-    
-    console.log("After hit - playerHasHit flag:", this.dealer.playerHit());
-    
-    // Force update of gameplay buttons to reflect the new state
-    // Only if the game is still in progress (player didn't bust)
-    if (this.dealer.gameInProgress) {
-      setTimeout(() => {
-        console.log("Updating gameplay buttons after hit");
-        this.gameButtonsContainer.showGameplayButtons();
-      }, 500);
+    // Check if we're in a split hand scenario
+    if (this.dealer.getPlayerSplitHand()) {
+        // Determine which hand is active
+        const activeHand = this.dealer.getActiveSplitHand();
+        console.log(`Hit on split hand: ${activeHand}`);
+        
+        if (activeHand) {
+            // Call the appropriate hit method for split hands
+            this.dealer.playerHitSplitHand(activeHand);
+        } else {
+            console.error("No active split hand found");
+        }
+    } else {
+        // Regular hit for non-split scenario
+        this.dealer.playerHit();
     }
   }
   
   /**
-   * Handle stand button click
+   * Handle Stand button click
    */
   private onStandClicked(): void {
     if (!this.dealer.gameInProgress) {
@@ -452,8 +486,24 @@ export class MainScene extends Scene
     // Hide all buttons
     this.gameButtonsContainer.hideAllButtons();
     
-    // Player stands
-    this.dealer.playerStand();
+    // Check if we're in a split hand scenario
+    if (this.dealer.getPlayerSplitHand()) {
+        // Determine which hand is active
+        const activeHand = this.dealer.getActiveSplitHand();
+        console.log(`Stand on split hand: ${activeHand}`);
+        
+        if (activeHand) {
+            // Call the appropriate stand method for split hands
+            this.dealer.playerStandSplitHand(activeHand);
+        } else {
+            console.error("No active split hand found");
+            // Fall back to regular stand
+            this.dealer.playerStand();
+        }
+    } else {
+        // Regular stand for non-split scenario
+        this.dealer.playerStand();
+    }
   }
   
   private onClearClicked(): void {
@@ -591,34 +641,45 @@ export class MainScene extends Scene
     // Hide all buttons
     this.gameButtonsContainer.hideAllButtons();
     
-    // Double down (double bet, take one card, then stand)
-    this.dealer.playerDoubleDown();
+    // Check if we're in a split hand scenario
+    if (this.dealer.getPlayerSplitHand()) {
+        // Determine which hand is active
+        const activeHand = this.dealer.getActiveSplitHand();
+        console.log(`Double down on split hand: ${activeHand}`);
+        
+        if (activeHand) {
+            // Call the appropriate double down method for split hands
+            this.dealer.playerDoubleDownSplitHand(activeHand);
+        } else {
+            console.error("No active split hand found");
+        }
+    } else {
+        // Regular double down for non-split scenario
+        this.dealer.playerDoubleDown();
+    }
   }
   
   /**
    * Handle Split button click
    */
   private onSplitClicked(): void {
-    console.log("Split action");
-    
-    if (Globals.gameStarted && this.dealer.gameInProgress) {
-      console.log("Executing split with current bet:", Globals.currentBet);
-      console.log("Current balance before split:", Globals.Balance);
-      
-      // Close any active popups (including insurance popup) before proceeding
-      this.popupManager.hidePopup();
-      
-      // Split the hand if eligible
-      this.dealer.playerSplit();
-      
-      // After split, show regular gameplay buttons
-      setTimeout(() => {
-        console.log("Split completed, showing regular gameplay buttons");
-        this.gameButtonsContainer.showGameplayButtons();
-      }, 500);
-    } else {
-      console.log("Cannot split - game not in progress");
+    if (!this.dealer.gameInProgress) {
+        return;
     }
+    
+    console.log("Split clicked");
+    
+    // Check if player has enough balance to split
+    if (Globals.Balance < Globals.currentBet) {
+        console.log("Not enough balance to split");
+        return;
+    }
+    
+    // Hide all buttons to prevent UI conflicts
+    this.gameButtonsContainer.hideAllButtons();
+    
+    // Player splits their hand
+    this.dealer.playerSplit();
   }
   
   /**
@@ -830,7 +891,8 @@ export class MainScene extends Scene
       console.log("Game already in progress");
       return;
     }
-    
+    // // Globals.Balance -= Globals.currentBet;
+    //     this.uiContainer.updateBalance();
     // Reset game ending state since we're starting a new game
     this.gameButtonsContainer.setGameEnding(false);
     
@@ -911,8 +973,27 @@ export class MainScene extends Scene
    * Add a chip to the betting area
    * @param chipData - Data for the chip to add
    */
-  addChip(chipData : any)
+  addChip(chipData : any,addDouble : boolean = false)
   {
+
+    if(addDouble)
+    {
+      this.chips_zone.investedChips.forEach(Element => {
+        const chip = this.createChip({texture:Element.texture,value:Element.value});
+    // Animate the chip from the table to the betting area
+    this.animateChipToBettingArea(chip);
+    
+    // Add the chip to the scene
+    this.chips_zone.addChip(chip);
+    chip.zIndex = Z_INDEX.CHIPS;
+    this.addChildToFullScene(chip);
+    
+    // Update UI with the chip value
+        this.updateUIAfterAddingChip(chip.value);
+      });
+      return;
+    }
+  
     // Create the chip
     const chip = this.createChip(chipData);
     
@@ -1116,68 +1197,86 @@ export class MainScene extends Scene
     
     // Prevent multiple rapid clicks
     if ((this as any)._processingRebet) {
-      console.log("Already processing Rebet action, ignoring duplicate click");
-      return;
+        console.log("Already processing Rebet action, ignoring duplicate click");
+        return;
     }
     
     // Set flag to prevent multiple calls
     (this as any)._processingRebet = true;
     
     try {
-      // Reset game ending state since we're starting a new round
-      this.gameButtonsContainer.setGameEnding(false);
-      
-      // Hide any active popups
-      this.popupManager.hidePopup();
-      
-      // Hide all buttons to prevent UI conflicts
-      this.gameButtonsContainer.hideAllButtons();
-      
-      // Get the last bet amount from the dealer
-      const lastBetAmount = this.dealer.getLastBetAmount();
-      
-      if (lastBetAmount <= 0) {
-        console.log("No previous bet amount available for rebet");
+        // Reset game ending state since we're starting a new round
+        this.gameButtonsContainer.setGameEnding(false);
         
-        // Re-enable chip selection
-        this.table.makeButtonsActive(true);
+        // Hide any active popups
+        this.popupManager.hidePopup();
         
-        // Show betting buttons
-        this.gameButtonsContainer.showBettingButtons();
-        return;
-      }
-      
-      // Check if player has enough balance for the rebet
-      if (lastBetAmount > Globals.Balance) {
-        console.log("Insufficient balance for rebet");
+        // Hide all buttons to prevent UI conflicts
+        this.gameButtonsContainer.hideAllButtons();
         
-        // Re-enable chip selection
-        this.table.makeButtonsActive(true);
+        // Get the last bet amount from the dealer
+        const lastBetAmount = this.dealer.getLastBetAmount();
         
-        // Show betting buttons
-        this.gameButtonsContainer.showBettingButtons();
-        return;
-      }
-      
-      // Reset the game state
-      this.resetGame();
-      
-      // Create and add chips to the betting area
-      this.createChipsForBet(lastBetAmount);
-      
-      // Explicitly show the bet display with the correct amount
-      this.chips_zone.showBetDisplay(lastBetAmount);
-      
-      // Now directly call the play button function to start the game
-      setTimeout(() => {
-        console.log("Starting game after rebet");
-        this.onPlayClicked();
-      }, 300);
+        if (lastBetAmount <= 0) {
+            console.log("No previous bet amount available for rebet");
+            
+            // Re-enable chip selection
+            this.table.makeButtonsActive(true);
+            
+            // Show betting buttons
+            this.gameButtonsContainer.showBettingButtons();
+            return;
+        }
+        
+        // Check if player has enough balance for the rebet
+        if (lastBetAmount > Globals.Balance) {
+            console.log("Insufficient balance for rebet");
+            
+            // Re-enable chip selection
+            this.table.makeButtonsActive(true);
+            
+            // Show betting buttons
+            this.gameButtonsContainer.showBettingButtons();
+            return;
+        }
+        
+        // Reset the game state
+        this.resetGame();
+        
+        // Clear any existing chips in the center area
+        this.chips_zone.clearChips();
+        
+        Globals.Balance -= lastBetAmount;
+        this.uiContainer.updateBalance();
+        // Create and add chips to the betting area
+        this.createChipsForBet(lastBetAmount);
+        
+        // Stop any active animations on the bet holder
+        if (this.chips_zone.stopActiveTweens) {
+            this.chips_zone.stopActiveTweens();
+        }
+        
+        // Explicitly show the bet display with the correct amount
+        this.chips_zone.showBetDisplay(lastBetAmount);
+        
+        // Force the bet holder to be visible with full opacity
+        this.chips_zone.betHolder.isVisible(true);
+        this.chips_zone.betHolder.alpha = 1;
+        this.chips_zone.betHolder.scale.set(1 * config.scaleFactor);
+        
+        console.log("Rebet prepared:", lastBetAmount);
+        
+             // Now directly call the play button function to start the game
+        // This will deduct the balance through the normal game start flow
+        setTimeout(() => {
+            console.log("Starting game after rebet");
+            this.onPlayClicked();
+        }, 300);
     } finally {
-      // Clear the processing flag after a delay to prevent rapid clicks
-      setTimeout(() => {
-        (this as any)._processingRebet = false;
-      }, 500);
+        // Clear the processing flag after a delay to prevent rapid clicks
+        setTimeout(() => {
+            (this as any)._processingRebet = false;
+        }, 500);
     }
   }
   

@@ -55,6 +55,24 @@ export interface Hand {
     
     /** Container for the hand's sprites */
     container: Container;
+    
+    /**
+     * Add a card to the hand
+     * @param card - The card to add
+     */
+    addCard(card: Card): void;
+    
+    /**
+     * Calculate the value of the hand
+     * @returns The calculated value
+     */
+    calculateValue(): number;
+    
+    /**
+     * Get the visible value of the hand (for dealer's hand when hole card is hidden)
+     * @returns The visible value of the hand
+     */
+    getVisibleValue(): number;
 }
 
 /**
@@ -132,7 +150,12 @@ export class BlackjackDealer {
     /** Last bet amount for rebet functionality */
     private lastBetAmount: number = 0;
     
+    /** Whether a card deal is currently in progress */
+    private dealInProgress: boolean = false;
 
+    /** Whether any player action is currently in progress */
+    private actionInProgress: boolean = false;
+    private _hitInProgress: boolean = false;
     
     /**
      * Create a new blackjack dealer
@@ -172,8 +195,7 @@ export class BlackjackDealer {
     }
     
     /**
-     * Create a new empty hand
-     * @returns A new hand object
+     * Create a new hand
      */
     private createHand(): Hand {
         return {
@@ -182,30 +204,77 @@ export class BlackjackDealer {
             soft: false,
             busted: false,
             blackjack: false,
-            container: new Container()
+            container: new Container(),
+            addCard(card: Card): void {
+                this.cards.push(card);
+                this.value = this.calculateValue();
+            },
+            calculateValue(): number {
+                // Implementation of calculateValue
+                let value = 0;
+                let aceCount = 0;
+                
+                // Sum up the values of all cards
+                for (const card of this.cards) {
+                    if (card.rank === 'A') {
+                        aceCount++;
+                        value += 11; // Initially count Ace as 11
+                    } else {
+                        value += card.value;
+                    }
+                }
+                
+                // Adjust for Aces if needed
+                while (value > 21 && aceCount > 0) {
+                    value -= 10; // Convert an Ace from 11 to 1
+                    aceCount--;
+                }
+                
+                // Update soft status
+                this.soft = (aceCount > 0);
+                
+                // Update busted status
+                this.busted = (value > 21);
+                
+                // Update blackjack status
+                this.blackjack = (value === 21 && this.cards.length === 2);
+                
+                return value;
+            },
+            getVisibleValue(): number {
+                // For dealer's hand with hidden hole card, only count the first card
+                if (this.cards.length > 0 && this.cards[0].faceUp) {
+                    return this.cards[0].value;
+                }
+                return 0;
+            }
         };
     }
     
     /**
-     * Position the hand containers on the screen
+     * Position the hand containers
      */
     private positionHands(): void {
-       
-        // Calculate positions based on screen orientation
-       
-            // Landscape mode - less vertical spacing
-            this.playerHand.container.position.set(
-                0, // X position is relative to card container which is already centered
-                window.innerHeight * 0.35 // Position relative to card container
-            );
-            
-            this.dealerHand.container.position.set(
-                0, // X position is relative to card container which is already centered
-                -window.innerHeight * 0.3 // Position relative to card container
-            );
+        // Get screen dimensions
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
         
+        // Calculate positions
+        const playerY = screenHeight * 0.35; // Player hand at 25% from bottom
+        const dealerY = -screenHeight * 0.25; // Dealer hand at 25% from top
         
-        // Log positions for debugging
+        // If we're in split mode, use the split positioning
+        if (this.playerSplitHand) {
+            this.positionSplitHand();
+        } else {
+            // Normal positioning (no split)
+            this.playerHand.container.position.set(0, playerY);
+            this.playerHand.container.scale.set(1); // Reset scale
+        }
+        
+        // Always position dealer's hand at the top
+        this.dealerHand.container.position.set(0, dealerY);
+        
         console.log("Positioned hands - Player:", this.playerHand.container.position, "Dealer:", this.dealerHand.container.position);
     }
     
@@ -401,8 +470,12 @@ export class BlackjackDealer {
      * @returns The dealt card
      */
     private dealCard(hand: Hand, faceUp: boolean): Card {
+        let card = this.deck.pop();
+        
+        console.log(hand,card);
+        
         // Get the top card from the deck
-        const card = this.deck.pop();
+        // const card = this.deck.pop();
         
         if (!card) {
             throw new Error('Deck is empty');
@@ -1017,27 +1090,162 @@ export class BlackjackDealer {
     }
     
     /**
+     * Check if an action can be performed
+     * @returns Whether an action can be performed
+     */
+    private canPerformAction(): boolean {
+        if (!this.gameInProgress) {
+            console.log("No game in progress");
+            return false;
+        }
+        
+        if (this.dealInProgress || this.actionInProgress) {
+            console.log("Action or deal already in progress");
+            return false;
+        }
+        
+        return true;
+    }
+    
+    /**
+     * Begin an action
+     * @param actionType - The type of action being performed
+     * @returns Whether the action was started successfully
+     */
+    private beginAction(actionType: string): boolean {
+        if (!this.canPerformAction()) {
+            return false;
+        }
+        
+        this.actionInProgress = true;
+        
+        // Notify UI that an action is in progress
+        if (this.onGameEvent) {
+            this.onGameEvent('actionInProgress', { type: actionType, inProgress: true });
+        }
+        
+        return true;
+    }
+    
+    /**
+     * End an action
+     * @param actionType - The type of action that was performed
+     */
+    private endAction(actionType: string): void {
+        this.actionInProgress = false;
+        
+        // Notify UI that the action is complete
+        if (this.onGameEvent) {
+            this.onGameEvent('actionInProgress', { type: actionType, inProgress: false });
+        }
+    }
+    
+    /**
+     * Deal a card to a hand with proper error handling
+     * @param hand - The hand to deal to
+     * @param faceUp - Whether the card should be face up
+     * @returns A promise that resolves when the deal is complete
+     */
+    private dealCardWithErrorHandling(hand: Hand, faceUp: boolean): Promise<Card | null> {
+        return new Promise((resolve) => {
+            try {
+                // Check if deck is empty
+                if (this.deck.length === 0) {
+                    console.error("Deck is empty, reshuffling");
+                    this.initializeDeck();
+                    this.shuffleDeck();
+                    
+                    // Notify about the reshuffle
+                    if (this.onGameEvent) {
+                        this.onGameEvent('deckReshuffled');
+                    }
+                }
+                
+                // Set deal in progress flag
+                this.dealInProgress = true;
+                
+                // Deal the card
+                const card = this.dealCard(hand, faceUp);
+                
+                // Reset the deal flag after animation completes
+                setTimeout(() => {
+                    this.dealInProgress = false;
+                    resolve(card);
+                }, this.dealAnimationSpeed + 100);
+            } catch (error) {
+                console.error("Error dealing card:", error);
+                this.dealInProgress = false;
+                resolve(null);
+            }
+        });
+    }
+    
+    /**
      * Player action: Hit (take another card)
      */
     public playerHit(): void {
-        if (!this.gameInProgress || this.playerHand.busted || this.playerHand.blackjack) {
+        // Check if player can hit
+        if (!this.beginAction('hit')) {
             return;
         }
         
-        // Deal a card to the player
-        this.dealCard(this.playerHand, true);
+        if (this.playerHand.busted || this.playerHand.blackjack) {
+            console.log("Cannot hit: hand is busted or has blackjack");
+            this.endAction('hit');
+            return;
+        }
+        
+        // IMPORTANT: Set a flag to prevent multiple UI updates during hit
+        this._hitInProgress = true;
+        
+        // Deal a card to the player with error handling
+        this.dealCardWithErrorHandling(this.playerHand, true)
+            .then((card) => {
+                if (!card) {
+                    console.error("Failed to deal card");
+                    this._hitInProgress = false;
+                    this.endAction('hit');
+                    return;
+                }
         
         // Check if player busted
         if (this.playerHand.busted) {
+                    // Only end the game if we're not in a split hand scenario
+                    if (!this.playerSplitHand) {
             this.endGame(GameOutcome.PLAYER_BUST);
-        }
+                    } else {
+                        // In split hand scenario, we'll handle this in playerHitSplitHand
+                        console.log("Player busted first hand in split scenario - will continue with second hand");
+                    }
+                } else {
+                    // Only trigger UI update if game is still in progress
+                    if (this.gameInProgress && !this._hitInProgress) {
+                        // Notify UI to update buttons without hiding first
+                        if (this.onGameEvent) {
+                            this.onGameEvent('updateGameplayButtons', { hideFirst: false });
+                        }
+                    }
+                }
+                
+                // Clear hit in progress flag
+                this._hitInProgress = false;
+                
+                // End the action
+                this.endAction('hit');
+            });
     }
     
     /**
      * Player action: Stand (end turn)
      */
     public playerStand(): void {
-        if (!this.gameInProgress || this.playerHand.busted) {
+        if (!this.beginAction('stand')) {
+            return;
+        }
+        
+        if (this.playerHand.busted) {
+            console.log("Cannot stand: hand is already busted");
+            this.endAction('stand');
             return;
         }
         
@@ -1050,233 +1258,365 @@ export class BlackjackDealer {
         setTimeout(() => {
             // Dealer's turn
             this.dealerTurn();
-        }, 600); // Increased delay to ensure card flip animation completes
+            
+            // End the action after dealer's turn is complete
+            // Note: dealerTurn will call endGame which resets game state
+            this.endAction('stand');
+        }, 600);
     }
     
     /**
      * Player action: Double Down (double bet, take one card, then stand)
      */
     public playerDoubleDown(): void {
-        if (!this.gameInProgress || this.playerHand.cards.length !== 2 || this.playerHand.busted) {
+        if (!this.beginAction('doubleDown')) {
+            return;
+        }
+        
+        if (this.playerHand.cards.length !== 2 || this.playerHand.busted) {
+            console.log("Cannot double down: invalid hand state");
+            this.endAction('doubleDown');
             return;
         }
         
         // Check if player has enough points to double down
         if (Globals.Balance < Globals.currentBet) {
             console.warn("Not enough points to double down");
+            this.endAction('doubleDown');
             return;
         }
         
         // Double the bet
         Globals.Balance -= Globals.currentBet;
-        Globals.currentBet *= 2;
+        Globals.uiContainer?.updateBalance();
+        
         this.updatePointsDisplay();
         
         console.log(`Doubled down. New bet: ${Globals.currentBet}. Remaining points: ${Globals.Balance}`);
         
-        // Deal one card to player
-        this.dealCard(this.playerHand, true);
+        Globals.emitter?.Call("addDoubleChip", Globals.currentBet);
+        // Deal one card to player with error handling
+        this.dealCardWithErrorHandling(this.playerHand, true)
+            .then((card) => {
+                if (!card) {
+                    console.error("Failed to deal card for double down");
+                    this.endAction('doubleDown');
+                    return;
+                }
         
         // Check if player busted
         if (this.playerHand.busted) {
             this.endGame(GameOutcome.PLAYER_BUST);
+                    this.endAction('doubleDown');
         } else {
             // Player stands after doubling down
-            this.playerStand();
-        }
+                    setTimeout(() => {
+                        this.revealDealerCard();
+                        
+                        // Add a delay before starting dealer's turn
+                        setTimeout(() => {
+                            this.dealerTurn();
+                            this.endAction('doubleDown');
+                        }, 600);
+                    }, 300);
+                }
+            });
     }
     
     /**
      * Player action: Surrender (give up half the bet)
      */
     public playerSurrender(): void {
-        if (!this.gameInProgress || this.playerHand.cards.length !== 2) {
+        if (!this.beginAction('surrender')) {
+            return;
+        }
+        
+        if (this.playerHand.cards.length !== 2) {
+            console.log("Cannot surrender: not initial hand");
+            this.endAction('surrender');
             return;
         }
         
         // End game with surrender outcome
         this.endGame(GameOutcome.SURRENDER);
+        this.endAction('surrender');
     }
     
     /**
      * Player action: Split (split a pair into two hands)
      */
     public playerSplit(): void {
-        // Check if split is allowed:
-        // 1. Game must be in progress
-        // 2. Player must have exactly 2 cards
-        // 3. Cards must be of the same rank
-        // 4. Player must have enough balance to match the current bet
-        if (!this.gameInProgress || 
-            this.playerHand.cards.length !== 2 || 
-            this.playerHand.cards[0].rank !== this.playerHand.cards[1].rank ||
-            Globals.Balance < Globals.currentBet) {
-            console.log("Split not allowed", {
-                gameInProgress: this.gameInProgress,
-                cardCount: this.playerHand.cards.length,
-                sameRank: this.playerHand.cards.length === 2 ? 
-                    this.playerHand.cards[0].rank === this.playerHand.cards[1].rank : false,
-                enoughBalance: Globals.Balance >= Globals.currentBet
-            });
+        if (!this.beginAction('split')) {
             return;
         }
         
-        console.log("Splitting hand");
+        // Check if player can split
+        if (!this.canSplit()) {
+            console.log("Cannot split: not a pair or already split");
+            this.endAction('split');
+            return;
+        }
         
-        // Create a second hand for the player
-        this.playerSplitHand = {
-            cards: [],
-            value: 0,
-            soft: false,
-            busted: false,
-            blackjack: false,
-            container: new Container()
-        };
+        console.log("Player splits");
         
-        // Calculate card dimensions to determine appropriate spacing
-        const cardScale = this.calculateCardScale();
-        const cardWidth = 225 * cardScale; // Assuming card texture width is 225px
+        // Create a new hand for the split
+        this.playerSplitHand = this.createHand();
         
         // Add the split hand container to the card container
         this.cardContainer.addChild(this.playerSplitHand.container);
         
-        // Initially position the split hand container at the same position as the player hand
-        this.playerSplitHand.container.position.set(
-            this.playerHand.container.position.x ,
-            this.playerHand.container.position.y
-        );
-        
-        // Move the second card to the new hand
-        const secondCard = this.playerHand.cards.pop()!;
-        console.log("Moving second card to new hand:", secondCard.rank, secondCard.suit);
-        
+        // Move the second card to the split hand
+        const secondCard = this.playerHand.cards.pop();
+        if (secondCard) {
+            // Add the card to the split hand
+            this.playerSplitHand.addCard(secondCard);
+            
+            // Move the sprite to the split hand container
         if (secondCard.sprite) {
-            // Remove from first hand container
             this.playerHand.container.removeChild(secondCard.sprite);
-            
-            // Add to second hand container
             this.playerSplitHand.container.addChild(secondCard.sprite);
-            
-            // Position the card in the center of the new hand
-            secondCard.sprite.position.set(0, 0);
         }
-        this.playerSplitHand.cards.push(secondCard);
+        }
         
-        // Update the value of both hands
+        // Update hand values
         this.updateHandValue(this.playerHand);
+        if (this.playerSplitHand) {
         this.updateHandValue(this.playerSplitHand);
+        }
         
         // Create a points display for the split hand
         this.createSplitPointsDisplay();
         
-        // Calculate the final positions for both hands - use a smaller offset for a tighter look
-        const horizontalOffset = cardWidth * 0.1; // Reduced from 1.2 to 0.9 for closer hands
-        const targetPlayerHandX = -horizontalOffset / 2 - cardWidth;
-        const targetSplitHandX = this.playerHand.container.position.x + cardWidth;
+        // Position the split hands
+        this.positionSplitHand();
         
-        // Animate the player hand container to the left
-        new Tween(this.playerHand.container.position, Globals.SceneManager?.tweenGroup)
-            .to({ x: targetPlayerHandX }, 400)
-            .easing(Easing.Cubic.Out) // Changed from Back.Out to Cubic.Out for smoother movement
-            .start();
-        
-        // Animate the split hand container to the right
-        new Tween(this.playerSplitHand.container.position, Globals.SceneManager?.tweenGroup)
-            .to({ x: targetSplitHandX }, 400)
-            .easing(Easing.Cubic.Out) // Changed from Back.Out to Cubic.Out for smoother movement
-            .onComplete(() => {
-                // After animation completes, reposition cards in both hands
-                this.positionCardsInHand(this.playerHand);
-                if (this.playerSplitHand) {
-                    this.positionCardsInHand(this.playerSplitHand);
-                }
-            })
-            .start();
-        
-        console.log("Updated hand values - First hand:", this.playerHand.value, "Second hand:", this.playerSplitHand.value);
-        console.log("Animated hands to new positions - First hand:", targetPlayerHandX, "Second hand:", targetSplitHandX);
+        // Explicitly set the first hand as active
+        this.setActiveSplitHand('first');
         
         // Deduct the additional bet from the player's balance
         Globals.Balance -= Globals.currentBet;
+        Globals.uiContainer?.updateBalance();
+        
         console.log("Deducted additional bet. New balance:", Globals.Balance);
         
-        // Deal one more card to each hand with animation
-        console.log("Dealing additional cards to both hands");
-        
-        // Deal to first hand with a delay
-        setTimeout(() => {
-            this.dealCard(this.playerHand, true);
-            
-            // Deal to second hand after a delay
-            setTimeout(() => {
+        // Deal a card to each hand
+        this.dealCardWithErrorHandling(this.playerHand, true)
+            .then(() => {
                 if (this.playerSplitHand) {
-                    this.dealCard(this.playerSplitHand, true);
-                    
-                    // Reposition points displays after all cards are dealt
-                    this.positionPointsDisplays();
-                    
-                    // Update the UI to show the new bet amount
-                    this.updatePointsDisplay();
-                    
-                    console.log("Split completed. Ready to play first hand.");
+                    this.dealCardWithErrorHandling(this.playerSplitHand, true)
+                        .then(() => {
+                            // Check for blackjack in either hand
+                            const firstHandBlackjack = this.playerHand.blackjack;
+                            const secondHandBlackjack = this.playerSplitHand?.blackjack || false;
+                            
+                            if (firstHandBlackjack && secondHandBlackjack) {
+                                // Both hands have blackjack, end the game
+                                console.log("Both split hands have blackjack");
+                                this.completeSplitHandPlay();
+                            } else {
+                                // Continue play with the first hand
+                                console.log("Continuing play with first hand");
+                                
+                                // Notify UI to show gameplay options for first hand
+                                if (this.onGameEvent) {
+                                    this.onGameEvent('showSplitHandOptions', {
+                                        hand: 'first',
+                                        canDouble: Globals.Balance >= Globals.currentBet
+                                    });
+                                }
+                            }
+                            
+                            // End the split action
+                            this.endAction('split');
+                        });
                 }
-            }, this.dealAnimationSpeed + 100); // Added extra time to ensure first card animation completes
-        }, this.dealAnimationSpeed + 100); // Added extra time to ensure split animation completes
+            });
     }
     
     /**
-     * Create a points display for the split hand
+     * Position the split hand container
      */
-    private createSplitPointsDisplay(): void {
-        if (!this.playerSplitHand || !this.pointsContainer) return;
+    private positionSplitHand(): void {
+        if (!this.playerSplitHand) return;
         
-        // Create split points display using the same texture as player points
-        this.splitPointsDisplay = new Sprite(Globals.resources.PointsHolder);
-        this.splitPointsDisplay.anchor.set(0.5);
-        this.pointsContainer.addChild(this.splitPointsDisplay);
+        // Get the active hand
+        const activeHand = this.getActiveSplitHand() || 'first'; // Default to first hand if not set
         
-        // Create split points text
-        this.splitPointsText = new TextLabel(0, 0, 0.5, '0', 28, 0x000000);
-        this.splitPointsText.anchor.set(0.5);
+        // Get screen dimensions
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
         
-        // Apply the same style as player points text
-        const splitTextStyle = this.splitPointsText.style as any;
-        splitTextStyle.fontWeight = 'normal';
-        splitTextStyle.strokeThickness = 2;
-        splitTextStyle.stroke = 0x000000;
-        this.splitPointsText.style = splitTextStyle;
+        // Calculate horizontal offset based on screen width
+        const horizontalOffset = screenWidth > screenHeight ? screenWidth * 0.12 : screenWidth * 0.2; // 15% of screen width for desktop, 5% for mobile
         
-        this.splitPointsDisplay.addChild(this.splitPointsText);
+        // Get the normal player hand vertical position (same as in positionHands method)
+        const playerHandY =  screenWidth > screenHeight ?screenHeight * 0.35 : screenHeight * 0.40; // This should match the value used in positionHands
         
-        // Position the split points display
-        this.positionSplitPointsDisplay();
+        // Position player hand on the left
+        this.playerHand.container.position.set(-horizontalOffset, playerHandY);
         
-        console.log("Created split points display");
+        // Position split hand on the right
+        this.playerSplitHand.container.position.set(horizontalOffset, playerHandY);
+        
+        // Scale the active hand slightly larger
+        if (activeHand === 'first') {
+            this.playerHand.container.scale.set(1);
+            this.playerSplitHand.container.scale.set(0.9);
+        } else {
+            this.playerHand.container.scale.set(0.9);
+            this.playerSplitHand.container.scale.set(1);
+        }
+        
+        // Ensure cards are properly positioned within each hand
+        this.positionCardsInHand(this.playerHand);
+        this.positionCardsInHand(this.playerSplitHand);
+        
+        // Update points display positions
+        this.positionPointsDisplays();
+        
+        console.log("Split hands positioned:", {
+            playerHand: this.playerHand.container.position,
+            splitHand: this.playerSplitHand.container.position,
+            activeHand
+        });
     }
     
     /**
-     * Position the split points display
+     * Set active split hand
      */
-    private positionSplitPointsDisplay(): void {
-        if (!this.splitPointsDisplay || !this.splitPointsText || !this.playerSplitHand) return;
+    public setActiveSplitHand(hand: 'first' | 'second'): void {
+        if (!this.playerSplitHand) return;
         
-        // Use the same scale as the player points display
-        const scale = this.playerPointsDisplay.scale.x;
-        this.splitPointsDisplay.scale.set(scale);
+        console.log(`Setting active hand to ${hand}`);
         
-        // Calculate card dimensions
-        const cardScale = this.calculateCardScale();
-        const cardWidth = 225 * cardScale;
-        const cardHeight = cardWidth * 1.4;
+        // Scale down both hands
+        this.playerHand.container.scale.set(0.9);
+        this.playerSplitHand.container.scale.set(0.9);
         
-        // Position above the split hand at the same height as player points
-        const splitY = this.playerSplitHand.container.position.y - cardHeight * 0.35;
-        this.splitPointsDisplay.position.set(this.playerSplitHand.container.position.x, splitY);
+        // Scale up active hand
+        if (hand === 'first') {
+            this.playerHand.container.scale.set(1.0);
+        } else {
+            this.playerSplitHand.container.scale.set(1.0);
+        }
         
-        // Center text in the display
-        this.splitPointsText.position.set(0, 0);
+        // Update points displays
+        this.positionPointsDisplays();
+    }
+    
+    /**
+     * Handle player hit on split hand
+     * @param hand - Which hand to hit ('first' or 'second')
+     */
+    public playerHitSplitHand(hand: 'first' | 'second'): void {
+        if (!this.beginAction('hit')) {
+            return;
+        }
         
-        console.log("Positioned split points display at:", this.splitPointsDisplay.position);
+        console.log(`Player hits on ${hand} split hand`);
+        
+        // Determine which hand to hit
+        const targetHand = hand === 'first' ? this.playerHand : this.playerSplitHand;
+        
+        if (!targetHand) {
+            console.error("Target hand not found");
+            this.endAction('hit');
+            return;
+        }
+        
+        // Deal a card to the target hand
+        this.dealCardWithErrorHandling(targetHand, true)
+            .then(() => {
+            // Check if the hand busted
+                if (targetHand.busted) {
+                    console.log(`${hand} split hand busted with value ${targetHand.value}`);
+                
+                if (hand === 'first') {
+                    // First hand busted, switch to second hand
+                        this.switchToSecondSplitHand();
+                } else {
+                        // Second hand busted, complete the split hand play
+                    this.completeSplitHandPlay();
+                }
+                } else if (targetHand.value === 21) {
+                    console.log(`${hand} split hand has 21`);
+                    
+                    if (hand === 'first') {
+                        // First hand has 21, switch to second hand
+                        this.switchToSecondSplitHand();
+            } else {
+                        // Second hand has 21, complete the split hand play
+                        this.completeSplitHandPlay();
+                    }
+                }
+                
+                // End the hit action
+                this.endAction('hit');
+            });
+    }
+    
+    /**
+     * Switch to the second split hand
+     */
+    private switchToSecondSplitHand(): void {
+        if (!this.playerSplitHand) return;
+        
+        console.log("Switching to second split hand");
+        
+        // Set the second hand as active
+        this.setActiveSplitHand('second');
+        
+        // Notify UI to update buttons for second hand
+        if (this.onGameEvent) {
+            this.onGameEvent('switchToSplitHand', {
+                canDouble: Globals.Balance >= Globals.currentBet && this.playerSplitHand.cards.length === 1
+            });
+        }
+    }
+    
+    /**
+     * Deal a card to a specific hand
+     * @param hand - The hand to deal to
+     * @param faceUp - Whether the card should be face up
+     * @returns The dealt card
+     */
+    private dealCardToHand(hand: Hand, faceUp: boolean = true): Promise<Card> {
+        return new Promise((resolve) => {
+            // Get a card from the deck
+            const card = this.getCardFromDeck();
+            
+            // Set face up state
+            card.faceUp = faceUp;
+            
+            // Create sprite for the card
+            this.createCardSprite(card);
+            
+            // Add card to hand
+            hand.addCard(card);
+            
+            // Add sprite to hand container
+            if (card.sprite) {
+                hand.container.addChild(card.sprite);
+                
+                // Position the card
+                this.positionCardsInHand(hand);
+                
+                // Animate the card
+                setTimeout(() => {
+                    resolve(card);
+                }, this.dealAnimationSpeed + 50);
+            } else {
+                resolve(card);
+            }
+        });
+    }
+    
+    /**
+     * Get a card from the deck
+     * @returns The card from the deck
+     */
+    private getCardFromDeck(): Card {
+        return this.deck.pop()!;
     }
     
     /**
@@ -1308,16 +1648,16 @@ export class BlackjackDealer {
      * Player action: Insurance (bet half the original bet against dealer blackjack)
      */
     public playerInsurance(): void {
-        // Check if insurance is allowed:
-        // 1. Game must be in progress
-        // 2. Player must have exactly 2 cards
-        // 3. Dealer's up card must be an Ace
-        // 4. Player must have enough balance to place the insurance bet
-        if (!this.gameInProgress || 
-            this.playerHand.cards.length !== 2 || 
+        if (!this.beginAction('insurance')) {
+            return;
+        }
+        
+        // Check if insurance is allowed
+        if (this.playerHand.cards.length !== 2 || 
             this.dealerHand.cards[0].rank !== 'A' ||
             Globals.Balance < Globals.currentBet / 2) {
             console.log("Insurance not allowed");
+            this.endAction('insurance');
             return;
         }
         
@@ -1328,6 +1668,7 @@ export class BlackjackDealer {
         
         // Deduct insurance bet from player's balance
         Globals.Balance -= insuranceBet;
+        Globals.uiContainer?.updateBalance();
         
         // Update the UI
         this.updatePointsDisplay();
@@ -1358,8 +1699,16 @@ export class BlackjackDealer {
                 this.onGameEnd(GameOutcome.INSURANCE_LOST, this.playerHand.value, this.dealerHand.value);
             }
             
-            // The MainScene will now handle showing gameplay buttons after the popup
+            // Explicitly trigger showing gameplay buttons after insurance decision
+            if (this.onGameEvent) {
+                this.onGameEvent('showGameplayButtons');
+            }
         }
+        
+        // End the insurance action
+        setTimeout(() => {
+            this.endAction('insurance');
+        }, 500);
     }
     
     /**
@@ -1368,6 +1717,7 @@ export class BlackjackDealer {
     private dealerTurn(): void {
         console.log("Dealer's turn");
         
+        const dealerPlay = () => {
         // Calculate dealer's hand value
         const dealerValue = this.dealerHand.value;
         console.log(`Dealer's hand value: ${dealerValue}`);
@@ -1379,9 +1729,14 @@ export class BlackjackDealer {
         if (mustHit) {
             console.log("Dealer must hit");
             
-            // Deal a card to the dealer with a delay to simulate animation
-            setTimeout(() => {
-                this.dealCard(this.dealerHand, true);
+                // Deal a card to the dealer with error handling
+                this.dealCardWithErrorHandling(this.dealerHand, true)
+                    .then((card) => {
+                        if (!card) {
+                            console.error("Failed to deal card to dealer");
+                            this.determineOutcome();
+                            return;
+                        }
                 
                 // Check if dealer busted
                 if (this.dealerHand.value > 21) {
@@ -1393,11 +1748,9 @@ export class BlackjackDealer {
                     }, 800);
                 } else {
                     // Continue dealer's turn after a delay
-                    setTimeout(() => {
-                        this.dealerTurn();
-                    }, 800);
+                            setTimeout(dealerPlay, 800);
                 }
-            }, 600);
+                    });
         } else {
             console.log("Dealer stands with " + dealerValue);
             
@@ -1406,6 +1759,10 @@ export class BlackjackDealer {
                 this.determineOutcome();
             }, 600);
         }
+        };
+        
+        // Start dealer play
+        dealerPlay();
     }
     
     /**
@@ -1498,61 +1855,18 @@ export class BlackjackDealer {
     public resize(): void {
         console.log("Resizing BlackjackDealer");
         
-        // Get screen dimensions
-        const screenWidth = window.innerWidth;
-        const screenHeight = window.innerHeight;
-        const isPortrait = screenHeight > screenWidth;
-        
-        // Calculate new card scale
-        const newCardScale = this.calculateCardScale();
-        
-        // Reposition hands relative to the card container
+        // Reposition hands
         this.positionHands();
         
-        // Recalculate card positions in each hand
-        const recalculateCardPositions = (hand: Hand) => {
-            if (hand.cards.length === 0) return;
-            
-            // Calculate positions using the shared helper method
-            const { positions, cardWidth, cardHeight } = this.calculateCardPositions(hand, newCardScale);
-            
-            // Update each card's position and scale
-            hand.cards.forEach((card, index) => {
-                if (card.sprite && index < positions.length) {
-                    // Update card scale to match the new calculated scale
-                    card.sprite.scale.set(newCardScale);
-                    
-                    // Get the calculated position
-                    const { x, y } = positions[index];
-                    
-                    // Update card's target position
-                    card.targetPosition = {
-                        x: x,
-                        y: y,
-                        index: index
-                    };
-                    
-                    // Set z-index based on card position
-                    card.sprite.zIndex = index;
-                    
-                    // Animate to new position
-                    new Tween(card.sprite.position, Globals.SceneManager?.tweenGroup)
-                        .to({ x: x, y: y }, 300)
-                        .easing(Easing.Cubic.Out)
-                        .start();
-                    
-                    // Log card resize details for debugging
-                    console.log(`Resized card ${index} to position x: ${x}, width: ${cardWidth}`);
-                }
-            });
-            
-            // Ensure container's sortableChildren is enabled
-            hand.container.sortableChildren = true;
-        };
+        // Reposition cards in hands
+        this.positionCardsInHand(this.playerHand);
+        this.positionCardsInHand(this.dealerHand);
         
-        // Recalculate positions for both hands
-        recalculateCardPositions(this.playerHand);
-        recalculateCardPositions(this.dealerHand);
+        // If split hand exists, reposition it too
+        if (this.playerSplitHand) {
+            this.positionSplitHand();
+            this.positionCardsInHand(this.playerSplitHand);
+        }
         
         // Reposition points displays
         this.positionPointsDisplays();
@@ -1617,7 +1931,7 @@ export class BlackjackDealer {
     }
     
     /**
-     * Position the points and bet displays
+     * Position the points displays
      */
     private positionPointsDisplays(): void {
         console.log("Positioning points displays");
@@ -1761,7 +2075,7 @@ export class BlackjackDealer {
         
         // Calculate target scale - make it larger for better visibility
         // Increase scale for mobile devices
-        const targetScale = Math.min(window.innerWidth, window.innerHeight) * (isPortrait ? 0.0022 : 0.0018);
+        const targetScale = isPortrait ? 0.8 : 0.9;
         
         // Set initial state for animation
         this.playerPointsDisplay.alpha = 0;
@@ -1835,31 +2149,45 @@ export class BlackjackDealer {
     /**
      * Place a bet
      * @param amount - The amount to bet
-     * @returns Whether the bet was successful
+     * @returns Whether the bet was placed successfully
      */
     public placeBet(amount: number): boolean {
-        // Check if player has enough points
-        if (amount <= 0 || amount > Globals.Balance) {
-            console.warn("Invalid bet amount");
+        // Check if a game can be started
+        if (!this.canStartGame()) {
             return false;
         }
         
-        // Place the bet
+        // Check if player has enough balance
+        if (amount > Globals.Balance) {
+            console.log("Not enough balance to place bet");
+            return false;
+        }
+        
+        console.log("Placing bet:", amount);
+        
+        // Set the current bet
         Globals.currentBet = amount;
         Globals.Balance -= amount;
+        Globals.uiContainer?.updateBalance();
         
         // Store the bet amount for rebet functionality
         this.lastBetAmount = amount;
         
-        // Update displays
-        this.updatePointsDisplay();
-        
-        // Show the points display if it's not already visible
-        if (!this.pointsContainer.visible) {
-            this.showPointsDisplay();
+        // Explicitly show the bet display in the center chip area
+        if (Globals.centerChip) {
+            console.log("Showing bet display in center chip");
+            Globals.centerChip.showBetDisplay(amount);
+            
+            // Force the bet holder to be visible
+            Globals.centerChip.betHolder.isVisible(true);
+            Globals.centerChip.betHolder.alpha = 1;
+        } else {
+            console.warn("Center chip reference is missing");
         }
         
-        console.log(`Bet placed: ${amount}. Remaining points: ${Globals.Balance}`);
+        // Start the game
+        this.startGame();
+        
         return true;
     }
     
@@ -1893,6 +2221,7 @@ export class BlackjackDealer {
         // Reset current bet (but keep lastBetAmount for rebet functionality)
         Globals.currentBet = 0;
         this.updatePointsDisplay();
+        this.positionHands()
         
         // Hide points display
         this.hidePointsDisplay();
@@ -1941,6 +2270,7 @@ export class BlackjackDealer {
         
         // Start the game with the forced cards
         this.gameInProgress = true;
+        Globals.gameStarted = true;
         
         // Update hand values
         this.updateHandValue(this.playerHand);
@@ -1952,10 +2282,18 @@ export class BlackjackDealer {
         // Show points display
         this.showPointsDisplay();
         
-        // Check for blackjack or special conditions
+        // Trigger the appropriate event based on the scenario
         setTimeout(() => {
-            this.checkForBlackjack();
-        }, 1000);
+            if (this.onGameEvent) {
+                if (scenario === 'insurance' || scenario === 'insuranceLost') {
+                    console.log("Triggering insuranceAvailable event for test scenario");
+                    this.onGameEvent('insuranceAvailable');
+                } else if (scenario === 'split') {
+                    console.log("Triggering splitAvailable event for test scenario");
+                    this.onGameEvent('splitAvailable');
+                }
+            }
+        }, 500);
         
         return true;
     }
@@ -1994,9 +2332,9 @@ export class BlackjackDealer {
         // Create dealer's second card based on whether dealer should have blackjack
         const dealerCard2: Card = {
             suit: 'clubs',
-            rank: dealerHasBlackjack ? '10' : '6',
+            rank: dealerHasBlackjack ? 'K' : '6',
             value: dealerHasBlackjack ? 10 : 6,
-            spriteKey: `${this.getSuitPrefix('clubs')}${dealerHasBlackjack ? '10' : '6'}`,
+            spriteKey: `${this.getSuitPrefix('clubs')}${dealerHasBlackjack ? 'K' : '6'}`,
             faceUp: false
         };
         
@@ -2007,14 +2345,21 @@ export class BlackjackDealer {
         this.createCardSprite(dealerCard2);
         
         // Add cards to hands
-        this.playerHand.cards.push(playerCard1, playerCard2);
-        this.dealerHand.cards.push(dealerCard1, dealerCard2);
+        this.playerHand.cards = [playerCard1, playerCard2];
+        this.dealerHand.cards = [dealerCard1, dealerCard2];
         
         // Add sprites to containers
+        this.playerHand.container.removeChildren();
+        this.dealerHand.container.removeChildren();
+        
         if (playerCard1.sprite) this.playerHand.container.addChild(playerCard1.sprite);
         if (playerCard2.sprite) this.playerHand.container.addChild(playerCard2.sprite);
         if (dealerCard1.sprite) this.dealerHand.container.addChild(dealerCard1.sprite);
         if (dealerCard2.sprite) this.dealerHand.container.addChild(dealerCard2.sprite);
+        
+        // Position cards in hands
+        this.positionCardsInHand(this.playerHand);
+        this.positionCardsInHand(this.dealerHand);
         
         console.log(`Insurance scenario set up: Dealer has Ace up card${dealerHasBlackjack ? ' and blackjack' : ' but no blackjack'}`);
     }
@@ -2064,14 +2409,21 @@ export class BlackjackDealer {
         this.createCardSprite(dealerCard2);
         
         // Add cards to hands
-        this.playerHand.cards.push(playerCard1, playerCard2);
-        this.dealerHand.cards.push(dealerCard1, dealerCard2);
+        this.playerHand.cards = [playerCard1, playerCard2];
+        this.dealerHand.cards = [dealerCard1, dealerCard2];
         
         // Add sprites to containers
+        this.playerHand.container.removeChildren();
+        this.dealerHand.container.removeChildren();
+        
         if (playerCard1.sprite) this.playerHand.container.addChild(playerCard1.sprite);
         if (playerCard2.sprite) this.playerHand.container.addChild(playerCard2.sprite);
         if (dealerCard1.sprite) this.dealerHand.container.addChild(dealerCard1.sprite);
         if (dealerCard2.sprite) this.dealerHand.container.addChild(dealerCard2.sprite);
+        
+        // Position cards in hands
+        this.positionCardsInHand(this.playerHand);
+        this.positionCardsInHand(this.dealerHand);
         
         console.log("Split scenario set up: Player has a pair of 8s");
     }
@@ -2160,22 +2512,456 @@ export class BlackjackDealer {
     
     /**
      * Rebet with the same amount as the last bet
-     * @returns Whether the rebet was successful
      */
     public rebet(): boolean {
+        if (!this.canStartGame()) {
+            return false;
+        }
+        
         // Check if there was a previous bet
         if (this.lastBetAmount <= 0) {
-            console.warn("No previous bet to rebet with");
+            console.log("No previous bet to repeat");
             return false;
         }
         
         // Check if player has enough balance
-        if (this.lastBetAmount > Globals.Balance) {
-            console.warn("Not enough balance to rebet");
+        if (Globals.Balance < this.lastBetAmount) {
+            console.log("Not enough balance to rebet");
             return false;
         }
         
-        // Place the bet with the last bet amount
-        return this.placeBet(this.lastBetAmount);
+        console.log("Rebetting with amount:", this.lastBetAmount);
+        
+        // Place the bet
+        this.placeBet(this.lastBetAmount);
+        
+        // Explicitly show the bet display in the center chip area
+        if (Globals.centerChip) {
+            console.log("Showing bet display in center chip");
+            
+            // Force any active tweens to stop
+            if (Globals.centerChip.stopActiveTweens) {
+                Globals.centerChip.stopActiveTweens();
+            }
+            
+            // Show the bet display with the current bet amount
+            Globals.centerChip.showBetDisplay(this.lastBetAmount);
+            
+            // Force the bet holder to be visible with full opacity
+            Globals.centerChip.betHolder.isVisible(true);
+            Globals.centerChip.betHolder.alpha = 1;
+            Globals.centerChip.betHolder.scale.set(1 * config.scaleFactor);
+        } else {
+            console.warn("Center chip reference is missing");
+        }
+        
+        return true;
+    }
+    
+    
+    /**
+     * Send a game event to the registered callback
+     * @param eventType - The type of event
+     * @param data - Optional data to send with the event
+     */
+    private sendGameEvent(eventType: string, data?: any): void {
+        if (this.onGameEvent) {
+            this.onGameEvent(eventType, data);
+        }
+    }
+
+    /**
+     * Player stands on split hand
+     * @param hand - Which hand to stand on ('first' or 'second')
+     */
+    public playerStandSplitHand(hand: 'first' | 'second'): void {
+        if (!this.beginAction('stand')) {
+            return;
+        }
+        
+        console.log(`Player stands on ${hand} split hand`);
+        
+        if (hand === 'first') {
+            // First hand stands, switch to second hand
+            this.switchToSecondSplitHand();
+        } else {
+            // Second hand stands, complete the split hand play
+            this.completeSplitHandPlay();
+        }
+        
+        // End the stand action
+        this.endAction('stand');
+    }
+
+    /**
+     * Player action: Double down on a split hand
+     * @param hand - Which split hand to double down on ('first' or 'second')
+     */
+    public playerDoubleDownSplitHand(hand: 'first' | 'second'): void {
+        if (!this.beginAction('doubleDown')) {
+            return;
+        }
+        
+        console.log(`Player doubles down on ${hand} split hand`);
+        
+        // Determine which hand to double down on
+        const targetHand = hand === 'first' ? this.playerHand : this.playerSplitHand;
+        
+        if (!targetHand) {
+            console.error("Target hand not found");
+            this.endAction('doubleDown');
+            return;
+        }
+        
+        // Check if player has enough balance to double down
+        if (Globals.Balance < Globals.currentBet) {
+            console.log("Not enough balance to double down");
+            this.endAction('doubleDown');
+            return;
+        }
+        
+        // Double the bet
+        Globals.Balance -= Globals.currentBet;
+        Globals.uiContainer?.updateBalance();
+        Globals.emitter?.Call("addDoubleChip", Globals.currentBet);
+        // Deal one more card to the target hand
+        this.dealCardWithErrorHandling(targetHand, true)
+            .then(() => {
+                if (hand === 'first') {
+                    // First hand doubled, switch to second hand
+                    this.switchToSecondSplitHand();
+                } else {
+                    // Second hand doubled, complete the split hand play
+            this.completeSplitHandPlay();
+        }
+                
+                // End the double down action
+                this.endAction('doubleDown');
+            });
+    }
+
+    /**
+     * Complete play for both split hands
+     */
+    private completeSplitHandPlay(): void {
+        if (!this.playerSplitHand) return;
+        
+        console.log("Completing split hand play");
+        
+        // If both hands are busted, end the game immediately without playing dealer's hand
+        if (this.playerHand.busted && this.playerSplitHand.busted) {
+            console.log("Both split hands busted, ending game without dealer play");
+            
+            // Determine outcomes (both are player busts)
+            const firstHandOutcome = GameOutcome.PLAYER_BUST;
+            const secondHandOutcome = GameOutcome.PLAYER_BUST;
+            
+            // End the game with both outcomes
+            this.endSplitGame(firstHandOutcome, secondHandOutcome);
+            return;
+        }
+        
+        // Reveal dealer's hole card
+        this.revealDealerCard();
+        
+        // Play out dealer's hand
+        setTimeout(() => {
+            this.dealerTurn();
+        }, 600);
+    }
+
+    /**
+     * Reveal dealer's hole card
+     */
+    private revealDealerHoleCard(): void {
+        // Find the hole card (second card that is face down)
+        const holeCard = this.dealerHand.cards.find(card => !card.faceUp);
+        
+        if (holeCard) {
+            // Flip the card face up
+            holeCard.faceUp = true;
+            
+            // Update the sprite texture
+            if (holeCard.sprite) {
+                holeCard.sprite.texture = Globals.resources[holeCard.spriteKey];
+            }
+            
+            // Update dealer's hand value display
+            this.updatePointsDisplay();
+            
+            console.log("Dealer's hole card revealed:", holeCard);
+        }
+    }
+
+    /**
+     * Play out dealer's hand for split game
+     */
+    private playDealerHandForSplit(): void {
+        const dealerPlay = () => {
+            // Check if dealer needs to hit
+            if (this.dealerHand.value < 17) {
+                // Use dealCardToHand which returns a Promise
+                this.dealCardToHand(this.dealerHand, true).then(() => {
+                    // Update points display
+                    this.updatePointsDisplay();
+                    
+                    // Continue dealer play after a delay
+                    setTimeout(dealerPlay, 800);
+                });
+            } else {
+                // Dealer stands, determine outcomes
+                this.determineSplitOutcomes();
+            }
+        };
+        
+        // Start dealer play
+        dealerPlay();
+    }
+
+    /**
+     * Determine split outcomes
+     */
+    private determineSplitOutcomes(): void {
+        if (!this.playerSplitHand) return;
+        
+        console.log("Determining split hand outcomes");
+        console.log("First hand value:", this.playerHand.value, "busted:", this.playerHand.busted);
+        console.log("Second hand value:", this.playerSplitHand.value, "busted:", this.playerSplitHand.busted);
+        console.log("Dealer value:", this.dealerHand.value, "busted:", this.dealerHand.busted);
+        
+        // Determine outcome for first hand
+        let firstHandOutcome: GameOutcome;
+        if (this.playerHand.busted) {
+            // If player busts, they lose regardless of dealer's hand
+            firstHandOutcome = GameOutcome.PLAYER_BUST;
+        } else if (this.dealerHand.busted) {
+            // If dealer busts and player didn't, player wins
+            firstHandOutcome = GameOutcome.DEALER_BUST;
+        } else if (this.playerHand.value > this.dealerHand.value) {
+            // Player has higher value without busting
+            firstHandOutcome = GameOutcome.PLAYER_WIN;
+        } else if (this.playerHand.value < this.dealerHand.value) {
+            // Dealer has higher value without busting
+            firstHandOutcome = GameOutcome.DEALER_WIN;
+        } else {
+            // Equal values result in a push
+            firstHandOutcome = GameOutcome.PUSH;
+        }
+        
+        // Determine outcome for second hand
+        let secondHandOutcome: GameOutcome;
+        if (this.playerSplitHand.busted) {
+            // If player busts, they lose regardless of dealer's hand
+            secondHandOutcome = GameOutcome.PLAYER_BUST;
+        } else if (this.dealerHand.busted) {
+            // If dealer busts and player didn't, player wins
+            secondHandOutcome = GameOutcome.DEALER_BUST;
+        } else if (this.playerSplitHand.value > this.dealerHand.value) {
+            // Player has higher value without busting
+            secondHandOutcome = GameOutcome.PLAYER_WIN;
+        } else if (this.playerSplitHand.value < this.dealerHand.value) {
+            // Dealer has higher value without busting
+            secondHandOutcome = GameOutcome.DEALER_WIN;
+        } else {
+            // Equal values result in a push
+            secondHandOutcome = GameOutcome.PUSH;
+        }
+        
+        // End the game with both outcomes
+        this.endSplitGame(firstHandOutcome, secondHandOutcome);
+    }
+
+    /**
+     * End the game with split outcomes
+     */
+    private endSplitGame(firstHandOutcome: GameOutcome, secondHandOutcome: GameOutcome): void {
+        // Calculate payouts based on outcomes
+        let totalPayout = 0;
+        
+        // First hand payout
+        if (firstHandOutcome === GameOutcome.PLAYER_WIN || firstHandOutcome === GameOutcome.DEALER_BUST) {
+            totalPayout += Globals.currentBet * 2; // Win: return bet + equal amount
+        } else if (firstHandOutcome === GameOutcome.PUSH) {
+            totalPayout += Globals.currentBet; // Push: return bet
+        }
+        // Note: No payout for PLAYER_BUST or DEALER_WIN
+        
+        // Second hand payout
+        if (secondHandOutcome === GameOutcome.PLAYER_WIN || secondHandOutcome === GameOutcome.DEALER_BUST) {
+            totalPayout += Globals.currentBet * 2; // Win: return bet + equal amount
+        } else if (secondHandOutcome === GameOutcome.PUSH) {
+            totalPayout += Globals.currentBet; // Push: return bet
+        }
+        // Note: No payout for PLAYER_BUST or DEALER_WIN
+        
+        // Update balance
+        Globals.Balance += totalPayout;
+        Globals.uiContainer?.updateBalance();
+        
+        // Determine overall outcome for UI based on the best result
+        let overallOutcome: GameOutcome;
+        let bestPlayerValue: number;
+        
+        // Determine the best outcome to show
+        if ((firstHandOutcome === GameOutcome.PLAYER_WIN || firstHandOutcome === GameOutcome.DEALER_BUST) ||
+            (secondHandOutcome === GameOutcome.PLAYER_WIN || secondHandOutcome === GameOutcome.DEALER_BUST)) {
+            // If either hand won, show player win
+            overallOutcome = GameOutcome.PLAYER_WIN;
+        } else if (firstHandOutcome === GameOutcome.PUSH || secondHandOutcome === GameOutcome.PUSH) {
+            // If either hand pushed and none won, show push
+            overallOutcome = GameOutcome.PUSH;
+        } else {
+            // Both hands lost, show dealer win
+            overallOutcome = GameOutcome.DEALER_WIN;
+        }
+        if(!this.playerSplitHand) return;
+        // Get the best non-busted hand value for display
+        if (!this.playerHand.busted && !this.playerSplitHand.busted) {
+            // Both hands are valid, use the higher value
+            bestPlayerValue = Math.max(this.playerHand.value, this.playerSplitHand.value);
+        } else if (!this.playerHand.busted) {
+            // Only first hand is valid
+            bestPlayerValue = this.playerHand.value;
+        } else if (!this.playerSplitHand.busted) {
+            // Only second hand is valid
+            bestPlayerValue = this.playerSplitHand.value;
+        } else {
+            // Both hands busted, use the lower bust (closer to 21)
+            bestPlayerValue = Math.min(this.playerHand.value, this.playerSplitHand.value);
+        }
+        
+        console.log("Split game ended with outcomes:", {
+            firstHand: firstHandOutcome,
+            secondHand: secondHandOutcome,
+            overall: overallOutcome,
+            bestPlayerValue: bestPlayerValue,
+            dealerValue: this.dealerHand.value,
+            totalPayout: totalPayout
+        });
+        
+        // Send game end event with the best outcome
+        if (this.onGameEnd) {
+            this.onGameEnd(
+                overallOutcome,
+                bestPlayerValue,
+                this.dealerHand.value
+            );
+        }
+        
+        // Reset game state
+        this.gameInProgress = false;
+        Globals.currentBet = 0;
+        Globals.gameStarted = false;
+    }
+
+    /**
+     * Check if player has hit at least once
+     * @returns Whether the player has hit at least once
+     */
+    public hasPlayerHit(): boolean {
+        // Player has hit if they have more than 2 cards
+        return this.playerHand.cards.length > 2;
+    }
+
+    /**
+     * Get the currently active split hand
+     * @returns 'first', 'second', or null if not in split mode
+     */
+    public getActiveSplitHand(): 'first' | 'second' | null {
+        if (!this.playerSplitHand) return null;
+        
+        return this.playerSplitHand.container.scale.x > this.playerHand.container.scale.x ? 'second' : 'first';
+    }
+
+    /**
+     * Create split points display
+     */
+    private createSplitPointsDisplay(): void {
+        console.log("Creating split points display");
+        
+        // Create split points display
+        this.splitPointsDisplay = new Sprite(Globals.resources.PointsHolder);
+        this.splitPointsDisplay.anchor.set(0.5);
+        this.splitPointsDisplay.scale.set(0.6);
+        
+        // Create split points text
+        this.splitPointsText = new TextLabel(0, 0, 0.5, '0', 28, 0x000000);
+        
+        // Add split points text to display
+        this.splitPointsDisplay.addChild(this.splitPointsText);
+        
+        // Add split points display to points container
+        this.pointsContainer.addChild(this.splitPointsDisplay);
+        
+        // Position the split points display
+        this.positionSplitPointsDisplay();
+        
+        console.log("Split points display created");
+    }
+
+    /**
+     * Position the split points display
+     */
+    private positionSplitPointsDisplay(): void {
+        if (!this.splitPointsDisplay || !this.playerSplitHand) return;
+        
+        this.splitPointsDisplay.position.set(
+            this.playerSplitHand.container.position.x,
+            this.playerPointsDisplay.position.y
+        );
+    }
+
+    /**
+     * Check if player can split their hand
+     * @returns Whether the player can split
+     */
+    private canSplit(): boolean {
+        // Check if player has exactly 2 cards of the same rank
+        if (this.playerHand.cards.length !== 2 || 
+            this.playerHand.cards[0].value !== this.playerHand.cards[1].value) {
+            return false;
+        }
+        
+        // Check if player has enough balance to place another bet
+        if (Globals.Balance < Globals.currentBet) {
+            return false;
+        }
+        
+        // Check if player already has a split hand
+        if (this.playerSplitHand !== null) {
+            return false;
+        }
+        
+        return true;
+    }
+
+    /**
+     * Check if a new game can be started
+     * @returns Whether a new game can be started
+     */
+    private canStartGame(): boolean {
+        // Can't start a game if one is already in progress
+        if (this.gameInProgress) {
+            console.log("Game already in progress");
+            return false;
+        }
+        
+        // Can't start a game if an action is in progress
+        if (this.actionInProgress || this.dealInProgress) {
+            console.log("Action or deal in progress");
+            return false;
+        }
+        
+        return true;
+    }
+
+    /**
+     * Get the player's split hand
+     * @returns The player's split hand or null if not split
+     */
+    public getPlayerSplitHand(): Hand | null {
+        return this.playerSplitHand;
     }
 } 
+
+

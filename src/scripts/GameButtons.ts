@@ -67,6 +67,8 @@ export class GameButtonContainer extends Container {
     private isGameEnding: boolean = false;
     // Timeout IDs for safety timeouts
     private pendingTimeouts: number[] = [];
+    // Flag to prevent multiple rapid updates
+    private _updatingGameplayButtons: boolean = false;
     
     constructor() {
         super();
@@ -283,7 +285,7 @@ export class GameButtonContainer extends Container {
         // New group for gameplay after player has hit (no double/split/insurance)
         this.buttonGroups.set('gameplayAfterHit', {
             name: 'Gameplay Buttons After Hit',
-            buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.SURRENDER]
+            buttons: [GameButtonType.HIT, GameButtonType.STAND]
         });
         
         this.buttonGroups.set('splitEligible', {
@@ -305,7 +307,10 @@ export class GameButtonContainer extends Container {
             name: 'Insurance Eligible Buttons Without Double',
             buttons: [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.INSURANCE, GameButtonType.SURRENDER]
         });
-        
+        this.buttonGroups.set('gameplayafter21', {
+            name: 'Insurance Eligible Buttons',
+            buttons: [GameButtonType.STAND]
+        });
         this.buttonGroups.set('gameEnd', {
             name: 'Game End Buttons',
             buttons: [GameButtonType.PLAYON, GameButtonType.REBET]
@@ -364,40 +369,50 @@ export class GameButtonContainer extends Container {
             console.log("Game is ending, not showing gameplay buttons");
             return;
         }
-
-        // If we have active buttons, hide them first with a callback to show new buttons
-        if (this.currentActiveButtons.length > 0) {
-            // Log current active buttons for debugging
-            const activeButtonNames = this.currentActiveButtons.map(button => {
-                for (const [type, btn] of this.buttons.entries()) {
-                    if (btn === button) return type;
+        
+        // CRITICAL FIX: Cancel any active animations before starting new ones
+        this.cancelAllActiveTweens();
+        this.cancelPendingTimeouts();
+        
+        // If we have active buttons that match what we're trying to show, just keep them
+        const currentButtonTypes = this.currentActiveButtons.map(button => {
+            for (const [type, btn] of this.buttons.entries()) {
+                if (btn === button) return type;
+            }
+            return null;
+        }).filter(Boolean) as GameButtonType[];
+        
+        // Check if we're showing the same buttons
+        const sameButtons = currentButtonTypes.length === buttonTypes.length && 
+                            buttonTypes.every(type => currentButtonTypes.includes(type));
+        
+        if (sameButtons) {
+            console.log("Same buttons already showing, skipping animation");
+            // Make sure all buttons are visible and active
+            buttonTypes.forEach(type => {
+                const button = this.buttons.get(type);
+                if (button) {
+                    button.visible = true;
+                    button.setActive(true);
                 }
-                return "unknown";
             });
-            console.log("Currently active buttons:", activeButtonNames);
-            
-            // Store the button types we want to show after hiding current buttons
-            const buttonTypesToShow = [...buttonTypes];
-            
-            this.hideButtons(() => {
-                // Use a small timeout to ensure buttons are fully hidden before showing new ones
-                setTimeout(() => {
-                    this.animateButtonsIn(buttonTypesToShow);
-                }, 50);
-            });
-        } else {
-            // No active buttons, just show the new ones
-            this.animateButtonsIn(buttonTypes);
+            return;
         }
+
+        // Hide all buttons immediately without animation
+        this.currentActiveButtons.forEach(button => {
+            button.visible = false;
+        });
+        this.currentActiveButtons = [];
+        
+        // Show new buttons with animation
+        this.animateButtonsIn(buttonTypes);
     }
     
     /**
      * Animate buttons in from off-screen
      */
     private animateButtonsIn(buttonTypes: GameButtonType[]): void {
-        // Cancel any active tweens first
-        this.cancelAllActiveTweens();
-        
         // Filter out missing buttons to avoid errors
         const validButtonTypes = buttonTypes.filter(type => this.buttons.has(type));
         
@@ -408,9 +423,6 @@ export class GameButtonContainer extends Container {
         
         // Log the valid buttons being animated in
         console.log("Animating in buttons:", validButtonTypes.join(", "));
-        
-        // Clear current active buttons
-        this.currentActiveButtons = [];
         
         // Calculate positions for buttons
         const positions = this.calculateButtonPositions(validButtonTypes);
@@ -467,21 +479,6 @@ export class GameButtonContainer extends Container {
             // Store tween reference for potential cancellation
             button['activeTween'] = tween;
         });
-        
-        // Safety timeout to ensure all buttons become interactive even if animations fail
-        const timeoutId = setTimeout(() => {
-            this.currentActiveButtons.forEach(button => {
-                if (!button.interactive) {
-                    button.setActive(true);
-                    console.log("Safety timeout activated for button interactivity");
-                }
-            });
-            // Remove this timeout from the pending list
-            this.pendingTimeouts = this.pendingTimeouts.filter(id => id !== timeoutId);
-        }, this.ANIMATION_DURATION + 200) as unknown as number;
-        
-        // Store timeout ID for potential cancellation
-        this.pendingTimeouts.push(timeoutId);
     }
     
     /**
@@ -681,40 +678,36 @@ export class GameButtonContainer extends Container {
             return;
         }
         
-        // Check if player has already hit (via Globals.dealer)
-        const dealer = Globals.dealer as any;
-        console.log("Checking if player has hit:", dealer?.hasPlayerHit ? dealer.hasPlayerHit() : "hasPlayerHit method not found");
-        console.log("Dealer object:", dealer);
-        
-        // Ensure we have a valid dealer reference with the hasPlayerHit method
-        if (!dealer || typeof dealer.hasPlayerHit !== 'function') {
-            console.warn("Cannot check if player has hit - dealer reference or method missing");
-            // Default to showing buttons without double as a fallback
-            this.showButtonGroup('gameplayNoDouble');
+        // IMPORTANT: Add debouncing to prevent multiple rapid updates
+        if (this._updatingGameplayButtons) {
+            console.log("Already updating gameplay buttons, skipping redundant update");
             return;
         }
         
-        // Get the current state of the playerHasHit flag
-        const playerHasHit = dealer.hasPlayerHit();
-        console.log("Player has hit flag value:", playerHasHit);
+        this._updatingGameplayButtons = true;
         
-        // If player has already hit, show gameplay buttons without double
-        if (playerHasHit) {
-            console.log("Player has already hit, showing gameplay buttons without double");
-            this.showButtonGroup('gameplayAfterHit');
-            return;
-        }
-        
-        // Player hasn't hit yet, check if they have enough balance to double down
-        const canDoubleDown = Globals.Balance >= Globals.currentBet;
-        
-        // Show appropriate button group based on balance
-        if (canDoubleDown) {
-            console.log("Player can double down, showing double button");
-            this.showButtonGroup('gameplay');
-        } else {
-            console.log("Player cannot double down, hiding double button");
-            this.showButtonGroup('gameplayNoDouble');
+        try {
+            // Check if player has already hit (via Globals.dealer)
+            const dealer = Globals.dealer as any;
+            const playerHasHit = dealer?.hasPlayerHit ? dealer.hasPlayerHit() : false;
+            
+            // Determine which button group to show
+            let groupToShow: string;
+            
+            if (playerHasHit) {
+                groupToShow = 'gameplayAfterHit';
+            } else {
+                const canDoubleDown = Globals.Balance >= Globals.currentBet;
+                groupToShow = canDoubleDown ? 'gameplay' : 'gameplayNoDouble';
+            }
+            
+            // Show the appropriate button group
+            this.showButtonGroup(groupToShow);
+        } finally {
+            // Clear the updating flag after a delay
+            setTimeout(() => {
+                this._updatingGameplayButtons = false;
+            }, 500);
         }
     }
     

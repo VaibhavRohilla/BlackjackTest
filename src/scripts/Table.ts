@@ -520,7 +520,33 @@ export class Table extends Sprite {
             element.cursor = active ? 'pointer' : 'default';
         });
     }
-    
+    /**
+     * Add a chip of specified value to the table
+     * @param value - The value of the chip to add
+     */
+    addChip(value: number): Chips|null {
+        // Find the texture for this chip value
+        const matchingChip = this.chips.find(chip => chip.value === value);
+        if (!matchingChip) {
+            console.error(`No chip texture found for value: ${value}`);
+            return null;
+        }
+
+        // Create new chip with same texture and value
+        const newChip = new Chips(matchingChip.texture, value);
+        
+        // Position the new chip initially at center
+        newChip.position.set(
+            this.width / 2,
+            this.height / 2
+        );
+        
+        // Set the scale to match other chips
+        newChip.scale.copyFrom(matchingChip.scale);
+        newChip.updateOriginalScale();
+        return newChip;
+
+    }
     /**
      * Animate chips down and out of the way when game starts
      */
@@ -682,9 +708,11 @@ export class Chips extends Sprite {
         
         // Create glow effect
         this.glow = new Graphics();
-        this.glow.beginFill(0xFFFFFF, 0.3);
-        this.glow.drawCircle(0, 0, this.width * 0.6);
-        this.glow.endFill();
+        this.glow.circle(0, 0, this.width * 0.6);
+        this.glow.fill({
+            color: 0xFFFFFF,
+            alpha: 0.3
+        });
         this.glow.alpha = 0;
         this.glow.visible = false;
         this.addChild(this.glow);

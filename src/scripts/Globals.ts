@@ -5,6 +5,10 @@ import { App } from './App';
 import { MyEmitter } from './MyEmitter';
 import { isMobile } from 'pixi.js';
 import { SceneManager } from './SceneManager';
+import { UiContainer } from './UiContainer';
+import { CenterChip } from './CenterChip';
+import { Table } from './Table';
+
 type globalDataType = {
   resources: { [key: string]: PIXI.Texture }; 
   emitter: MyEmitter | undefined;
@@ -19,6 +23,8 @@ type globalDataType = {
   currentBet : number;
   gameStarted : boolean;
   dealer: any; // Reference to the BlackjackDealer instance
+  uiContainer: UiContainer | undefined;
+  centerChip: CenterChip | undefined;
 };
 
 export const Globals: globalDataType = {
@@ -37,6 +43,8 @@ export const Globals: globalDataType = {
   currentBet : 0,
   gameStarted : false,
   dealer: null, // Initialize as null
+  uiContainer: undefined,
+  centerChip: undefined,
 };
 
 export const formatNumber = (num: number): string => {
