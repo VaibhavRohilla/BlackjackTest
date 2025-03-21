@@ -1,9 +1,8 @@
-import { Graphics, Sprite, Texture, Container } from "pixi.js";
-import { config } from "./appConfig";
-import { Globals } from "./Globals";
+    import { Graphics, Sprite, Texture, Container } from "pixi.js";
+    import { config } from "./appconfig";
+import { Globals } from "./globals";
 import * as TWEEN from "@tweenjs/tween.js";
-import { log } from "node:console";
-import { TextLabel } from "./TextLabel";
+import { TextLabel } from "./textlabel";
 import { Easing, Tween } from "@tweenjs/tween.js";
 
 export class Table extends Sprite {
@@ -29,8 +28,11 @@ export class Table extends Sprite {
     // Callback for opening the shop popup
     private onShopButtonClick: (() => void) | null = null;
 
-    constructor(texture: Texture) {
-        super(texture);
+    // Position for betting chips
+    private chipPositions: {x: number, y: number} = {x: 0, y: 0};
+
+    constructor() {
+        super(Globals.resources.table);
         this.anchor.set(0.5);
         
         // Create toggle button
@@ -74,7 +76,7 @@ export class Table extends Sprite {
         // If we have a shop button callback, call it to open the shop popup
         if (this.onShopButtonClick) {
             // Animate the button
-            new TWEEN.Tween(this.toggleButton, Globals.SceneManager?.tweenGroup)
+            new TWEEN.Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0.5 }, 150)
                 .yoyo(true)
                 .repeat(1)
@@ -98,7 +100,7 @@ export class Table extends Sprite {
             this.totalChips - 1; // Show basic chips except the last one
         
         // Animate the button
-        new TWEEN.Tween(this.toggleButton, Globals.SceneManager?.tweenGroup)
+        new TWEEN.Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0.5 }, 150)
             .yoyo(true)
             .repeat(1)
@@ -109,7 +111,7 @@ export class Table extends Sprite {
                 // Hide the button completely if showing all chips
                 if (this.showingAllChips) {
                     // Fade out the button
-                    new Tween(this.toggleButton, Globals.SceneManager?.tweenGroup)
+                    new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
                         .to({ alpha: 0 }, 300)
                         .easing(Easing.Cubic.Out)
                         .onComplete(() => {
@@ -133,13 +135,13 @@ export class Table extends Sprite {
                         chip.scale.set(0.2);
                         
                         // Animate fade in
-                        new Tween(chip, Globals.SceneManager?.tweenGroup)
+                        new Tween(chip, Globals.sceneManager?.tweenGroup)
                             .to({ alpha: 1 }, 500)
                             .easing(Easing.Cubic.Out)
                             .start();
                         
                         // Animate scale up
-                        new Tween(chip.scale, Globals.SceneManager?.tweenGroup)
+                        new Tween(chip.scale, Globals.sceneManager?.tweenGroup)
                             .to({ x: 0.3, y: 0.3 }, 500)
                             .easing(Easing.Back.Out)
                             .start();
@@ -151,7 +153,7 @@ export class Table extends Sprite {
                 this.toggleButton.alpha = 0;
                 
                 // Fade in the button
-                new Tween(this.toggleButton, Globals.SceneManager?.tweenGroup)
+                new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
                     .to({ alpha: 0.9 }, 300)
                     .easing(Easing.Cubic.Out)
                     .start();
@@ -159,7 +161,7 @@ export class Table extends Sprite {
                 // Hide premium chips
                 if (i >= visibleChips) {
                     // Animate fade out
-                    new Tween(chip, Globals.SceneManager?.tweenGroup)
+                    new Tween(chip, Globals.sceneManager?.tweenGroup)
                         .to({ alpha: 0 }, 300)
                         .easing(Easing.Cubic.In)
                         .onComplete(() => {
@@ -179,6 +181,8 @@ export class Table extends Sprite {
      * This is called from the ShopPopup when the user clicks "Unlock"
      */
     public unlockPremiumChips(): void {
+        console.log("Unlocking premium chips in Table class");
+        
         // Set state to show all chips
         this.showingAllChips = true;
         
@@ -186,7 +190,7 @@ export class Table extends Sprite {
         this.buttonLabel.updateLabelText("-");
         
         // Hide the toggle button
-        new Tween(this.toggleButton, Globals.SceneManager?.tweenGroup)
+        new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0 }, 300)
             .easing(Easing.Cubic.Out)
             .onComplete(() => {
@@ -194,27 +198,41 @@ export class Table extends Sprite {
             })
             .start();
         
+        // Log chip state before unlocking
+        console.log(`Total chips: ${this.totalChips}, Premium chips: ${this.premiumChips}`);
+        console.log(`Current chips array length: ${this.chips.length}`);
+        
         // Show all chips
         const visibleChips = this.totalChips + this.premiumChips;
+        console.log(`Setting visible chips to: ${visibleChips}`);
+        
+        // Force create all chips if needed
+        if (this.chips.length < visibleChips) {
+            console.log("Chip array does not have enough elements, recreating chips");
+            this.makeChips();
+        }
         
         // Make all chips visible
         this.chips.forEach((chip, i) => {
+            console.log(`Processing chip ${i}: visible=${chip.visible}, value=${chip.value}`);
+            
             if (i < visibleChips) {
                 chip.visible = true;
                 
                 // If it's a premium chip, animate it appearing
                 if (i >= this.totalChips - 1) {
+                    console.log(`Animating premium chip ${i} with value ${chip.value}`);
                     chip.alpha = 0;
                     chip.scale.set(0.2);
                     
                     // Animate fade in
-                    new Tween(chip, Globals.SceneManager?.tweenGroup)
+                    new Tween(chip, Globals.sceneManager?.tweenGroup)
                         .to({ alpha: 1 }, 500)
                         .easing(Easing.Cubic.Out)
                         .start();
                     
                     // Animate scale up
-                    new Tween(chip.scale, Globals.SceneManager?.tweenGroup)
+                    new Tween(chip.scale, Globals.sceneManager?.tweenGroup)
                         .to({ x: 0.3, y: 0.3 }, 500)
                         .easing(Easing.Back.Out)
                         .start();
@@ -222,8 +240,13 @@ export class Table extends Sprite {
             }
         });
         
+        // Force chip interactive state
+        this.makeButtonsActive(true);
+        
         // Reposition chips
         this.positionChips(false, true);
+        
+        console.log("Premium chips unlock complete");
     }
 
     private setupChipsContainer() {
@@ -233,16 +256,38 @@ export class Table extends Sprite {
     }
 
     private makeChips() {
-        const chipTextures =  [
-            {value: 10, texture: Globals.resources.chip10},
-            {value: 50, texture: Globals.resources.chip50}, 
-            {value: 100, texture: Globals.resources.chip100},
-            {value: 500, texture: Globals.resources.chip500},
-            {value: 1000, texture: Globals.resources.chip1k},
-            {value: 2000, texture: Globals.resources.chip2k},
-            {value: 5000, texture: Globals.resources.chip5k},
-            {value: 10000, texture: Globals.resources.chip10k}
-        ]
+        console.log("Making chips...");
+        
+        // First check if textures are loaded
+        const requiredTextures = [
+            "chip10", "chip50", "chip100", "chip500", 
+            "chip1k", "chip2k", "chip5k", "chip10k"
+        ];
+        
+        requiredTextures.forEach(key => {
+            if (!Globals.resources[key]) {
+                console.warn(`Missing texture: ${key}`);
+            } else {
+                console.log(`Texture loaded: ${key}`);
+            }
+        });
+        
+        const chipTextures = [
+            {value: 10, texture: Globals.resources.chip10, key: "chip10"},
+            {value: 50, texture: Globals.resources.chip50, key: "chip50"}, 
+            {value: 100, texture: Globals.resources.chip100, key: "chip100"},
+            {value: 500, texture: Globals.resources.chip500, key: "chip500"},
+            {value: 1000, texture: Globals.resources.chip1k, key: "chip1k"},
+            {value: 2000, texture: Globals.resources.chip2k, key: "chip2k"},
+            {value: 5000, texture: Globals.resources.chip5k, key: "chip5k"},
+            {value: 10000, texture: Globals.resources.chip10k, key: "chip10k"}
+        ];
+        
+        // Log available chip textures
+        console.log(`Chip textures found: ${chipTextures.length}`);
+        chipTextures.forEach((chipInfo, index) => {
+            console.log(`Chip ${index}: value=${chipInfo.value}, key=${chipInfo.key}, texture=${chipInfo.texture ? 'loaded' : 'missing'}`);
+        });
         
         // Clear existing chips
         this.chips = [];
@@ -253,14 +298,32 @@ export class Table extends Sprite {
             this.totalChips + this.premiumChips : // Show all chips including premium
             this.totalChips - 1; // Show basic chips except the last one
         
-        // Create new chips
+        console.log(`Creating ${chipTextures.length} chips, showing ${chipsToShow} initially`);
+        
+        // Create new chips - create ALL chips regardless of visibility
         for (let i = 0; i < chipTextures.length; i++) {
-            const chip = new Chips(chipTextures[i].texture, chipTextures[i].value);
+            // Create the chip with the appropriate texture and value
+            const chipInfo = chipTextures[i];
             
-            // Set initial visibility
+            // Skip if texture is missing
+            if (!chipInfo.texture) {
+                console.warn(`Missing texture for chip with value ${chipInfo.value}, skipping`);
+                continue;
+            }
+            
+            const chip = new Chips(chipInfo.texture, chipInfo.value);
+            
+            // Set initial visibility based on showingAllChips
             if (i >= chipsToShow) {
                 chip.visible = false;
+                console.log(`Chip ${i} (value ${chipInfo.value}) created but hidden initially`);
+            } else {
+                console.log(`Chip ${i} (value ${chipInfo.value}) created and visible`);
             }
+            
+            // Ensure proper scale
+            chip.scale.set(0.3);
+            chip.updateOriginalScale();
             
             this.chips.push(chip);
             this.chipsContainer.addChild(chip);
@@ -271,22 +334,30 @@ export class Table extends Sprite {
         
         // Initial positioning
         this.positionChips(true);
+        
+        console.log(`Created ${this.chips.length} chips, toggle button visibility: ${this.toggleButton.visible}`);
     }
 
     private positionChips(immediate: boolean = false, animate: boolean = false) {
-        if (!this.chips.length) return;
+        console.log(`Positioning chips. Immediate: ${immediate}, Animate: ${animate}, ShowAllChips: ${this.showingAllChips}`);
+        if (!this.chips.length) {
+            console.warn("No chips to position");
+            return;
+        }
 
         // Determine how many chips to show based on showingAllChips flag
         const visibleChips = this.showingAllChips ? 
             this.totalChips + this.premiumChips : // Show all chips including premium
             this.totalChips - 1; // Show basic chips except the last one
         
+        console.log(`Positioning chips: visible chips count: ${visibleChips}, total chips array: ${this.chips.length}`);
+        
         // Skip chips that should be hidden
         this.chips.forEach((chip, i) => {
-            if (i >= visibleChips) {
-                chip.visible = false;
-            } else {
-                chip.visible = true;
+            const shouldBeVisible = i < visibleChips;
+            if (chip.visible !== shouldBeVisible) {
+                console.log(`Changing chip ${i} visibility from ${chip.visible} to ${shouldBeVisible}`);
+                chip.visible = shouldBeVisible;
             }
         });
         
@@ -295,6 +366,7 @@ export class Table extends Sprite {
         const baseRadius = isPortrait ? this.RADIUS * 0.8 : this.RADIUS;
         
         if (this.showingAllChips) {
+            console.log("Using custom formation for all chips");
             // CUSTOM FORMATION FOR ALL CHIPS
             // Define specific positions for each chip value
             const positions = [
@@ -317,41 +389,47 @@ export class Table extends Sprite {
             ];
             
             // Position each visible chip
-            for (let i = 0; i < visibleChips && i < positions.length; i++) {
+            for (let i = 0; i < visibleChips && i < positions.length && i < this.chips.length; i++) {
                 const chip = this.chips[i];
-                if (!chip) continue;
+                if (!chip) {
+                    console.warn(`Chip at index ${i} is missing`);
+                    continue;
+                }
                 
                 const targetX = positions[i].x;
                 const targetY = positions[i].y;
+                
+                console.log(`Positioning chip ${i} to x:${targetX}, y:${targetY}`);
                 
                 if (immediate) {
                     // Immediate positioning
                     chip.position.set(targetX, targetY);
                 } else if (animate) {
                     // Animated positioning with proper easing
-                    new TWEEN.Tween(chip.position, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip.position, Globals.sceneManager?.tweenGroup)
                         .to({ x: targetX, y: targetY }, 500)
                         .easing(TWEEN.Easing.Back.Out)
                         .start();
 
-                    new TWEEN.Tween(chip, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip, Globals.sceneManager?.tweenGroup)
                         .to({ rotation: Math.PI * 2 }, 400)
                         .easing(TWEEN.Easing.Quadratic.Out)
                         .start();
                 } else {
                     // Animated positioning with proper easing
-                    new TWEEN.Tween(chip.position, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip.position, Globals.sceneManager?.tweenGroup)
                         .to({ x: targetX, y: targetY }, 500)
                         .easing(TWEEN.Easing.Back.Out)
                         .start();
 
-                    new TWEEN.Tween(chip, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip, Globals.sceneManager?.tweenGroup)
                         .to({ rotation: Math.PI * 2 }, 400)
                         .easing(TWEEN.Easing.Quadratic.Out)
                         .start();
                 }
             }
         } else {
+            console.log("Using arc formation for basic chips");
             // ORIGINAL ARC FORMATION FOR BASIC CHIPS
             // Calculate angle step between chips with gaps
             const angleStep = this.ARC_LENGTH / (visibleChips - 1) * 0.85; // 0.85 factor creates gaps
@@ -365,34 +443,38 @@ export class Table extends Sprite {
                 const targetX = Math.cos(finalAngle) * baseRadius;
                 const targetY = Math.sin(finalAngle) * baseRadius * 0.6; // Flatten the arc vertically
                 
+                console.log(`Positioning chip ${i} to arc pos x:${targetX}, y:${targetY}`);
+                
                 if (immediate) {
                     // Immediate positioning
                     chip.position.set(targetX, targetY);
                 } else if (animate) {
                     // Animated positioning with proper easing
-                    new TWEEN.Tween(chip.position, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip.position, Globals.sceneManager?.tweenGroup)
                         .to({ x: targetX, y: targetY }, 500)
                         .easing(TWEEN.Easing.Back.Out)
                         .start();
 
-                    new TWEEN.Tween(chip, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip, Globals.sceneManager?.tweenGroup)
                         .to({ rotation: Math.PI * 2 }, 400)
                         .easing(TWEEN.Easing.Quadratic.Out)
                         .start();
                 } else {
                     // Animated positioning with proper easing
-                    new TWEEN.Tween(chip.position, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip.position, Globals.sceneManager?.tweenGroup)
                         .to({ x: targetX, y: targetY }, 500)
                         .easing(TWEEN.Easing.Back.Out)
                         .start();
 
-                    new TWEEN.Tween(chip, Globals.SceneManager?.tweenGroup)
+                    new TWEEN.Tween(chip, Globals.sceneManager?.tweenGroup)
                         .to({ rotation: Math.PI * 2 }, 400)
                         .easing(TWEEN.Easing.Quadratic.Out)
                         .start();
                 }
             });
         }
+        
+        console.log("Chip positioning complete");
     }
  
     rotateChips() {
@@ -408,12 +490,12 @@ export class Table extends Sprite {
             const nextIndex = (i + 1) % this.totalChips;
             const nextPos = positions[nextIndex];
 
-            new TWEEN.Tween(chip.position, Globals.SceneManager?.tweenGroup)
+            new TWEEN.Tween(chip.position, Globals.sceneManager?.tweenGroup)
                 .to({ x: nextPos.x, y: nextPos.y }, 500)
                 .easing(TWEEN.Easing.Quadratic.InOut)
                 .start();
 
-            new TWEEN.Tween(chip, Globals.SceneManager?.tweenGroup)
+            new TWEEN.Tween(chip, Globals.sceneManager?.tweenGroup)
                 .to({ rotation: nextPos.rotation }, 500)
                 .easing(TWEEN.Easing.Quadratic.InOut)
                 .start();
@@ -570,13 +652,13 @@ export class Table extends Sprite {
             const targetX = chip.position.x; // Move slightly toward center
             
             // Animate chip moving down
-            new Tween(chip.position, Globals.SceneManager?.tweenGroup)
+            new Tween(chip.position, Globals.sceneManager?.tweenGroup)
                 .to({ x: targetX, y: targetY }, 500)
                 .easing(Easing.Back.In)
                 .start();
             
             // Reduce opacity slightly
-            new Tween(chip, Globals.SceneManager?.tweenGroup)
+            new Tween(chip, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0.7 }, 500)
                 .easing(Easing.Cubic.Out)
                 .start();
@@ -600,13 +682,13 @@ export class Table extends Sprite {
             const targetY = this.toggleButton.position.y + this.height * 0.3;
             
             // Animate toggle button moving down
-            new Tween(this.toggleButton.position, Globals.SceneManager?.tweenGroup)
+            new Tween(this.toggleButton.position, Globals.sceneManager?.tweenGroup)
                 .to({ y: targetY }, 500)
                 .easing(Easing.Back.In)
                 .start();
             
             // Reduce opacity
-            new Tween(this.toggleButton, Globals.SceneManager?.tweenGroup)
+            new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0.5 }, 500)
                 .easing(Easing.Cubic.Out)
                 .start();
@@ -633,13 +715,13 @@ export class Table extends Sprite {
             const originalPosition = this.chipOriginalPositions.get(chip)!;
             
             // Animate chip moving back up
-            new Tween(chip.position, Globals.SceneManager?.tweenGroup)
+            new Tween(chip.position, Globals.sceneManager?.tweenGroup)
                 .to({ x: originalPosition.x, y: originalPosition.y }, 500)
                 .easing(Easing.Back.Out)
                 .start();
             
             // Restore full opacity
-            new Tween(chip, Globals.SceneManager?.tweenGroup)
+            new Tween(chip, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 1 }, 500)
                 .easing(Easing.Cubic.Out)
                 .start();
@@ -652,7 +734,7 @@ export class Table extends Sprite {
                 this.toggleButton.visible = true;
                 
                 // Animate toggle button moving back up
-                new Tween(this.toggleButton.position, Globals.SceneManager?.tweenGroup)
+                new Tween(this.toggleButton.position, Globals.sceneManager?.tweenGroup)
                     .to({ 
                         x: this.toggleButtonOriginalPosition.x, 
                         y: this.toggleButtonOriginalPosition.y 
@@ -661,7 +743,7 @@ export class Table extends Sprite {
                     .start();
                 
                 // Restore full opacity
-                new Tween(this.toggleButton, Globals.SceneManager?.tweenGroup)
+                new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
                     .to({ alpha: 0.9 }, 500)
                     .easing(Easing.Cubic.Out)
                     .start();
@@ -670,6 +752,73 @@ export class Table extends Sprite {
                 this.toggleButton.interactive = true;
                 this.toggleButton.cursor = 'pointer';
             }
+        }
+    }
+
+    animateChipToSpot(chip: Chips) {
+        // Default position in center if chipPositions is not set
+        const targetX = this.chipPositions?.x || 0;
+        const targetY = this.chipPositions?.y || 0;
+        
+        // Animate the chip moving to its final spot
+        new Tween(chip.position, Globals.sceneManager?.tweenGroup)
+            .to({ 
+                x: targetX + Math.random() * 10 - 5,
+                y: targetY + Math.random() * 10 - 5
+            }, 400)
+            .easing(Easing.Back.Out)
+            .start();
+        
+        // Animate the chip rotating as it moves
+        new Tween(chip, Globals.sceneManager?.tweenGroup)
+            .to({ 
+                rotation: Math.random() * Math.PI * 2 
+            }, 400)
+            .easing(Easing.Quadratic.Out)
+            .start();
+    }
+    
+    showExpandButton() {
+        // Animate the expand button appearing
+        new Tween(this.toggleButton.position, Globals.sceneManager?.tweenGroup)
+            .to({
+                y: this.toggleButton.position.y - 10
+            }, 300)
+            .easing(Easing.Back.Out)
+            .start();
+            
+        // Fade in the button
+        new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
+            .to({ alpha: 1 }, 300)
+            .easing(Easing.Cubic.Out)
+            .start();
+    }
+    
+    showHideExpandButton(shouldShow: boolean) {
+        if (shouldShow) {
+            // Show the expand button with animation
+            new Tween(this.toggleButton.position, Globals.sceneManager?.tweenGroup)
+                .to({
+                    y: this.toggleButton.position.y - 10
+                }, 300)
+                .easing(Easing.Back.Out)
+                .start();
+                
+            // Fade in the button
+            new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
+                .to({ 
+                    alpha: 1 
+                }, 300)
+                .easing(Easing.Cubic.Out)
+                .start();
+        } else {
+            // Hide the button
+            new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
+                .to({ 
+                    alpha: 0 
+                }, 300)
+                .easing(Easing.Cubic.In)
+                .start();
         }
     }
 }
@@ -741,13 +890,13 @@ export class Chips extends Sprite {
         
         // Show glow effect
         this.glow.visible = true;
-        new Tween(this.glow, Globals.SceneManager?.tweenGroup)
+        new Tween(this.glow, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0.5 }, 200)
             .easing(Easing.Cubic.Out)
             .start();
         
         // Scale up slightly
-        new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.originalScale.x * 1.1, 
                 y: this.originalScale.y * 1.1 
@@ -763,7 +912,7 @@ export class Chips extends Sprite {
         this.isHovered = false;
         
         // Hide glow effect
-        new Tween(this.glow, Globals.SceneManager?.tweenGroup)
+        new Tween(this.glow, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0 }, 200)
             .easing(Easing.Cubic.Out)
             .onComplete(() => {
@@ -774,7 +923,7 @@ export class Chips extends Sprite {
         // Scale back to normal if not being clicked
         if (!this.isActive) return;
         
-        new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.originalScale.x, 
                 y: this.originalScale.y 
@@ -795,14 +944,14 @@ export class Chips extends Sprite {
         
         if (!this.isActive) return;
         
-        if (this.value > Globals.Balance) {
+        if (this.value > Globals.balance) {
             this.isActive = false;
             
             // Simple, elegant animation for insufficient balance
             const originalX = this.position.x;
             
             // Single smooth shake with subtle movement
-            this.activeTween = new Tween(this.position, Globals.SceneManager?.tweenGroup)
+            this.activeTween = new Tween(this.position, Globals.sceneManager?.tweenGroup)
                 .to({ x: originalX - 4 }, 150)
                 .easing(Easing.Sinusoidal.InOut)
                 .yoyo(true)
@@ -816,10 +965,10 @@ export class Chips extends Sprite {
             
             return;
         } else {
-            Globals.Balance -= this.value;
+            Globals.balance -= this.value;
             
             // Create scale animation
-            this.activeTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({ 
                     x: this.originalScale.x * 0.9, 
                     y: this.originalScale.y * 0.9 
@@ -841,7 +990,7 @@ export class Chips extends Sprite {
         
         // Scale back to hover size if still being hovered
         if (this.isHovered) {
-            new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({ 
                     x: this.originalScale.x * 1.1, 
                     y: this.originalScale.y * 1.1 
@@ -850,7 +999,7 @@ export class Chips extends Sprite {
                 .start();
         } else {
             // Otherwise scale back to normal
-            new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({ 
                     x: this.originalScale.x, 
                     y: this.originalScale.y 
@@ -865,5 +1014,82 @@ export class Chips extends Sprite {
      */
     updateOriginalScale(): void {
         this.originalScale = { x: this.scale.x, y: this.scale.y };
+    }
+
+    animateGlow() {
+        // ... existing code ...
+        
+        new Tween(this.glow, Globals.sceneManager?.tweenGroup)
+            .to({
+                alpha: 0.8
+            }, 500)
+            .easing(Easing.Sinusoidal.InOut)
+            .start();
+            
+        new Tween(this.scale, Globals.sceneManager?.tweenGroup)
+            .to({
+                x: 1.1,
+                y: 1.1
+            }, 500)
+            .easing(Easing.Sinusoidal.InOut)
+            .start();
+    }
+    
+    stopGlowAnimation() {
+        // ... existing code ...
+        
+        new Tween(this.glow, Globals.sceneManager?.tweenGroup)
+            .to({
+                alpha: 0
+            }, 200)
+            .easing(Easing.Sinusoidal.InOut)
+            .start();
+            
+        new Tween(this.scale, Globals.sceneManager?.tweenGroup)
+            .to({
+                x: 1,
+                y: 1
+            }, 200)
+            .easing(Easing.Sinusoidal.InOut)
+            .start();
+    }
+    
+    onSelected() {
+        // Check if this chip's value is higher than the player's balance
+        if (this.value > Globals.balance) {
+            console.log("Not enough balance for this chip value");
+            this.showNotEnoughBalance();
+            return false;
+        }
+        
+        // ... existing code ...
+        
+        // Deduct from balance
+        Globals.balance -= this.value;
+        
+        // ... existing code ...
+    }
+
+    /**
+     * Show animation indicating not enough balance for this chip
+     */
+    showNotEnoughBalance(): void {
+        const originalX = this.position.x;
+        
+        // Single smooth shake with subtle movement
+        this.activeTween = new Tween(this.position, Globals.sceneManager?.tweenGroup)
+            .to({ x: originalX - 4 }, 150)
+            .easing(Easing.Sinusoidal.InOut)
+            .yoyo(true)
+            .repeat(1)
+            .start();
+        
+        // Temporarily dim the chip
+        this.alpha = 0.5;
+        
+        // Restore normal alpha after a short delay
+        setTimeout(() => {
+            this.alpha = 1;
+        }, 500);
     }
 } 

@@ -1,12 +1,12 @@
 import { extname } from "node:path";
 import { Container, Sprite, Texture, FederatedPointerEvent } from "pixi.js";
-import { Button, ButtonOptions } from "./Button";
-import { Globals, formatNumber } from "./Globals";
-import { TextLabel } from "./TextLabel";
-import { config } from "./appConfig";
-import { MenuPopup } from "./MenuPopup";
+import { Button, ButtonOptions } from "./button";
+import { Globals, formatNumber } from "./globals";
+import { TextLabel } from "./textlabel";
+import { config } from "./appconfig";
+import { MenuPopup } from "./menupopup";
 import { Easing, Tween } from "@tweenjs/tween.js";
-import { LeaderboardPopup } from "./LeaderboardPopup"
+import { LeaderboardPopup } from "./leaderboardpopup"
 
 /**
  * Custom menu button with hover/press animations and texture changes
@@ -89,7 +89,7 @@ class MenuButton extends Container {
         this.cancelActiveTween();
         
         // Scale up animation
-        this.currentTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.originalScale.x * 1.1, 
                 y: this.originalScale.y * 1.1 
@@ -108,7 +108,7 @@ class MenuButton extends Container {
         this.cancelActiveTween();
         
         // Scale back to original
-        this.currentTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.originalScale.x, 
                 y: this.originalScale.y 
@@ -130,7 +130,7 @@ class MenuButton extends Container {
         this.cancelActiveTween();
         
         // Scale down animation
-        this.currentTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.originalScale.x * 0.9, 
                 y: this.originalScale.y * 0.9 
@@ -154,7 +154,7 @@ class MenuButton extends Container {
         this.cancelActiveTween();
         
         // Scale up animation (hover effect)
-        this.currentTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.originalScale.x * 1.1, 
                 y: this.originalScale.y * 1.1 
@@ -176,7 +176,7 @@ class MenuButton extends Container {
         this.cancelActiveTween();
         
         // Scale back to original
-        this.currentTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.originalScale.x, 
                 y: this.originalScale.y 
@@ -251,11 +251,11 @@ export class UiContainer extends Container {
     /** Menu button */
     menuBtn!: MenuButton;
     
-    /** Balance label */
-    balanceTxt: TextLabel = new TextLabel(0, 0, 0.5, "Balance", 50, 0xFFFFFF);
+    /** Balance text label */
+    balanceTxt: TextLabel = new TextLabel(0, 0, 0.5, "balance", 50, 0xFFFFFF);
     
     /** Current balance amount display */
-    currentBalanceTxt: TextLabel = new TextLabel(0, 0, 0.5, `${formatNumber(Globals.Balance)} Chips`, 50, 0xFFFFFF);
+    currentBalanceTxt: TextLabel = new TextLabel(0, 0, 0.5, `${formatNumber(Globals.balance)} Chips`, 50, 0xFFFFFF);
     
     /** Menu popup */
     menuPopup!: MenuPopup;
@@ -266,14 +266,17 @@ export class UiContainer extends Container {
     /** Leaderboard popup */
     leaderboardPopup!: LeaderboardPopup;
     
-    /** Track if menu is open to maintain correct button texture */
+    /** Whether the menu is currently open */
     private isMenuOpen: boolean = false;
     
-    /** Track if leaderboard is open */
+    /** Whether the leaderboard is currently open */
     private isLeaderboardOpen: boolean = false;
     
-    /** Current animation tween for leaderboard button */
+    /** Current animation tween for the leaderboard button */
     private leaderboardBtnTween?: Tween<any>;
+    
+    /** Current animation tween for UI container animations */
+    private currentTween?: Tween<any>;
     
     /**
      * Create a new UI container
@@ -344,9 +347,9 @@ export class UiContainer extends Container {
         
         this.menuPopup.setButtonCallback('Home', () => {
             // Navigate to home/main menu
-            if (Globals.SceneManager) {
+            if (Globals.sceneManager) {
                 // You can implement scene switching logic here
-                // For example: Globals.SceneManager.goToScene('MainMenu');
+                // For example: Globals.sceneManager.goToScene('MainMenu');
             }
         });
         
@@ -404,7 +407,7 @@ export class UiContainer extends Container {
         
         // Scale up animation
         const originalScale = 0.3 * config.scaleFactor;
-        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.SceneManager?.tweenGroup)
+        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: originalScale * 1.1, 
                 y: originalScale * 1.1 
@@ -426,7 +429,7 @@ export class UiContainer extends Container {
         
         // Scale back to original
         const originalScale = 0.3 * config.scaleFactor;
-        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.SceneManager?.tweenGroup)
+        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: originalScale, 
                 y: originalScale 
@@ -446,7 +449,7 @@ export class UiContainer extends Container {
         
         // Scale down animation
         const originalScale = 0.3 * config.scaleFactor;
-        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.SceneManager?.tweenGroup)
+        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: originalScale * 0.9, 
                 y: originalScale * 0.9 
@@ -471,7 +474,7 @@ export class UiContainer extends Container {
         const originalScale = 0.3 * config.scaleFactor;
         const targetScale = this.isLeaderboardOpen ? originalScale * 1.1 : originalScale;
         
-        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.SceneManager?.tweenGroup)
+        this.leaderboardBtnTween = new Tween(this.leaderboardBtn.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: targetScale, 
                 y: targetScale 
@@ -592,8 +595,11 @@ export class UiContainer extends Container {
     /**
      * Update the balance display
      */
-    public updateBalance(): void {
-        this.currentBalanceTxt.updateLabelText(`${formatNumber(Globals.Balance)} Chips`);
+    public updateBalance(newBalance?: number): void {
+        // Update balance text with the current balance
+        // If newBalance is provided, use it; otherwise use the global balance
+        const balance = newBalance !== undefined ? newBalance : Globals.balance;
+        this.currentBalanceTxt.updateLabelText(`${formatNumber(balance)} Chips`);
     }
 
     /**
@@ -691,5 +697,82 @@ export class UiContainer extends Container {
         
         // Call parent destroy method
         super.destroy(options);
+    }
+
+    showSection(section: string): void {
+        if (this.currentTween) {
+            this.currentTween.stop();
+        }
+        
+        // Animate scaling the UI container out
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
+            .to({ 
+                x: 0.9, 
+                y: 0.9 
+            }, 200)
+            .easing(Easing.Back.In)
+    }
+    
+    toggleSideMenu(): void {
+        if (this.currentTween) {
+            this.currentTween.stop();
+        }
+        
+        // Animate scaling the UI container
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
+            .to({ 
+                x: this.isMenuOpen ? 0.9 : 1, 
+                y: this.isMenuOpen ? 0.9 : 1 
+            }, 300)
+            .easing(this.isMenuOpen ? Easing.Back.In : Easing.Back.Out)
+    }
+    
+    animateIn(): void {
+        if (this.currentTween) {
+            this.currentTween.stop();
+        }
+        
+        // Animate scaling the UI container in
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
+            .to({ 
+                x: 1, 
+                y: 1 
+            }, 400)
+            .easing(Easing.Back.Out)
+    }
+    
+    animateOut(): void {
+        if (this.currentTween) {
+            this.currentTween.stop();
+        }
+        
+        // Animate scaling the UI container out
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
+            .to({ 
+                x: 0.8, 
+                y: 0.8 
+            }, 400)
+            .easing(Easing.Back.In)
+    }
+    
+    showInGameMenu(): void {
+        if (this.currentTween) {
+            this.currentTween.stop();
+        }
+        
+        // Animate scaling the UI container out
+        this.currentTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
+            .to({ 
+                x: 0.9, 
+                y: 0.9 
+            }, 200)
+            .easing(Easing.Back.In)
+    }
+    
+    exitToMainMenu() {
+        if (Globals.sceneManager) {
+            // Navigate to main menu scene
+            // For example: Globals.sceneManager.goToScene('MainMenu');
+        }
     }
 }

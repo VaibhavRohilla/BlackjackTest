@@ -1,5 +1,5 @@
 import { Sprite, Texture } from "pixi.js";
-import { Globals } from "./Globals";
+import { Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
 
 /**
@@ -98,7 +98,7 @@ export class Chips extends Sprite {
         // Create a slight arc effect by using two tweens
         
         // First tween: Move up slightly with a bounce effect
-        const upTween = new Tween(this.position, Globals.SceneManager?.tweenGroup)
+        const upTween = new Tween(this.position, Globals.sceneManager?.tweenGroup)
             .to({
                 x: (this.position.x + targetX) / 2,
                 y: Math.min(this.position.y, targetY) - 50 // Move up by 50px
@@ -106,7 +106,7 @@ export class Chips extends Sprite {
             .easing(Easing.Cubic.Out)
             .onComplete(() => {
                 // Second tween: Move to final position
-                const finalTween = new Tween(this.position, Globals.SceneManager?.tweenGroup)
+                const finalTween = new Tween(this.position, Globals.sceneManager?.tweenGroup)
                     .to({
                         x: targetX,
                         y: targetY
@@ -125,7 +125,7 @@ export class Chips extends Sprite {
         
         // Add a slight rotation for visual interest
         const rotationAmount = (Math.random() - 0.5) * Math.PI * 0.5; // Random rotation between -π/4 and π/4
-        const rotationTween = new Tween(this, Globals.SceneManager?.tweenGroup)
+        const rotationTween = new Tween(this, Globals.sceneManager?.tweenGroup)
             .to({
                 rotation: rotationAmount
             }, 400) // Match the total duration of both position tweens
@@ -147,7 +147,7 @@ export class Chips extends Sprite {
         const originalY = this.position.y;
         
         // Create bounce effect
-        const bounceTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        const bounceTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({
                 x: this.originalScale * 1.2,
                 y: this.originalScale * 1.2
@@ -160,7 +160,7 @@ export class Chips extends Sprite {
         this.activeTweens.push(bounceTween);
         
         // Add slight position shift for more natural bounce
-        const positionTween = new Tween(this.position, Globals.SceneManager?.tweenGroup)
+        const positionTween = new Tween(this.position, Globals.sceneManager?.tweenGroup)
             .to({
                 y: originalY - 10
             }, 150)

@@ -1,8 +1,8 @@
 import { Sprite } from "pixi.js";
-import { Chips } from "./Table";
-import { Globals } from "./Globals";
-import { config } from "./appConfig";
-import { TextLabel } from "./TextLabel";
+import { Chips } from "./table";
+import { Globals } from "./globals";
+import { config } from "./appconfig";
+import { TextLabel } from "./textlabel";
 import { Easing, Tween } from "@tweenjs/tween.js";
 
 /**
@@ -85,7 +85,7 @@ export class CenterChip extends Sprite {
         const originalScale = this.betHolder.scale.clone();
         
         // Create a pulse animation
-        new Tween(this.betHolder.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(this.betHolder.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: originalScale.x * 1.2, 
                 y: originalScale.y * 1.2 
@@ -209,7 +209,7 @@ export class CenterChip extends Sprite {
         if (!this.betHolder.visible) return;
         
         // First, create a "pulse" effect
-        const pulseTween = new Tween(this.betHolder.scale, Globals.SceneManager?.tweenGroup)
+        const pulseTween = new Tween(this.betHolder.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: this.betHolder.scale.x * 0.9, 
                 y: this.betHolder.scale.y *  0.9 
@@ -221,7 +221,7 @@ export class CenterChip extends Sprite {
                 // Only hide if hideAfterAnimation is true
                 if (hideAfterAnimation) {
                     // Then fade out and scale up
-                    const fadeTween = new Tween(this.betHolder, Globals.SceneManager?.tweenGroup)
+                    const fadeTween = new Tween(this.betHolder, Globals.sceneManager?.tweenGroup)
                         .to({ 
                             alpha: 0,
                             scale: { x: this.betHolder.scale.x * 1.3, y: this.betHolder.scale.y * 1.3 }
@@ -254,7 +254,7 @@ export class CenterChip extends Sprite {
         const randomOffsetX = (Math.random() - 0.5) * 50;
         
         // Step 1: Create initial "pop" effect - chips scale up
-        const popTween = new Tween(chip.scale, Globals.SceneManager?.tweenGroup)
+        const popTween = new Tween(chip.scale, Globals.sceneManager?.tweenGroup)
             .to({ 
                 x: chip.scale.x * 1.2, 
                 y: chip.scale.y * 1.2 
@@ -279,7 +279,7 @@ export class CenterChip extends Sprite {
      */
     private animateChipDownward(chip: Chips, randomOffsetX: number, targetY: number, onComplete: () => void): void {
         // Create position tween - straight upward with slight horizontal variation
-        const positionTween = new Tween(chip.position, Globals.SceneManager?.tweenGroup)
+        const positionTween = new Tween(chip.position, Globals.sceneManager?.tweenGroup)
             .to({
                 x: chip.position.x + randomOffsetX,
                 y: targetY
@@ -289,7 +289,7 @@ export class CenterChip extends Sprite {
             
         // Create rotation tween - slight rotation for natural movement
         const targetRotation = (Math.random() - 0.5) * Math.PI * 0.5;
-        const rotationTween = new Tween(chip, Globals.SceneManager?.tweenGroup)
+        const rotationTween = new Tween(chip, Globals.sceneManager?.tweenGroup)
             .to({ 
                 rotation: targetRotation,
                 alpha: 0 // Fade out

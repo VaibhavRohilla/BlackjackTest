@@ -1,13 +1,11 @@
-import { Application, Container } from "pixi.js";
- 
-import { SceneManager } from "./SceneManager";
-import { Globals } from "./Globals";
-import { MyEmitter } from "./MyEmitter";
-import { Loader } from "./Loader";
-import { MainScene } from "./MainScene";
-import * as PIXI from 'pixi.js';
+import { Application } from "pixi.js";
+import { calculateScaleFactor } from "./appconfig";
+import { SceneManager } from "./scenemanager";
+import { MyEmitter } from "./myemitter";
+import { Globals } from "./globals";
+import { Loader } from "./loader";
+import { MainScene } from "./mainscene";
 import * as TWEEN from '@tweenjs/tween.js';
-import { calculateScaleFactor } from "./appConfig";
 
 export class App {
 	app: Application = new Application();
@@ -76,7 +74,7 @@ export class App {
 		// Initialize game systems
 		Globals.emitter = new MyEmitter();
 		new SceneManager();
-		Globals.App = this; // Store reference to App in Globals
+		Globals.app = this; // Store reference to App in Globals
 
 		// Setup stage
 		this.app.stage.addChild(SceneManager.instance.container);
@@ -89,8 +87,8 @@ export class App {
 		});
 
 		// Initialize loader
-		const loader = new Loader();
-		this.app.stage.addChild(loader);
+			const loader = new Loader();
+			this.app.stage.addChild(loader);
 		
 		// Force a render to ensure the loading screen is displayed
 		this.app.renderer.render(this.app.stage);

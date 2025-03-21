@@ -1,6 +1,6 @@
 import { Easing, Tween } from "@tweenjs/tween.js";
 import { Graphics, Sprite, Texture } from "pixi.js";
-import { Globals } from "./Globals";
+import { Globals } from "./globals";
 
 /**
  * Button options interface for customizing button behavior
@@ -101,7 +101,7 @@ export class Button extends Sprite {
         
         // Scale down effect
         if (this.options.pressScale !== undefined) {
-            this.activeTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({
                     x: this.originalScale.x * this.options.pressScale,
                     y: this.originalScale.y * this.options.pressScale
@@ -135,7 +135,7 @@ export class Button extends Sprite {
         
         // Return to hover scale if still hovering
         if (this.isHovering && this.options.hoverScale !== undefined) {
-            this.activeTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({
                     x: this.originalScale.x * this.options.hoverScale,
                     y: this.originalScale.y * this.options.hoverScale
@@ -144,7 +144,7 @@ export class Button extends Sprite {
                 .start();
         } else {
             // Return to original scale
-            this.activeTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({
                     x: this.originalScale.x,
                     y: this.originalScale.y
@@ -167,7 +167,7 @@ export class Button extends Sprite {
         this.cancelActiveTween();
         
         // Reset scale animation
-        this.activeTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({
                 x: this.originalScale.x,
                 y: this.originalScale.y
@@ -203,7 +203,7 @@ export class Button extends Sprite {
         
         // Scale up animation if not pressed
         if (!this.isPressed) {
-            this.activeTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({
                     x: this.originalScale.x * this.options.hoverScale!,
                     y: this.originalScale.y * this.options.hoverScale!
@@ -232,7 +232,7 @@ export class Button extends Sprite {
         
         // Reset scale animation if not pressed
         if (!this.isPressed) {
-            this.activeTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+            this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
                 .to({
                     x: this.originalScale.x,
                     y: this.originalScale.y

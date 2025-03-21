@@ -1,10 +1,9 @@
 import { Container, Graphics, Sprite } from "pixi.js";
-import { Globals } from "./Globals";
+import { Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
-import { TextLabel } from "./TextLabel";
-import { Z_INDEX } from "./PopupManager";
-import { config } from "./appConfig";
-import { Chips } from "./Table";
+import { TextLabel } from "./textlabel";
+import { Z_INDEX } from "./popupmanager";
+import { config } from "./appconfig";
 
 /**
  * Manages the shop popup for unlocking premium chips
@@ -114,7 +113,7 @@ export class ShopPopup extends Container {
         // Description text
         this.descriptionText.anchor.set(0.5);
         this.descriptionText.position.set(0, -this.popup.height * 0.15);
-        this.descriptionText.zIndex = Z_INDEX.POPUPS + 1;
+        this.descriptionText.zIndex = Z_INDEX.POPUPS + 500;
         this.addChild(this.descriptionText);
     }
     
@@ -170,12 +169,12 @@ export class ShopPopup extends Container {
      * @param button - The button being hovered
      */
     private onButtonHover(button: Sprite): void {
-        new Tween(button.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(button.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: button.scale.x * 1.1, y: button.scale.y * 1.1 }, 200)
             .easing(Easing.Back.Out)
             .start();
             
-        new Tween(button, Globals.SceneManager?.tweenGroup)
+        new Tween(button, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0.8 }, 200)
             .easing(Easing.Cubic.Out)
             .start();
@@ -186,12 +185,12 @@ export class ShopPopup extends Container {
      * @param button - The button hover ending
      */
     private onButtonOut(button: Sprite): void {
-        new Tween(button.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(button.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: button.scale.x / 1.1, y: button.scale.y / 1.1 }, 200)
             .easing(Easing.Back.Out)
             .start();
             
-        new Tween(button, Globals.SceneManager?.tweenGroup)
+        new Tween(button, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 1 }, 200)
             .easing(Easing.Cubic.Out)
             .start();
@@ -232,7 +231,7 @@ export class ShopPopup extends Container {
         this.descriptionText.alpha = 0;
         
         // Animate overlay fade in
-        new Tween(this.overlay, Globals.SceneManager?.tweenGroup)
+        new Tween(this.overlay, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
             .start();
@@ -240,44 +239,44 @@ export class ShopPopup extends Container {
         // Animate popup scaling up
         const isPortrait = window.innerWidth < window.innerHeight;
         const popupScale = this.getPopupScale();
-        new Tween(this.popup.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(this.popup.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: popupScale, y: popupScale }, 500)
             .easing(Easing.Back.Out)
             .start();
         
         // Animate popup fade in
-        new Tween(this.popup, Globals.SceneManager?.tweenGroup)
+        new Tween(this.popup, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
             .start();
         
         // Animate text elements with staggered delay
-        new Tween(this.titleText, Globals.SceneManager?.tweenGroup)
+        new Tween(this.titleText, Globals.sceneManager?.tweenGroup)
             .delay(100)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
             .start();
             
-        new Tween(this.descriptionText, Globals.SceneManager?.tweenGroup)
+        new Tween(this.descriptionText, Globals.sceneManager?.tweenGroup)
             .delay(200)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
             .start();
         
         // Animate buttons with staggered delay
-        new Tween(this.shopButton, Globals.SceneManager?.tweenGroup)
+        new Tween(this.shopButton, Globals.sceneManager?.tweenGroup)
             .delay(300)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
             .start();
             
-        new Tween(this.cancelButton, Globals.SceneManager?.tweenGroup)
+        new Tween(this.cancelButton, Globals.sceneManager?.tweenGroup)
             .delay(400)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
             .start();
             
-        new Tween(this.closeButton, Globals.SceneManager?.tweenGroup)
+        new Tween(this.closeButton, Globals.sceneManager?.tweenGroup)
             .delay(500)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
@@ -291,19 +290,19 @@ export class ShopPopup extends Container {
         if (!this.isVisible) return;
         
         // Animate overlay fade out
-        new Tween(this.overlay, Globals.SceneManager?.tweenGroup)
+        new Tween(this.overlay, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0 }, 300)
             .easing(Easing.Cubic.In)
             .start();
         
         // Animate popup scaling down
-        new Tween(this.popup.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(this.popup.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: 0.1, y: 0.1 }, 300)
             .easing(Easing.Back.In)
             .start();
         
         // Animate popup fade out
-        new Tween(this.popup, Globals.SceneManager?.tweenGroup)
+        new Tween(this.popup, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0 }, 300)
             .easing(Easing.Cubic.In)
             .onComplete(() => {
@@ -315,7 +314,7 @@ export class ShopPopup extends Container {
             
         // Fade out all other elements
         [this.shopButton, this.cancelButton, this.closeButton, this.titleText, this.descriptionText].forEach(element => {
-            new Tween(element, Globals.SceneManager?.tweenGroup)
+            new Tween(element, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0 }, 200)
                 .easing(Easing.Cubic.In)
                 .start();
@@ -352,12 +351,12 @@ export class ShopPopup extends Container {
             const targetX = particle.position.x + Math.cos(angle) * 100;
             const targetY = particle.position.y + Math.sin(angle) * 100;
             
-            new Tween(particle.position, Globals.SceneManager?.tweenGroup)
+            new Tween(particle.position, Globals.sceneManager?.tweenGroup)
                 .to({ x: targetX, y: targetY }, 500 + Math.random() * 500)
                 .easing(Easing.Cubic.Out)
                 .start();
                 
-            new Tween(particle, Globals.SceneManager?.tweenGroup)
+            new Tween(particle, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0 }, 500 + Math.random() * 500)
                 .easing(Easing.Cubic.Out)
                 .onComplete(() => {
@@ -373,27 +372,39 @@ export class ShopPopup extends Container {
     }
     
     /**
-     * Unlock premium chips (2K, 5K and 10K)
+     * Handle the unlock button click - will unlock premium chips
      */
     private unlockPremiumChips(): void {
+        console.log("ShopPopup: unlockPremiumChips called");
+        
         // Create unlock effect
         this.createUnlockEffect();
         
         // Animate the shop button
-        new Tween(this.shopButton.scale, Globals.SceneManager?.tweenGroup)
+        new Tween(this.shopButton.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: this.shopButton.scale.x * 1.2, y: this.shopButton.scale.y * 1.2 }, 200)
             .easing(Easing.Back.Out)
             .yoyo(true)
             .repeat(1)
             .start();
         
+        // Call the unlock callback directly - don't wait for popup to close
+        try {
+            console.log("ShopPopup: Calling unlock callback");
+            if (this.unlockCallback) {
+                this.unlockCallback();
+            } else {
+                console.error("ShopPopup: No unlock callback provided");
+            }
+        } catch (e) {
+            console.error("ShopPopup: Error calling unlock callback", e);
+        }
+        
         // Close the popup with a slight delay
         setTimeout(() => {
+            console.log("ShopPopup: Closing popup after unlock");
             this.close();
-            
-            // Call the unlock callback
-            this.unlockCallback();
-        }, 500);
+        }, 1500); // Longer delay to see the animation
     }
     
     /**

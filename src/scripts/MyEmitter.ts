@@ -1,6 +1,5 @@
-import * as PIXI from 'pixi.js';
-import { Globals } from './Globals';
-import { SceneManager } from './SceneManager';
+
+import { SceneManager } from './scenemanager';
 
 export class MyEmitter //extends PIXI.utils.EventEmitter
 {

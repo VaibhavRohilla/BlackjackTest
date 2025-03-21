@@ -1,52 +1,58 @@
+import { Deck } from "./deck";
+import { App } from "./app";
+import { MyEmitter } from "./myemitter";
+import { SceneManager } from "./scenemanager";
+import * as PIXI from 'pixi.js'
 import { Howl } from 'howler';
-import * as PIXI from 'pixi.js';
-import { Assets} from 'pixi.js';
-import { App } from './App';
-import { MyEmitter } from './MyEmitter';
 import { isMobile } from 'pixi.js';
-import { SceneManager } from './SceneManager';
-import { UiContainer } from './UiContainer';
-import { CenterChip } from './CenterChip';
-import { Table } from './Table';
 
 type globalDataType = {
   resources: { [key: string]: PIXI.Texture }; 
   emitter: MyEmitter | undefined;
   isMobile: boolean;
-  SceneManager : SceneManager | undefined,
+  sceneManager : SceneManager | undefined,
   // fpsStats : Stats | undefined,
   soundResources: { [key: string]: Howl };
 
-  App: App | undefined,
+  app: App | undefined,
   isVisible: boolean;
-  Balance : number;
+  balance : number;
   currentBet : number;
-  gameStarted : boolean;
-  dealer: any; // Reference to the BlackjackDealer instance
-  uiContainer: UiContainer | undefined;
-  centerChip: CenterChip | undefined;
+  deck : Deck | undefined;
+  gameStarted?: boolean;
+  popupManager?: any;
 };
 
 export const Globals: globalDataType = {
   resources: {},
   emitter: undefined,
-  SceneManager : undefined,
+  sceneManager : undefined,
   get isMobile() {
     //  return true;
     return isMobile.any;
   },
   // fpsStats: undefined,
-  App: undefined,
+  app: undefined,
   soundResources: {},
   isVisible: true,
-  Balance : 200000,
+  balance : 200000,
   currentBet : 0,
-  gameStarted : false,
-  dealer: null, // Initialize as null
-  uiContainer: undefined,
-  centerChip: undefined,
+  deck : undefined,
+  gameStarted: false,
+  popupManager: undefined
 };
 
 export const formatNumber = (num: number): string => {
   return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 };
+  /**
+   * Format a bet amount for display (e.g. 1000 -> 1k)
+   * @param amount - The bet amount to format
+   * @returns Formatted bet amount as a string
+   */
+  export const formatBetAmount = (amount: number): string => {
+    if (amount >= 1000) {
+      return (amount / 1000).toFixed(2).replace(/\.?0+$/, '') + 'k';
+    }
+    return amount.toString();
+  }

@@ -1,39 +1,41 @@
 import * as PIXI from "pixi.js";
 import TWEEN, { Group } from "@tweenjs/tween.js";
-import { Globals } from "./Globals";
-import { Scene } from "./Scene";
-import { log } from "node:console";
+import { Globals } from "./globals";
+import { Scene } from "./scene";
 
 export class SceneManager {
 
+    private static _instance: SceneManager;
 
-    static instance: SceneManager;
+    public static get instance(): SceneManager {
+        if (!SceneManager._instance) {
+            SceneManager._instance = new SceneManager();
+        }
+        return SceneManager._instance;
+    }
 
     container!: PIXI.Container;
     scene: Scene | null = null;
     tweenGroup : Group = new Group();
 
     constructor() {
-		if (SceneManager.instance != undefined) {
-			console.log("SceneManager already created!");
-			return;
-		}
+        SceneManager._instance = this;
+        Globals.sceneManager = SceneManager.instance;
+        
+        this.tweenGroup = new Group();
+        
+        this.container = new PIXI.Container();
+    }
 
-		SceneManager.instance = this;
-		Globals.SceneManager =  SceneManager.instance;
-		this.container = new PIXI.Container();
-		this.scene = null;
-	}
+    start(scene: Scene) {
+        if (this.scene) {
+            this.scene.destroyScene();
+            this.scene = null;
+        }
 
-	start(scene: Scene) {
-		if (this.scene) {
-			this.scene.destroyScene();
-			this.scene = null;
-		}
-
-		this.scene = scene;
-		this.scene.initScene(this.container);
-	}
+        this.scene = scene;
+        this.scene.initScene(this.container);
+    }
 
     update(dt: number) {
         const currentTime = performance.now(); // Use current time
@@ -51,7 +53,7 @@ export class SceneManager {
 		// // monitored code goes here
 
 		// Globals.stats.end();
-	}
+    }
 
 	resize() {
 		if (this.scene) {

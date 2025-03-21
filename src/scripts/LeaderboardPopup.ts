@@ -1,9 +1,8 @@
 import { Container, Graphics, Sprite, Texture, Text } from "pixi.js";
-import { Globals, formatNumber } from "./Globals";
+import { Globals, formatNumber } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
-import { config } from "./appConfig";
-import { Z_INDEX } from "./PopupManager";
-import { TextLabel } from "./TextLabel";
+import { TextLabel } from "./textlabel";
+import { Z_INDEX } from "./popupmanager";
 
 /**
  * Player data for the leaderboard
@@ -283,7 +282,7 @@ export class LeaderboardPopup extends Container {
         // Animate the indicator to the new position
         const targetX = newIndex * (tw + sp);
         
-        new Tween(this.tabIndicator.position, Globals.SceneManager?.tweenGroup)
+        new Tween(this.tabIndicator.position, Globals.sceneManager?.tweenGroup)
             .to({ x: targetX }, 300)
             .easing(Easing.Cubic.Out)
             .start();
@@ -763,7 +762,7 @@ export class LeaderboardPopup extends Container {
         this.stopTweens();
         
         // Animate opening
-        const scaleTween = new Tween(this.popupContainer.scale, Globals.SceneManager?.tweenGroup)
+        const scaleTween = new Tween(this.popupContainer.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: 1, y: 1 }, 300)
             .easing(Easing.Back.Out)
             .onComplete(() => {
@@ -802,7 +801,7 @@ export class LeaderboardPopup extends Container {
         window.removeEventListener('resize', this.onResize);
         
         // Animate closing
-        const scaleTween = new Tween(this.popupContainer.scale, Globals.SceneManager?.tweenGroup)
+        const scaleTween = new Tween(this.popupContainer.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: 0, y: 0 }, 300)
             .easing(Easing.Back.In)
             .onComplete(() => {

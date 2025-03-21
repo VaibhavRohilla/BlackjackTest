@@ -1,9 +1,8 @@
 import * as PIXI from 'pixi.js';
 import { Assets, Sprite } from 'pixi.js';
-import { config } from './appConfig';
-import { BackgroundGraphic, BackgroundSprite } from './Background';
-import { Globals } from './Globals';
-import { LoaderConfig, fontData, LoaderSoundConfig, staticData } from './LoaderConfig';
+import { BackgroundGraphic, BackgroundSprite } from './background';
+import { Globals } from './globals';
+import { LoaderConfig, fontData, LoaderSoundConfig, staticData } from './loaderconfig';
 import FontFaceObserver from 'fontfaceobserver';
 import { Howl } from 'howler';
 import { log } from 'node:console';
@@ -81,8 +80,8 @@ export class Loader extends PIXI.Container {
         this.addChild(this.loaderBarContainer);
         
         // Force a render update to make sure loading screen appears
-        if (Globals.App?.app.renderer) {
-            Globals.App.app.renderer.render(Globals.App.app.stage);
+        if (Globals.app?.app.renderer) {
+            Globals.app.app.renderer.render(Globals.app.app.stage);
         }
     }
 

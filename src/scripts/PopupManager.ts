@@ -1,8 +1,7 @@
 import { Container, Graphics, Sprite } from "pixi.js";
-import { Globals } from "./Globals";
+import { Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
-import { GameOutcome } from "./BlackjackDealer";
-import { config } from "./appConfig";
+import { GameOutcome } from "./result";
 
 // Z-index constants for proper layering
 export const Z_INDEX = {
@@ -12,7 +11,8 @@ export const Z_INDEX = {
     CHIPS: 20,
     POPUP_OVERLAY: 30,
     POPUPS: 40,
-    BUTTONS: 50
+    BUTTONS: 50,
+    SHOP: 60
 };
 
 /**
@@ -39,6 +39,12 @@ export class PopupManager extends Container {
     
     /** Target scale for the popup */
     private targetPopupScale: number | null = null;
+    
+    /** Timeout ID for any scheduled hide operations */
+    private hideTimeoutId: number | null = null;
+    
+    /** Whether the current popup is a game end popup (should persist) */
+    private isGameEndPopup: boolean = false;
     
     /**
      * Create a new popup manager
@@ -81,6 +87,10 @@ export class PopupManager extends Container {
         
         let popupTexture;
         let tint = 0xFFFFFF; // Default white (no tint)
+        console.log("outcome", outcome);
+        
+        // Mark as game end popup (should persist until user action)
+        this.isGameEndPopup = true;
         
         // Select appropriate popup texture based on outcome
         switch (outcome) {
@@ -102,7 +112,7 @@ export class PopupManager extends Container {
                 console.log("Selected burst popup");
                 break;
             case GameOutcome.DEALER_WIN:
-                popupTexture = Globals.resources.LoosePopup;
+                popupTexture = Globals.resources.loosePopup;
                 console.log("Selected lost popup");
                 break;
             case GameOutcome.SURRENDER:
@@ -112,10 +122,14 @@ export class PopupManager extends Container {
             case GameOutcome.INSURANCE_WON:
                 popupTexture = Globals.resources.insuranceWonPopup;
                 console.log("Selected insurance won popup");
+                // Insurance popups aren't end game popups, they're informational
+                this.isGameEndPopup = false;
                 break;
             case GameOutcome.INSURANCE_LOST:
                 popupTexture = Globals.resources.insuranceLostPopup;
                 console.log("Selected insurance lost popup");
+                // Insurance popups aren't end game popups, they're informational
+                this.isGameEndPopup = false;
                 break;
             default:
                 console.log(`No popup defined for outcome: ${outcome}`);
@@ -132,19 +146,51 @@ export class PopupManager extends Container {
     }
     
     /**
-     * Show insurance popup based on outcome
-     * @param won - Whether the insurance bet was won
+     * Show an insurance outcome popup
+     * @param insuranceWon Whether the insurance bet was won or lost
      */
-    showInsurancePopup(won: boolean): void {
-        console.log(`Showing insurance popup, won: ${won}`);
+    public showInsurancePopup(insuranceWon: boolean): void {
+        console.log(`Showing insurance popup: insuranceWon=${insuranceWon}`);
         
-        if (won) {
-            // Show insurance won popup with default tint
-            this.showPopup(Globals.resources.insuranceWonPopup);
+        let popupTexture;
+        
+        if (insuranceWon) {
+            // For insurance win, use a dedicated popup if available
+            popupTexture = Globals.resources.insuranceWonPopup || Globals.resources.winPopup;
+            
+            // Set a flag indicating this is a game-ending popup
+            this.isGameEndPopup = true;
+            
+            // Use a larger scale for win popups to emphasize them
+            this.targetPopupScale = 1.1;
         } else {
-            // Show insurance lost popup with default tint
-            this.showPopup(Globals.resources.insuranceLostPopup);
+            // For insurance loss, use a dedicated popup if available
+            popupTexture = Globals.resources.insuranceLostPopup || Globals.resources.insuranceActivePopup;
+            
+            // Insurance loss is not a game-ending popup
+            this.isGameEndPopup = false;
+            
+            // Use normal scale for loss popups
+            this.targetPopupScale = 1.0;
         }
+        
+        // If no specific popup found, fallback to a generic one
+        if (!popupTexture) {
+            console.log("No specific insurance popup found, using generic");
+            popupTexture = insuranceWon ? Globals.resources.winPopup : Globals.resources.losePopup;
+        }
+        
+        // Show the popup
+        this.showPopup(popupTexture);
+        
+        // For insurance loss, auto-hide after delay (gameplay continues)
+        if (!insuranceWon) {
+            setTimeout(() => {
+                this.hidePopup();
+            }, 3000);
+        }
+        // For insurance win, the popup stays until game end buttons are clicked
+        // similar to other game end popups
     }
     
     /**
@@ -173,6 +219,14 @@ export class PopupManager extends Container {
             console.log("No popup showing, displaying directly");
             this._showPopup(texture, tint);
         }
+    }
+    
+    /**
+     * Check if a popup is currently showing
+     * @returns Whether a popup is currently showing
+     */
+    isPopupShowing(): boolean {
+        return this.isShowing;
     }
     
     /**
@@ -235,8 +289,20 @@ export class PopupManager extends Container {
         const fadeInDuration = 400;
         const scaleInDuration = 550;
         
+        // Add click handler to overlay 
+        this.overlay.interactive = true;
+        this.overlay.removeAllListeners();
+        
+        // For game end popups, don't allow overlay clicks to dismiss
+        if (!this.isGameEndPopup) {
+            this.overlay.on('pointerdown', () => {
+                console.log("Overlay clicked, hiding popup");
+                this.hidePopup();
+            });
+        }
+        
         // Animate overlay fade in smoothly
-        new Tween(this.overlay, Globals.SceneManager?.tweenGroup)
+        new Tween(this.overlay, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0.7 }, fadeInDuration)
             .easing(Easing.Cubic.Out) // Smoother fade in
             .start();
@@ -244,13 +310,13 @@ export class PopupManager extends Container {
         // Animate the shadow with a slight delay
         if (this.popupShadow) {
             // Fade in the shadow
-            new Tween(this.popupShadow, Globals.SceneManager?.tweenGroup)
+            new Tween(this.popupShadow, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0.4 }, fadeInDuration)
                 .easing(Easing.Cubic.Out)
                 .start();
             
             // Scale in the shadow
-            new Tween(this.popupShadow.scale, Globals.SceneManager?.tweenGroup)
+            new Tween(this.popupShadow.scale, Globals.sceneManager?.tweenGroup)
                 .to({ x: baseScale * 1.03, y: baseScale * 1.03 }, scaleInDuration)
                 .easing(Easing.Back.Out) // Smoother entrance with slight overshoot
                 .start();
@@ -259,18 +325,23 @@ export class PopupManager extends Container {
         // Animate the popup with a smooth entrance
         if (this.activePopup) {
             // Fade in the popup
-            new Tween(this.activePopup, Globals.SceneManager?.tweenGroup)
+            new Tween(this.activePopup, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 1 }, fadeInDuration)
                 .easing(Easing.Cubic.Out)
                 .start();
             
             // Scale in the popup with a slight overshoot
-            new Tween(this.activePopup.scale, Globals.SceneManager?.tweenGroup)
+            new Tween(this.activePopup.scale, Globals.sceneManager?.tweenGroup)
                 .to({ x: baseScale, y: baseScale }, scaleInDuration)
                 .easing(Easing.Back.Out) // Smoother entrance with slight overshoot
                 .onComplete(() => {
                     // Start pulsing animation immediately after the entrance animation
                     this.animatePopupPulse();
+                    
+                    // For non-end game popups, schedule automatic hide after delay
+                    if (!this.isGameEndPopup) {
+                        this.scheduleHideAfterDelay(3000);
+                    }
                 })
                 .start();
         }
@@ -303,7 +374,7 @@ export class PopupManager extends Container {
         // This creates a seamless loop between min and max values
         const createContinuousPulse = () => {
             // First tween: from current value to max
-            const tweenUp = new Tween(pulseScale, Globals.SceneManager?.tweenGroup)
+            const tweenUp = new Tween(pulseScale, Globals.sceneManager?.tweenGroup)
                 .to({ value: maxPulseScale }, pulseDuration / 2)
                 .easing(Easing.Sinusoidal.InOut)
                 .onUpdate(() => {
@@ -311,7 +382,7 @@ export class PopupManager extends Container {
                 });
                 
             // Second tween: from max to min
-            const tweenDown = new Tween(pulseScale, Globals.SceneManager?.tweenGroup)
+            const tweenDown = new Tween(pulseScale, Globals.sceneManager?.tweenGroup)
                 .to({ value: minPulseScale }, pulseDuration / 2)
                 .easing(Easing.Sinusoidal.InOut)
                 .onUpdate(() => {
@@ -320,7 +391,7 @@ export class PopupManager extends Container {
                 
             // Third tween: from min back to starting value (1.0)
             // This completes the cycle and ensures we always return to the base value
-            const tweenReset = new Tween(pulseScale, Globals.SceneManager?.tweenGroup)
+            const tweenReset = new Tween(pulseScale, Globals.sceneManager?.tweenGroup)
                 .to({ value: 1.0 }, pulseDuration / 2)
                 .easing(Easing.Sinusoidal.InOut)
                 .onUpdate(() => {
@@ -390,24 +461,24 @@ export class PopupManager extends Container {
             const currentScale = this.activePopup.scale.x;
             
             // First slightly scale up
-            new Tween(this.activePopup.scale, Globals.SceneManager?.tweenGroup)
+            new Tween(this.activePopup.scale, Globals.sceneManager?.tweenGroup)
                 .to({ x: currentScale * 1.05, y: currentScale * 1.05 }, 120)
                 .easing(Easing.Quadratic.Out)
                 .onComplete(() => {
                     // Then scale down to zero
-                    new Tween(this.activePopup!.scale, Globals.SceneManager?.tweenGroup)
+                    new Tween(this.activePopup!.scale, Globals.sceneManager?.tweenGroup)
                         .to({ x: 0, y: 0 }, scaleOutDuration)
                         .easing(Easing.Quadratic.In) // Smoother scale down
                         .start();
                     
                     // Add a slight fade out as well
-                    new Tween(this.activePopup!, Globals.SceneManager?.tweenGroup)
+                    new Tween(this.activePopup!, Globals.sceneManager?.tweenGroup)
                         .to({ alpha: 0 }, scaleOutDuration)
                         .easing(Easing.Quadratic.In)
                         .start();
                     
                     // Add a very subtle rotation
-                    new Tween(this.activePopup!, Globals.SceneManager?.tweenGroup)
+                    new Tween(this.activePopup!, Globals.sceneManager?.tweenGroup)
                         .to({ rotation: Math.PI * 0.1 }, scaleOutDuration) // Just a slight rotation
                         .easing(Easing.Quadratic.In)
                         .start();
@@ -416,7 +487,7 @@ export class PopupManager extends Container {
         }
         
         // Animate overlay fade out
-        new Tween(this.overlay, Globals.SceneManager?.tweenGroup)
+        new Tween(this.overlay, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0 }, fadeOutDuration)
             .easing(Easing.Quadratic.Out) // Smoother fade out
             .start();
@@ -427,18 +498,18 @@ export class PopupManager extends Container {
             const currentShadowScale = this.popupShadow.scale.x;
             
             // First slightly scale up
-            new Tween(this.popupShadow.scale, Globals.SceneManager?.tweenGroup)
+            new Tween(this.popupShadow.scale, Globals.sceneManager?.tweenGroup)
                 .to({ x: currentShadowScale * 1.05, y: currentShadowScale * 1.05 }, 120)
                 .easing(Easing.Quadratic.Out)
                 .onComplete(() => {
                     // Then scale down to zero
-                    new Tween(this.popupShadow!.scale, Globals.SceneManager?.tweenGroup)
+                    new Tween(this.popupShadow!.scale, Globals.sceneManager?.tweenGroup)
                         .to({ x: 0, y: 0 }, scaleOutDuration)
                         .easing(Easing.Quadratic.In)
                         .start();
                     
                     // Add a slight fade out as well
-                    new Tween(this.popupShadow!, Globals.SceneManager?.tweenGroup)
+                    new Tween(this.popupShadow!, Globals.sceneManager?.tweenGroup)
                         .to({ alpha: 0 }, scaleOutDuration)
                         .easing(Easing.Quadratic.In)
                         .onComplete(() => {
@@ -452,7 +523,7 @@ export class PopupManager extends Container {
                 .start();
         } else if (this.activePopup) {
             // If no shadow, complete on the popup animation
-            new Tween(this.activePopup, Globals.SceneManager?.tweenGroup)
+            new Tween(this.activePopup, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0 }, scaleOutDuration)
                 .easing(Easing.Quadratic.In)
                 .onComplete(() => {
@@ -536,5 +607,59 @@ export class PopupManager extends Container {
                 this.popupShadow.position.set(shadowOffsetX, shadowOffsetY);
             }
         }
+    }
+
+    /**
+     * Schedule a popup to hide after a delay, then execute a callback
+     * @param delay - The delay in milliseconds
+     * @param callback - Function to call after hiding the popup
+     */
+    scheduleHideAfterDelay(delay: number, callback?: () => void): void {
+        // Don't auto-hide game end popups
+        if (this.isGameEndPopup) {
+            console.log("Not scheduling hide for game end popup");
+            return;
+        }
+        
+        // Cancel any existing timeout
+        if (this.hideTimeoutId !== null) {
+            clearTimeout(this.hideTimeoutId);
+            this.hideTimeoutId = null;
+        }
+        
+        // If no popup is showing and there's a callback, just execute it
+        if (!this.isShowing && callback) {
+            callback();
+            return;
+        }
+        
+        // Schedule the hide operation
+        this.hideTimeoutId = window.setTimeout(() => {
+            this.hideTimeoutId = null;
+            
+            // Hide the popup and call the callback when done
+            this.hidePopup(() => {
+                if (callback) {
+                    callback();
+                }
+            });
+        }, delay);
+    }
+    
+    /**
+     * Clean up resources on destroy
+     */
+    destroy(options?: any): void {
+        // Clear any pending timeout
+        if (this.hideTimeoutId !== null) {
+            clearTimeout(this.hideTimeoutId);
+            this.hideTimeoutId = null;
+        }
+        
+        // Clean up existing popups
+        this.cleanupPopup();
+        
+        // Call parent destroy
+        super.destroy(options);
     }
 } 

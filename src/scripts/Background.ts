@@ -1,6 +1,5 @@
 import * as PIXI from "pixi.js";
-import { config } from "./appConfig";
-import { Globals } from "./Globals";
+import { config } from "./appconfig";
 
 export class Background extends PIXI.TilingSprite {
     constructor(topImage: any, width = config.logicalWidth, height = config.logicalHeight, scaleSize = null) {

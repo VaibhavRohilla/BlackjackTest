@@ -1,10 +1,9 @@
 import { Container, Graphics, Sprite, Texture, FederatedPointerEvent, Text } from "pixi.js";
-import { Button, ButtonOptions } from "./Button";
-import { Globals } from "./Globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
-import { config } from "./appConfig";
-import { Z_INDEX } from "./PopupManager";
-import { TextLabel } from "./TextLabel";
+import { config } from "./appconfig";
+import { Globals } from "./globals";
+import { Z_INDEX } from "./popupmanager";
+import { TextLabel } from "./textlabel";
 
 /**
  * Callback type for menu button actions
@@ -711,12 +710,12 @@ export class MenuPopup extends Container {
         this.stopActiveTweens();
         
         // Simple animation for opening
-        const alphaTween = new Tween(this, Globals.SceneManager?.tweenGroup)
+        const alphaTween = new Tween(this, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 1 }, 300)
             .easing(Easing.Cubic.Out)
             .start();
             
-        const scaleTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        const scaleTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: 1.3, y: 1.3 }, 300)
             .easing(Easing.Back.Out)
             .start();
@@ -736,12 +735,12 @@ export class MenuPopup extends Container {
         this.stopActiveTweens();
         
         // Simple animation for closing
-        const alphaTween = new Tween(this, Globals.SceneManager?.tweenGroup)
+        const alphaTween = new Tween(this, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0 }, 300)
             .easing(Easing.Cubic.In)
             .start();
             
-        const scaleTween = new Tween(this.scale, Globals.SceneManager?.tweenGroup)
+        const scaleTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)
             .to({ x: 0, y: 0 }, 300)
             .easing(Easing.Back.In)
             .onComplete(() => {

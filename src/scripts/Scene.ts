@@ -1,14 +1,12 @@
 import { Container, Graphics, Sprite, Texture } from "pixi.js";
-import { config } from "./appConfig";
-import { AnimatedBackgroundSprite, BackgroundGraphic, BackgroundSprite } from "./Background";
-import { staticData } from "./LoaderConfig";
-import { log } from "node:console";
-import { Globals } from "./Globals";
+import { config } from "./appconfig";
+import { AnimatedBackgroundSprite, BackgroundGraphic, BackgroundSprite } from "./background";
+import { Globals } from "./globals";
 
 export abstract class Scene {
 
 
-    private sceneContainer: Container;
+    sceneContainer: Container;
 
 
     mainContainer: Container;
@@ -72,6 +70,8 @@ export abstract class Scene {
     }
 
     addChildToFullScene(component: any) {
+        console.log("addChildToFullScene", component);
+        
         this.sceneContainer.addChild(component);
 
     }
