@@ -5,6 +5,7 @@ import { SceneManager } from "./scenemanager";
 import * as PIXI from 'pixi.js'
 import { Howl } from 'howler';
 import { isMobile } from 'pixi.js';
+import { BackendService } from "./services/backendservice";
 
 type globalDataType = {
   resources: { [key: string]: PIXI.Texture }; 
@@ -15,12 +16,15 @@ type globalDataType = {
   soundResources: { [key: string]: Howl };
 
   app: App | undefined,
+  backendService: BackendService | undefined,
   isVisible: boolean;
   balance : number;
   currentBet : number;
   deck : Deck | undefined;
   gameStarted?: boolean;
   popupManager?: any;
+  isOnline: boolean;
+  lastAction: string | null;
 };
 
 export const Globals: globalDataType = {
@@ -33,13 +37,16 @@ export const Globals: globalDataType = {
   },
   // fpsStats: undefined,
   app: undefined,
+  backendService: undefined,
   soundResources: {},
   isVisible: true,
   balance : 200000,
   currentBet : 0,
   deck : undefined,
   gameStarted: false,
-  popupManager: undefined
+  popupManager: undefined,
+  isOnline: true,
+  lastAction: null
 };
 
 export const formatNumber = (num: number): string => {
@@ -56,3 +63,12 @@ export const formatNumber = (num: number): string => {
     }
     return amount.toString();
   }
+
+  export const getSuitPrefix = (suit: 'hearts' | 'diamonds' | 'clubs' | 'spades'): string => {
+        switch (suit) {
+            case 'hearts': return 'h';
+            case 'diamonds': return 'd';
+            case 'clubs': return 'c';
+            case 'spades': return 's';
+        }
+    }

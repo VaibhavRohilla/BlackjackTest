@@ -1,4 +1,4 @@
-import { Container, Graphics, Sprite } from "pixi.js";
+import { Container, Graphics, Sprite, Texture } from "pixi.js";
 import { Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
 import { GameOutcome } from "./result";
@@ -149,48 +149,9 @@ export class PopupManager extends Container {
      * Show an insurance outcome popup
      * @param insuranceWon Whether the insurance bet was won or lost
      */
-    public showInsurancePopup(insuranceWon: boolean): void {
-        console.log(`Showing insurance popup: insuranceWon=${insuranceWon}`);
-        
-        let popupTexture;
-        
-        if (insuranceWon) {
-            // For insurance win, use a dedicated popup if available
-            popupTexture = Globals.resources.insuranceWonPopup || Globals.resources.winPopup;
-            
-            // Set a flag indicating this is a game-ending popup
-            this.isGameEndPopup = true;
-            
-            // Use a larger scale for win popups to emphasize them
-            this.targetPopupScale = 1.1;
-        } else {
-            // For insurance loss, use a dedicated popup if available
-            popupTexture = Globals.resources.insuranceLostPopup || Globals.resources.insuranceActivePopup;
-            
-            // Insurance loss is not a game-ending popup
-            this.isGameEndPopup = false;
-            
-            // Use normal scale for loss popups
-            this.targetPopupScale = 1.0;
-        }
-        
-        // If no specific popup found, fallback to a generic one
-        if (!popupTexture) {
-            console.log("No specific insurance popup found, using generic");
-            popupTexture = insuranceWon ? Globals.resources.winPopup : Globals.resources.losePopup;
-        }
-        
-        // Show the popup
-        this.showPopup(popupTexture);
-        
-        // For insurance loss, auto-hide after delay (gameplay continues)
-        if (!insuranceWon) {
-            setTimeout(() => {
-                this.hidePopup();
-            }, 3000);
-        }
-        // For insurance win, the popup stays until game end buttons are clicked
-        // similar to other game end popups
+    public showInsuranceResult(insuranceWon: boolean): void {
+        // Call the general showInsurancePopup method with a boolean parameter
+        this.showInsurancePopup(insuranceWon);
     }
     
     /**
@@ -661,5 +622,78 @@ export class PopupManager extends Container {
         
         // Call parent destroy
         super.destroy(options);
+    }
+
+    /**
+     * Show insurance popup with dealer's face-up card
+     * @param dealerCard - The dealer's face-up card or true to show insurance won popup
+     * @param insuranceAmount - The amount of insurance bet
+     * @param onYesCallback - Callback for yes response
+     * @param onNoCallback - Callback for no response
+     */
+    public showInsurancePopup(
+        dealerCard: any | boolean,
+        insuranceAmount?: number,
+        onYesCallback?: () => void,
+        onNoCallback?: () => void
+    ): void {
+        // If dealerCard is a boolean, it's being used to show insurance result popup
+        if (typeof dealerCard === 'boolean') {
+            const insuranceWon = dealerCard;
+            // Show insurance outcome popup
+            if (insuranceWon) {
+                if (Globals.resources.insuranceWonPopup) {
+                    this.showPopup(Globals.resources.insuranceWonPopup);
+                } else {
+                    // Fallback if specific texture not available
+                    this.showGenericPopup("Insurance Paid", "You win 2:1 on your insurance bet.");
+                }
+            } else {
+                if (Globals.resources.insuranceLostPopup) {
+                    this.showPopup(Globals.resources.insuranceLostPopup);
+                } else {
+                    // Fallback if specific texture not available
+                    this.showGenericPopup("Insurance Lost", "Dealer doesn't have blackjack.");
+                }
+            }
+            return;
+        }
+        
+        // Otherwise, it's the initial insurance offer popup
+        let texture: Texture;
+        if (Globals.resources.insurancePopup) {
+            texture = Globals.resources.insurancePopup;
+        } else {
+            console.error("Insurance popup texture not found");
+            // Create fallback texture - using a white texture as a basic fallback
+            texture = Texture.WHITE;
+        }
+        
+        // Show the popup
+        this.showPopup(texture);
+        
+        // Add yes/no buttons
+        if (onYesCallback || onNoCallback) {
+            // Add buttons with callbacks after a short delay
+            setTimeout(() => {
+                // Implementation would add yes/no buttons with the callbacks
+                if (onYesCallback) onYesCallback();
+                if (onNoCallback) onNoCallback();
+            }, 200);
+        }
+    }
+
+    /**
+     * Show a generic popup with title and message
+     * @param title The title of the popup
+     * @param message The message to display
+     */
+    public showGenericPopup(title: string, message: string): void {
+        // Create a generic popup with the title and message
+        // Implementation would create a basic popup with text
+        console.log(`Generic popup: ${title} - ${message}`);
+        
+        // In a real implementation, this would create visual elements
+        // For now, just show a message in the console
     }
 } 

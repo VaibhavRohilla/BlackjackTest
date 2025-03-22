@@ -64,6 +64,9 @@ export class CenterChip extends Sprite {
     showBetDisplay(amount: number): void {
         console.log("Showing bet display with amount:", amount);
         
+        // Stop any active tweens to avoid conflicts
+        this.stopActiveTweens();
+        
         // Format the amount for display
         const formattedAmount = this.formatBetAmount(amount);
         
@@ -137,57 +140,66 @@ export class CenterChip extends Sprite {
     tweenChipsOut(onComplete: () => void = () => {}, hideBetHolder: boolean = true): void {
         // Edge case: If already animating, don't start another animation
         if (this.isAnimating) {
+            console.log("Already animating chips out, queueing callback");
             // Still call the callback to ensure the flow continues
-            setTimeout(() => onComplete(), 500);
+            setTimeout(() => onComplete(), 200);
             return;
         }
         
         // Edge case: If no chips, just call the callback immediately
         if (this.removeChips.length === 0) {
-            this.isAnimating = false; // Ensure flag is reset
+            console.log("No chips to animate out");
+            
+            // Still animate the bet holder if requested
+            if (hideBetHolder) {
+                this.animateBetHolder(true);
+            }
+            
+            // Call completion callback immediately
             onComplete();
             return;
         }
-
+        
         // Set animating flag
         this.isAnimating = true;
         
         // Stop any active tweens
         this.stopActiveTweens();
         
-        // Animate the bet holder
-        this.animateBetHolder(hideBetHolder);
+        // Animate the bet holder if requested - do this first for smoother UX
+        if (hideBetHolder) {
+            this.animateBetHolder(true);
+        }
         
         // Set up animation tracking
         let completedAnimations = 0;
         const totalAnimations = this.removeChips.length;
         
-        // Make a copy of the chips array to avoid modification issues during animation
-        const chipsToAnimate = [...this.removeChips];
+        // Limit to max 5 animations to avoid overwhelming with many chips
+        const chipsToAnimate = [...this.removeChips].slice(0, 5);
         
-        // Target position for all chips (top of the screen)
-        const targetY = window.innerHeight*0.7;
+        // Target position for all chips
+        const targetY = window.innerHeight * 0.7;
         
         // Animate each chip with a slight delay between them
         chipsToAnimate.forEach((chip, index) => {
             // Skip any destroyed chips
             if (chip.destroyed) {
                 completedAnimations++;
-                if (completedAnimations >= totalAnimations) {
+                if (completedAnimations >= chipsToAnimate.length) {
                     // Reset animating flag and call completion callback
-                    this.isAnimating = false;
-                    onComplete();
+                    this.finishChipAnimation(onComplete);
                 }
                 return;
             }
             
+            // Fast animation for better responsiveness
             this.animateChip(chip, index, targetY, () => {
                 // Track completed animations
                 completedAnimations++;
-                if (completedAnimations >= totalAnimations) {
-                    // Reset animating flag and call completion callback
-                    this.isAnimating = false;
-                    onComplete();
+                if (completedAnimations >= chipsToAnimate.length) {
+                    // Reset animating flag and call completion callback with all chips
+                    this.finishChipAnimation(onComplete);
                 }
             });
         });
@@ -195,10 +207,28 @@ export class CenterChip extends Sprite {
         // Safety timeout to ensure callback is called even if animations fail
         setTimeout(() => {
             if (this.isAnimating) {
-                this.isAnimating = false;
-                onComplete();
+                this.finishChipAnimation(onComplete);
             }
-        }, 2000);
+        }, 1000);
+    }
+    
+    /**
+     * Finish chip animation and clean up remaining chips
+     */
+    private finishChipAnimation(onComplete: () => void): void {
+        console.log("Finishing chip animation");
+        this.isAnimating = false;
+        
+        // Clean up any remaining chips
+        this.removeChips.forEach(chip => {
+            if (chip && !chip.destroyed) {
+                chip.destroy();
+            }
+        });
+        this.removeChips = [];
+        
+        // Call completion callback
+        onComplete();
     }
     
     /**
@@ -206,40 +236,59 @@ export class CenterChip extends Sprite {
      * @param hideAfterAnimation - Whether to hide the bet holder after animation (default: true)
      */
     private animateBetHolder(hideAfterAnimation: boolean = true): void {
-        if (!this.betHolder.visible) return;
+        if (!this.betHolder.visible) {
+            console.log("Bet holder not visible, skipping animation");
+            return;
+        }
         
-        // First, create a "pulse" effect
-        const pulseTween = new Tween(this.betHolder.scale, Globals.sceneManager?.tweenGroup)
-            .to({ 
-                x: this.betHolder.scale.x * 0.9, 
-                y: this.betHolder.scale.y *  0.9 
-            }, 200)
-            .easing(Easing.Cubic.Out)
-            .yoyo(true)
-            .repeat(1)
-            .onComplete(() => {
-                // Only hide if hideAfterAnimation is true
-                if (hideAfterAnimation) {
-                    // Then fade out and scale up
-                    const fadeTween = new Tween(this.betHolder, Globals.sceneManager?.tweenGroup)
-                        .to({ 
-                            alpha: 0,
-                            scale: { x: this.betHolder.scale.x * 1.3, y: this.betHolder.scale.y * 1.3 }
-                        }, 400)
-                        .onComplete(() => {
-                            this.betHolder.isVisible(false);
-                            this.betHolder.alpha = 1;
-                            this.betHolder.scale.set(1 * config.scaleFactor);
-                        })
-                        .easing(Easing.Back.In)
-                        .start();
+        // If hiding is requested, make it quick
+        if (hideAfterAnimation) {
+            // Create a quick fade out animation
+            const fadeTween = new Tween(this.betHolder, Globals.sceneManager?.tweenGroup)
+                .to({ 
+                    alpha: 0,
+                    scale: { x: this.betHolder.scale.x * 1.1, y: this.betHolder.scale.y * 1.1 }
+                }, 200)
+                .onComplete(() => {
+                    // Ensure visibility is set to false after fade out
+                    this.betHolder.isVisible(false);
                     
-                    this.activeTweens.push(fadeTween);
-                }
-            })
-            .start();
+                    // Reset properties for next use
+                    this.betHolder.alpha = 1;
+                    this.betHolder.scale.set(1 * config.scaleFactor);
+                    
+                    console.log("Hiding bet holder");
+                })
+                .easing(Easing.Quadratic.In)
+                .start();
+            
+            this.activeTweens.push(fadeTween);
+        } else {
+            // Light pulse if we're not hiding
+            const pulseTween = new Tween(this.betHolder.scale, Globals.sceneManager?.tweenGroup)
+                .to({ 
+                    x: this.betHolder.scale.x * 1.1, 
+                    y: this.betHolder.scale.y * 1.1 
+                }, 100)
+                .easing(Easing.Quadratic.Out)
+                .yoyo(true)
+                .repeat(1)
+                .start();
+            
+            this.activeTweens.push(pulseTween);
+        }
         
-        this.activeTweens.push(pulseTween);
+        // Add safety timeout to ensure bet holder is hidden if animation fails
+        if (hideAfterAnimation) {
+            setTimeout(() => {
+                if (this.betHolder.visible && this.betHolder.alpha !== 1) {
+                    console.log("Safety timeout triggered for bet holder animation");
+                    this.betHolder.isVisible(false);
+                    this.betHolder.alpha = 1;
+                    this.betHolder.scale.set(1 * config.scaleFactor);
+                }
+            }, 500);
+        }
     }
     
     /**
@@ -251,49 +300,26 @@ export class CenterChip extends Sprite {
      */
     private animateChip(chip: Chips, index: number, targetY: number, onComplete: () => void): void {
         // Add slight random horizontal offset for natural movement
-        const randomOffsetX = (Math.random() - 0.5) * 50;
+        const randomOffsetX = (Math.random() - 0.5) * 30;
         
-        // Step 1: Create initial "pop" effect - chips scale up
-        const popTween = new Tween(chip.scale, Globals.sceneManager?.tweenGroup)
-            .to({ 
-                x: chip.scale.x * 1.2, 
-                y: chip.scale.y * 1.2 
-            }, 150)
-            .delay(index * 5)
-            .easing(Easing.Back.Out)
-            .onComplete(() => {
-                // Step 2: After pop effect, create the upward animation
-                this.animateChipDownward(chip, randomOffsetX, targetY, onComplete);
-            })
-            .start();
-        
-        this.activeTweens.push(popTween);
-    }
-    
-    /**
-     * Animate a chip moving upward
-     * @param chip - The chip to animate
-     * @param randomOffsetX - Random X offset for natural movement
-     * @param targetY - Target Y position
-     * @param onComplete - Callback when animation completes
-     */
-    private animateChipDownward(chip: Chips, randomOffsetX: number, targetY: number, onComplete: () => void): void {
-        // Create position tween - straight upward with slight horizontal variation
+        // Faster animation for better responsiveness - immediate animation
         const positionTween = new Tween(chip.position, Globals.sceneManager?.tweenGroup)
             .to({
                 x: chip.position.x + randomOffsetX,
                 y: targetY
-            }, 300)
+            }, 200)
+            .delay(index * 2) // Very small delay between chips
             .easing(Easing.Cubic.In)
             .start();
             
-        // Create rotation tween - slight rotation for natural movement
-        const targetRotation = (Math.random() - 0.5) * Math.PI * 0.5;
+        // Create rotation and fade out tween
+        const targetRotation = (Math.random() - 0.5) * Math.PI * 0.3;
         const rotationTween = new Tween(chip, Globals.sceneManager?.tweenGroup)
             .to({ 
                 rotation: targetRotation,
                 alpha: 0 // Fade out
-            }, 300)
+            }, 200)
+            .delay(index * 2)
             .easing(Easing.Cubic.In)
             .onComplete(() => {
                 // Find and remove the chip from removeChips array

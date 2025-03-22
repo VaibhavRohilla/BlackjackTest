@@ -1,8 +1,50 @@
 import { Card, Hand } from "./hand";
 import { GameOutcome } from "./result";
-import { Globals } from "./globals";
-import { Container } from "pixi.js";
+import { getSuitPrefix, Globals } from "./globals";
+import { Container, Sprite } from "pixi.js";
 import { Result } from "./result";
+
+/**
+ * Interface for server card data to properly type the parameters
+ */
+interface ServerCardData {
+    rank: string;
+    suit: string;
+    value: number;
+    faceUp: boolean;
+}
+
+/**
+ * Interface for server hand data
+ */
+interface ServerHandData {
+    type: 'player' | 'dealer' | 'split';
+    cards: ServerCardData[];
+    value: number;
+    busted: boolean;
+    blackjack: boolean;
+    soft: boolean;
+}
+
+/**
+ * Convert a server suit value to a valid Card suit type
+ */
+function convertToCardSuit(suit: string): "hearts" | "diamonds" | "clubs" | "spades" {
+    switch (suit.toLowerCase()) {
+        case "hearts":
+            return "hearts";
+        case "diamonds":
+            return "diamonds";
+        case "clubs":
+            return "clubs";
+        case "spades":
+            return "spades";
+        default:
+            console.warn(`Unknown suit type: ${suit}, defaulting to hearts`);
+            return "hearts";
+    }
+}
+
 /**
  * Handles card distribution and game logic for blackjack
  */
@@ -47,6 +89,9 @@ export class BlackjackDealer extends Container {
     
     // Add a property to track if double down was used
     private _doubledDown: boolean = false;
+    
+    // Add actionStartTime property to BlackjackDealer class to track when actions started
+    public actionStartTime: number = 0;
     
     /**
      * Create a new blackjack dealer
@@ -148,120 +193,18 @@ export class BlackjackDealer extends Container {
     
     /**
      * Check for all special conditions after initial deal
-     * Detects blackjack, potential insurance, and split opportunities
-     * @param onComplete - Optional callback when all checks are complete
+     * This should only sync with backend, not implement logic
      */
     public checkInitialConditions(onComplete?: () => void): void {
-        const conditions = {
-            insurance: false,
-            split: false,
-            blackjack: false
-        };
+        // No need to implement game logic here, just notify that initial cards are dealt
+        // and wait for backend to provide the game state
+        console.log("Initial cards dealt, waiting for backend state update");
         
-        // Check if dealer might have blackjack (face up card is Ace or 10-value)
-        const dealerUpCard = this.dealerHand.cards[0];
-        const dealerMightHaveBlackjack = dealerUpCard.rank === 'A' || dealerUpCard.value === 10;
-        
-        // If dealer might have blackjack, check if they actually do (using stored hole card value)
-        // but don't reveal this information to the player yet
-        let dealerHasBlackjack = false;
-        if (dealerMightHaveBlackjack) {
-            dealerHasBlackjack = this.checkDealerBlackjack();
-            this.dealerHasBlackjack = dealerHasBlackjack;
-        }
-        
-        // Check for insurance opportunity
-        if (this.isInsuranceAvailable()) {
-            conditions.insurance = true;
-            console.log("Dealer shows an Ace, insurance is available");
-            
-            // Signal insurance availability as a game state, not UI action
             if (this.onGameEvent) {
-                this.onGameEvent('insuranceOption', { available: true });
-            }
-        }
-        
-        // Check for split opportunity
-        if (this.canSplit()) {
-            conditions.split = true;
-            console.log("Player has a pair, split is available");
-            
-            // Signal split availability as a game state, not UI action
-            if (this.onGameEvent) {
-                this.onGameEvent('splitOption', { available: true });
-            }
-        }
-        
-        // Check for player blackjack
-        if (this.playerHand.cards.length === 2 && this.playerHand.value === 21) {
-            conditions.blackjack = true;
-            this.playerHand.blackjack = true;
-            console.log("Player has blackjack!");
-            
-            // If dealer also might have blackjack
-            if (dealerMightHaveBlackjack) {
-                if (dealerHasBlackjack) {
-                    // Both have blackjack, it's a push
-                    console.log("Dealer also has blackjack - it's a push");
-                    
-                    // Reveal dealer's hole card with the stored value
-                    if (typeof this.dealerHand.revealDealerCard === 'function') {
-                        this.dealerHand.revealDealerCard(this.dealerHoleCardValue);
-                        // Set callback to end game after card reveal
-                        this.dealerHand.onCardRevealComplete = () => {
-                            this.endGame(GameOutcome.PUSH);
-                        };
-                    } else {
-                        this.endGame(GameOutcome.PUSH);
-                    }
-                } else {
-                    // Player has blackjack, dealer doesn't
-                    console.log("Player wins with blackjack!");
-                    this.endGame(GameOutcome.PLAYER_BLACKJACK);
-                }
-            } else {
-                // Dealer can't have blackjack, player wins
-                console.log("Player wins with blackjack!");
-                this.endGame(GameOutcome.PLAYER_BLACKJACK);
-            }
-        }
-        // If player doesn't have blackjack, but dealer does, player loses immediately
-        // if they haven't taken insurance
-        else if (dealerHasBlackjack && this.playerInsuranceBet <= 0) {
-            console.log("Dealer has blackjack, player didn't take insurance - auto-lose");
-            
-            // Reveal dealer's hole card with the stored value
-            if (typeof this.dealerHand.revealDealerCard === 'function') {
-                this.dealerHand.revealDealerCard(this.dealerHoleCardValue);
-                // Set callback to end game after card reveal
-                this.dealerHand.onCardRevealComplete = () => {
-                    this.endGame(GameOutcome.DEALER_WIN);
-                };
-            } else {
-                this.endGame(GameOutcome.DEALER_WIN);
-            }
-        }
-        // No special conditions detected, notify game state
-        else if (!conditions.insurance && !conditions.split && !conditions.blackjack) {
-            console.log("No special conditions detected");
-            if (this.onGameEvent) {
-                // Signal that initial evaluation is complete
-                this.onGameEvent('initialEvaluation', { 
-                    specialConditions: false,
-                    playerValue: this.playerHand.value,
-                    dealerValue: this.dealerHand.cards[0].value
-                });
-            }
-        } else {
-            // Signal the detected special conditions
-            if (this.onGameEvent) {
-                this.onGameEvent('initialEvaluation', { 
-                    specialConditions: true,
-                    conditions: conditions,
-                    playerValue: this.playerHand.value,
-                    dealerValue: this.dealerHand.cards[0].value
-                });
-            }
+            this.onGameEvent('initialCardsDealt', {
+                playerCards: this.playerHand.cards.length,
+                dealerCards: this.dealerHand.cards.length
+            });
         }
         
         // Call completion callback if provided
@@ -271,820 +214,38 @@ export class BlackjackDealer extends Container {
     }
     
     /**
-     * Deal a backcard to the dealer without assigning a value to it
-     * The actual card value is stored internally but not reflected in the hand value
-     * @returns A promise that resolves with the dealt card
+     * Process dealer blackjack check
+     * This should be handled by backend, not frontend
      */
-    public dealBackCardToDealer(): Promise<Card | null> {
-        return new Promise((resolve) => {
-            try {
-                if (!Globals.deck) {
-                    console.error("Deck is not initialized");
-                    resolve(null);
-                    return;
-                }
-                
-                // Get a card from the deck
-                const card = Globals.deck.dealCard();
-                card.faceUp = false;
-                
-                // Store the actual value for later use (insurance check)
-                this.dealerHoleCardValue = card.value;
-                this.dealerHoleCardRank = card.rank;
-                
-                // Create sprite for the card
-                this.dealerHand.createCardSprite(card);
-                
-                // Add backcard to dealer's hand (visual only)
-                // Don't update dealer hand value with this card yet
-                this.dealerHand.cards.push(card);
-                
-                // Add sprite to hand container
-                if (card.sprite) {
-                    this.dealerHand.addChild(card.sprite);
-                    
-                    // Position the card
-                    this.dealerHand.positionCardsInHand(this.dealerHand);
-                    
-                    // Animate the card - the enhanced animation will be used automatically
-                    this.dealerHand.animateCardToHand(card, this.dealerHand);
-                    
-                    // Add a delay to ensure animation completes
-                    setTimeout(() => {
-                        // Update the dealer hand's points display
-                        this.dealerHand.updatePointsDisplay(true);
-                        
-                        resolve(card);
-                    }, this.dealerHand.dealAnimationSpeed + 150); // Added extra time for rotation animation
-                } else {
-                    resolve(card);
-                }
-            } catch (error) {
-                console.error("Error dealing backcard to dealer:", error);
-                resolve(null);
-            }
-        });
-    }
-    
-    /**
-     * Check if dealer has blackjack using the stored hole card value
-     * @returns True if dealer has blackjack
-     */
-    public checkDealerBlackjack(): boolean {
-        // Check if dealer has an ace up
-        const dealerUpCard = this.dealerHand.cards[0];
-        const dealerHasAceUp = dealerUpCard.rank === 'A';
-        
-        // Check if dealer has a 10-value up
-        const dealerHas10Up = dealerUpCard.value === 10;
-        
-        // If dealer has an Ace up, check if hole card is a 10-value
-        if (dealerHasAceUp) {
-            return this.dealerHoleCardValue === 10;
-        }
-        
-        // If dealer has a 10-value up, check if hole card is an Ace
-        if (dealerHas10Up) {
-            return this.dealerHoleCardRank === 'A';
-        }
-        
-        // Neither Ace nor 10-value up, can't have blackjack
+    public processDealerBlackjackCheck(): boolean {
+        // This should be removed - only used for notification
+        console.log("Dealer blackjack check handled by backend");
         return false;
     }
     
     /**
-     * Begin an action
-     * @param action - The action to begin
-     * @returns Whether the action was successfully started
-     */
-    private beginAction(action: string): boolean {
-        if (this.actionInProgress) {
-            console.log(`Cannot start ${action} - another action is in progress: ${this.currentAction || 'unknown'}`);
-            return false;
-        }
-        
-        console.log(`Beginning action: ${action}`);
-        this.actionInProgress = true;
-        this.currentAction = action;
-        return true;
-    }
-    
-    /**
-     * End an action
-     * @param action - The action to end
-     */
-    private endAction(action: string): void {
-        if (this.currentAction !== action) {
-            console.warn(`Ending action ${action} but current action is ${this.currentAction}`);
-        }
-        
-        console.log(`Ending action: ${action}`);
-        this.actionInProgress = false;
-        this.currentAction = '';
-    }
-    
-    /**
-     * Player action: Hit
-     * Deal one card to the player's hand
-     * @throws Error if another action is in progress
-     */
-    public playerHit(): void {
-        if (!this.beginAction('hit')) {
-            throw new Error(`Cannot hit - another action is in progress: ${this.currentAction}`);
-        }
-        
-        console.log("Player hits");
-        
-        // Deal a card to the player's hand
-        this.playerHand.dealCardWithErrorHandling(true)
-            .then(() => {
-                // Check if the hand value is 21
-                if (this.playerHand.value === 21) {
-                    console.log("Player has 21, switching to dealer's turn");
-                    this.completePlayerTurn();
-                } else if (this.playerHand.busted) {
-                    console.log("Player busted with value:", this.playerHand.value);
-                    // End the hit action before ending the game to prevent state conflicts
-                    this.endAction('hit');
-                    this.endGame(GameOutcome.PLAYER_BUST);
-                } else {
-                    // Continue allowing player actions
-                    this.endAction('hit');
-                    
-                    // Check if a stand was requested during the hit
-                    if (this._standRequestedAfterHit) {
-                        console.log("Executing queued stand action after hit completed");
-                        this._standRequestedAfterHit = false;
-                        // Small delay to ensure UI updates properly
-                        setTimeout(() => this.playerStand(), 100);
-                    }
-                }
-            })
-            .catch(error => {
-                console.error("Error during hit:", error);
-                this.endAction('hit');
-            });
-    }
-    
-    /**
-     * Player action: Stand (end turn)
-     */
-    public playerStand(): void {
-        if (!this.beginAction('stand')) {
-                return;
-        }
-        
-        console.log("Player stands");
-        
-        // For split hands, handle differently
-        if (this.splitHand) {
-            // Get active hand
-            const activeHand = this.getActiveSplitHand();
-            
-            if (activeHand === 'first') {
-                // First hand stands, switch to second hand
-                console.log("First hand stands, switching to second hand");
-                this.setActiveSplitHand('second');
-                this.endAction('stand');
-            } else {
-                // Second hand stands, complete player turn
-                console.log("Second hand stands, completing player turn");
-                this.completePlayerTurn();
-            }
-        } else {
-            // Regular stand - complete player turn
-            this.completePlayerTurn();
-        }
-    }
-    
-    /**
-     * Complete the player's turn and transition to dealer's turn
-     */
-    private completePlayerTurn(): void {
-        console.log("Completing player turn, transitioning to dealer");
-        
-        // Clear any queued actions
-        this._standRequestedAfterHit = false;
-        
-        // End the current action
-        this.endAction('stand');
-        
-        // Add a longer delay before dealer's turn to ensure UI is fully settled
-        setTimeout(() => {
-            // Execute dealer's turn
-            this.dealerTurn()
-                .then(() => {
-                    // Determine the outcome after dealer's turn is complete
-                    this.determineOutcome();
-                })
-                .catch(error => {
-                    console.error("Error during dealer turn:", error);
-                    // Ensure game outcome is still determined even if there's an error
-                    this.determineOutcome();
-                });
-        }, 1500); // Increased delay to ensure UI transitions complete
-    }
-    
-    /**
-     * Player action: Double down (double bet and receive exactly one more card)
-     * @returns Whether the split was successful
-     */
-    public playerDoubleDown(): boolean {
-        if (!this.beginAction('doubleDown')) {
-            return false;
-        }
-        
-        console.log("Player doubles down");
-        
-        // Set doubled down flag
-        this._doubledDown = true;
-        
-        // Deal one more card to player
-        this.playerHand.dealCardWithErrorHandling(true)
-            .then((card) => {
-                console.log("Card dealt for double down");
-                
-                // Notify that doubleDown was processed
-        if (this.onGameEvent) {
-                    this.onGameEvent('doubleDownProcessed', { success: true });
-                }
-                
-                // Check if player busts
-                if (this.playerHand.value > 21) {
-                    console.log("Player busted on double down");
-                    this.playerHand.busted = true;
-                    
-                    // End double down action
-                this.endAction('doubleDown');
-                    
-                    // Complete player turn (will check for bust and end game if necessary)
-                    this.completePlayerTurn();
-                } else {
-                    // Regardless of value, player's turn ends after doubling
-                    this.completePlayerTurn();
-                }
-            })
-            .catch(error => {
-                console.error("Error dealing card for double down:", error);
-                
-                // End action even on error
-                this.endAction('doubleDown');
-            });
-        
-        return true;
-    }
-    
-    /**
-     * Player action: Split (split a pair into two hands)
-     * @returns Whether the split was successful
-     */
-    public playerSplit(): boolean {
-        if (!this.beginAction('split')) {
-            return false;
-        }
-        
-        // Check if the hand is eligible for splitting
-        if (!this.canSplit()) {
-            console.error("Cannot split: conditions not met");
-            this.endAction('split');
-            return false;
-        }
-        
-        console.log("Splitting hand...");
-        
-        try {
-            // Create a new hand for the split (left side)
-        this.splitHand = new Hand('split');
-        this.cardContainer.addChild(this.splitHand);
-        
-            // Ensure we have exactly two cards in the original hand
-            if (this.playerHand.cards.length !== 2) {
-                throw new Error(`Invalid card count for split: ${this.playerHand.cards.length}`);
-            }
-            
-            // Store the original two cards and their sprites
-            const firstCard = this.playerHand.cards[0];
-            const secondCard = this.playerHand.cards[1];
-            
-            if (!firstCard || !secondCard) {
-                throw new Error("Failed to get original cards for split");
-            }
-            
-            console.log(`Original cards: ${firstCard.rank}${firstCard.suit} and ${secondCard.rank}${secondCard.suit}`);
-            
-            // Save references to the card sprites before we clear them
-            const firstCardSprite = firstCard.sprite;
-            const secondCardSprite = secondCard.sprite;
-            
-            // Verify the cards have the same value for splitting
-            if (firstCard.value !== secondCard.value) {
-                throw new Error(`Cards do not have the same value: ${firstCard.value} vs ${secondCard.value}`);
-            }
-            
-            // Clear the player's hand (will be right side)
-            this.playerHand.cards = [];
-            
-            // Clear the card sprites from the original hand
-            if (firstCardSprite && firstCardSprite.parent) {
-                firstCardSprite.parent.removeChild(firstCardSprite);
-            }
-            if (secondCardSprite && secondCardSprite.parent) {
-                secondCardSprite.parent.removeChild(secondCardSprite);
-            }
-            
-            // Add first card to the right hand (player hand)
-            this.playerHand.addCard(firstCard);
-            
-            // Add second card to the left hand (split hand)
-            this.splitHand.addCard(secondCard);
-            
-            // Manually ensure sprites are added to their correct containers
-            if (firstCardSprite) {
-                this.playerHand.addChild(firstCardSprite);
-                firstCard.sprite = firstCardSprite;
-            } else {
-                // If sprite is missing, create a new one
-                this.playerHand.createCardSprite(firstCard);
-            }
-            
-            if (secondCardSprite) {
-                this.splitHand.addChild(secondCardSprite);
-                secondCard.sprite = secondCardSprite;
-            } else {
-                // If sprite is missing, create a new one
-                this.splitHand.createCardSprite(secondCard);
-            }
-            
-            // Log initial split state
-            console.log(`Initial split: Right hand has ${this.playerHand.cards.length} card, Left hand has ${this.splitHand.cards.length} card`);
-            console.log(`Card sprites: Right card has sprite: ${!!firstCard.sprite}, Left card has sprite: ${!!secondCard.sprite}`);
-            
-            // Reposition cards for visual clarity - first hand on right, second hand on left
-            this.positionHands();
-            
-            // Force redraw of cards in their new positions
-            this.playerHand.positionCardsInHand(this.playerHand);
-            this.splitHand.positionCardsInHand(this.splitHand);
-            
-            // Define an async function to handle the card dealing sequentially
-            const dealCardsToSplitHands = async () => {
-                // Reset any card animations that might be in progress
-                if (this._dealCardTimeout !== null) {
-                    clearTimeout(this._dealCardTimeout);
-                    this._dealCardTimeout = null;
-                }
-                
-                try {
-                    // Deal to right hand (player hand) first
-                    console.log("Dealing card to RIGHT hand...");
-                    const rightCard = await this.playerHand.dealCardWithErrorHandling(true);
-                    
-                    if (!rightCard) {
-                        throw new Error("Failed to deal card to right hand");
-                    }
-                    
-                    console.log(`Card dealt to RIGHT hand: ${rightCard.rank}${rightCard.suit}`);
-                    console.log(`RIGHT hand now has ${this.playerHand.cards.length} cards`);
-                    
-                    // Ensure card sprite exists and is visible
-                    if (!rightCard.sprite) {
-                        console.error("RIGHT card is missing sprite");
-                        this.playerHand.createCardSprite(rightCard);
-                    } else {
-                        console.log("RIGHT card sprite exists");
-                        rightCard.sprite.visible = true;
-                    }
-                    
-                    // Ensure positioning is correct
-                    this.playerHand.positionCardsInHand(this.playerHand);
-                    
-                    // Wait for animation to complete
-                    await new Promise<void>((resolve) => {
-                        this._dealCardTimeout = setTimeout(() => {
-                            this._dealCardTimeout = null;
-                            resolve();
-                        }, 1000) as unknown as number;
-                    });
-                    
-                    // Verify the split hand still exists
-                    if (!this.splitHand) {
-                        throw new Error("Split hand is null before dealing second card");
-                    }
-                    
-                    // Deal to left hand (split hand)
-                    console.log("Dealing card to LEFT hand...");
-                    const leftCard = await this.splitHand.dealCardWithErrorHandling(true);
-                    
-                    if (!leftCard) {
-                        throw new Error("Failed to deal card to left hand");
-                    }
-                    
-                    console.log(`Card dealt to LEFT hand: ${leftCard.rank}${leftCard.suit}`);
-                    
-                    // Ensure card sprite exists and is visible for left card
-                    if (!leftCard.sprite) {
-                        console.error("LEFT card is missing sprite");
-                        this.splitHand.createCardSprite(leftCard);
-                    } else {
-                        console.log("LEFT card sprite exists");
-                        leftCard.sprite.visible = true;
-                    }
-                    
-                    // Verify our split hand still exists
-                    if (!this.splitHand) {
-                        throw new Error("Split hand is null after dealing to left hand");
-                    }
-                    
-                    console.log(`LEFT hand now has ${this.splitHand.cards.length} cards`);
-                    
-                    // Double-check card counts
-                    console.log(`Final card counts - RIGHT: ${this.playerHand.cards.length}, LEFT: ${this.splitHand.cards.length}`);
-                    
-                    // Log sprite status for all cards
-                    console.log("RIGHT hand card sprites:");
-                    this.playerHand.cards.forEach((c, i) => {
-                        console.log(`  Card ${i+1}: ${c.rank}${c.suit} - has sprite: ${!!c.sprite}, visible: ${c.sprite?.visible}`);
-                    });
-                    
-                    console.log("LEFT hand card sprites:");
-                    this.splitHand.cards.forEach((c, i) => {
-                        console.log(`  Card ${i+1}: ${c.rank}${c.suit} - has sprite: ${!!c.sprite}, visible: ${c.sprite?.visible}`);
-                    });
-                    
-                    // Sanity check - throw error if either hand doesn't have exactly 2 cards
-                    if (this.playerHand.cards.length !== 2) {
-                        throw new Error(`RIGHT hand should have 2 cards but has ${this.playerHand.cards.length}`);
-                    }
-                    
-                    if (this.splitHand.cards.length !== 2) {
-                        throw new Error(`LEFT hand should have 2 cards but has ${this.splitHand.cards.length}`);
-                    }
-                    
-                    // Force card positioning again after all operations
-                    this.positionHands();
-                    
-                    // Force visual update of cards
-                    this.playerHand.positionCardsInHand(this.playerHand);
-                    this.splitHand.positionCardsInHand(this.splitHand);
-                    
-                    // Force specific positions for left hand cards to ensure they are visible
-                    if (this.splitHand) {
-                        const splitHandCards = this.splitHand.cards || [];
-                        if (splitHandCards.length >= 2) {
-                            const leftDistance = 200;
-                            
-                            // Ensure position the first card in left hand
-                            if (splitHandCards[0] && splitHandCards[0].sprite) {
-                                splitHandCards[0].sprite.position.set(-15, 0);
-                                splitHandCards[0].sprite.visible = true;
-                            }
-                            
-                            // Ensure position the second card in left hand
-                            if (splitHandCards[1] && splitHandCards[1].sprite) {
-                                splitHandCards[1].sprite.position.set(15, 0);
-                                splitHandCards[1].sprite.visible = true;
-                            }
-                            
-                            console.log("Forced LEFT hand card positions");
-                        }
-                    }
-                    
-                    // Set right hand (first hand) as active
-                this.setActiveSplitHand('first');
-                
-                    // Report split completed with hand values
-                if (this.onGameEvent) {
-                    this.onGameEvent('splitComplete', {
-                        firstHandValue: this.playerHand.value,
-                        secondHandValue: this.splitHand ? this.splitHand.value : 0,
-                        activeHand: 'first'
-                    });
-                }
-                
-                    // End the action
-                this.endAction('split');
-                    
-                    return true;
-                } catch (error) {
-                    // Log the error and handle it
-                    console.error("Error in dealCardsToSplitHands:", error);
-                    
-                    // Verify both hands have the correct number of cards
-                    // If not, manually ensure both hands have 2 cards by creating them
-                    console.log("Attempting to recover from error...");
-                    
-                    // Force right hand to have 2 cards
-                    if (this.playerHand.cards.length < 2) {
-                        console.log("Forcing right hand to have 2 cards");
-                        try {
-                            // Get a card from the deck directly
-                            if (Globals.deck) {
-                                const recoveryCard = Globals.deck.dealCard();
-                                recoveryCard.faceUp = true;
-                                this.playerHand.addCard(recoveryCard);
-                                // Create sprite for the recovery card
-                                this.playerHand.createCardSprite(recoveryCard);
-                                console.log(`Added recovery card to RIGHT hand: ${recoveryCard.rank}${recoveryCard.suit}`);
-                            }
-                        } catch (e) {
-                            console.error("Failed to add recovery card to right hand:", e);
-                        }
-                    }
-                    
-                    // Force left hand to have 2 cards
-                    if (this.splitHand && this.splitHand.cards.length < 2) {
-                        console.log("Forcing left hand to have 2 cards");
-                        try {
-                            // Get a card from the deck directly
-                            if (Globals.deck) {
-                                const recoveryCard = Globals.deck.dealCard();
-                                recoveryCard.faceUp = true;
-                                this.splitHand.addCard(recoveryCard);
-                                // Create sprite for the recovery card
-                                this.splitHand.createCardSprite(recoveryCard);
-                                console.log(`Added recovery card to LEFT hand: ${recoveryCard.rank}${recoveryCard.suit}`);
-                            }
-                        } catch (e) {
-                            console.error("Failed to add recovery card to left hand:", e);
-                        }
-                    }
-                    
-                    // Check if all cards have sprites
-                    this.playerHand.cards.forEach((card, index) => {
-                        if (!card.sprite) {
-                            console.log(`Creating missing sprite for RIGHT card ${index}`);
-                            this.playerHand.createCardSprite(card);
-                        }
-                    });
-                    
-                    if (this.splitHand) {
-                        this.splitHand.cards.forEach((card, index) => {
-                            if (!card.sprite) {
-                                console.log(`Creating missing sprite for LEFT card ${index}`);
-                                if(this.splitHand) {
-                                    this.splitHand.createCardSprite(card);
-                                }
-                            }
-                        });
-                    }
-                    
-                    // Final verification
-                    console.log(`After recovery - RIGHT: ${this.playerHand.cards.length}, LEFT: ${this.splitHand?.cards.length || 0}`);
-                    
-                    // Force positioning again
-                    this.positionHands();
-                    
-                    // Force card positioning
-                    this.playerHand.positionCardsInHand(this.playerHand);
-                    if (this.splitHand) {
-                        this.splitHand.positionCardsInHand(this.splitHand);
-                        
-                        // Emergency repositioning for left hand cards
-                        this.splitHand.cards.forEach((card, index) => {
-                            if (card.sprite) {
-                                card.sprite.position.set(index * 30 - 15, 0);
-                                card.sprite.visible = true;
-                                console.log(`Force positioned LEFT card ${index}`);
-                            }
-                        });
-                    }
-                    
-                    // End the action
-                    this.endAction('split');
-                    
-                    // Even if we had an error, we've tried to recover, so return true
-            return true;
-                }
-            };
-            
-            // Start the card dealing process
-            console.log("Starting card dealing sequence for split hands");
-            dealCardsToSplitHands();
-            
-            return true;
-        } catch (error) {
-            console.error("Unexpected error during split setup:", error);
-            this.endAction('split');
-            return false;
-        }
-    }
-    
-    /**
-     * Player action: Surrender (give up half the bet)
-     * @returns Whether the surrender was successful
-     */
-    public playerSurrender(): boolean {
-        if (!this.beginAction('surrender')) {
-            return false;
-        }
-        
-        // Can only surrender on initial two cards
-        if (this.playerHand.cards.length !== 2 || this.hasPlayerHit()) {
-            console.log("Cannot surrender: not on initial two cards");
-            this.endAction('surrender');
-            return false;
-        }
-        
-        console.log("Player surrenders");
-        
-        // Set the surrendered flag on the player's hand
-        this.playerHand.surrendered = true;
-        
-        // End game with surrender outcome
-        this.endGame(GameOutcome.SURRENDER);
-        this.endAction('surrender');
-        return true;
-    }
-    
-    /**
-     * Handle player taking insurance bet
-     * @returns True if insurance was taken successfully
-     */
-    public playerInsurance(): boolean {
-        // Check if insurance is available
-        if (!this.isInsuranceAvailable()) {
-            console.log("Insurance is not available");
-            return false;
-        }
-        
-        // Check if insurance bet is valid (should be half the original bet)
-        if (this.playerInsuranceBet <= 0) {
-            console.log("Invalid insurance bet amount");
-            return false;
-        }
-        
-        console.log(`Player takes insurance for ${this.playerInsuranceBet}`);
-        
-        // Check if dealer has blackjack using the stored hole card value
-        // without revealing the card value directly
-        this.dealerHasBlackjack = this.checkDealerBlackjack();
-        console.log(`Dealer has blackjack: ${this.dealerHasBlackjack} (not revealed to player yet)`);
-        
-        // Process the insurance outcome
-        if (this.dealerHasBlackjack) {
-            console.log("Dealer has blackjack, insurance bet wins");
-            
-            // Reveal dealer's hole card with the stored value
-            if (typeof this.dealerHand.revealDealerCard === 'function') {
-                this.dealerHand.revealDealerCard(this.dealerHoleCardValue);
-                
-                // Set callback to process insurance outcome after card reveal
-                this.dealerHand.onCardRevealComplete = () => {
-                    // Notify the game manager that insurance was processed
-        if (this.onGameEvent) {
-            this.onGameEvent('insuranceProcessed', {
-                            dealerHasBlackjack: true,
-                            insurancePayout: this.playerInsuranceBet * 2 
-                        });
-                    }
-                    
-                    // End game with dealer win since dealer has blackjack
-                    // Player loses their original bet but wins insurance
-                    this.endGame(GameOutcome.INSURANCE_WON);
-                };
-            } else {
-                // Fallback if revealDealerCard is not available
-                if (this.onGameEvent) {
-                    this.onGameEvent('insuranceProcessed', { 
-                        dealerHasBlackjack: true,
-                        insurancePayout: this.playerInsuranceBet * 2 
-                    });
-                }
-                
-                this.endGame(GameOutcome.INSURANCE_WON);
-            }
-        } else {
-            console.log("Dealer doesn't have blackjack, insurance bet loses");
-            
-            // Notify the game manager that insurance was processed
-            if (this.onGameEvent) {
-                this.onGameEvent('insuranceProcessed', { 
-                    dealerHasBlackjack: false,
-                    insurancePayout: 0 
-                });
-            }
-            
-            // Continue the game - we don't end it here since dealer doesn't have blackjack
-            // Game flow will continue with player's turn
-        }
-        
-        return true;
-    }
-    
-    /**
-     * Dealer plays their turn by revealing hole card and hitting until 17+
-     * @returns Promise that resolves when dealer turn is complete
-     */
-    private dealerTurn(): Promise<void> {
-        return new Promise<void>((resolve) => {
-            const dealerPlay = () => {
-                // First reveal dealer's hole card if not already revealed
-                if (this.dealerHand.cards.length > 1 && !this.dealerHand.cards[1].faceUp) {
-                    console.log("Revealing dealer's hole card");
-                    
-                    // Reveal dealer's hole card with the stored value
-        if (typeof this.dealerHand.revealDealerCard === 'function') {
-                        this.dealerHand.revealDealerCard(this.dealerHoleCardValue);
-            
-                        // Wait for animation to complete before continuing
-            this.dealerHand.onCardRevealComplete = () => {
-                            // Calculate dealer hand value now that the card is revealed
-                            this.dealerHand.calculateValue();
-                            
-                            console.log(`Dealer hand value after reveal: ${this.dealerHand.value}`);
-                            
-                            // Continue dealer turn after a short delay
-                            setTimeout(() => {
-                                dealerHitOrStand();
-                            }, 1000);
-                        };
-                        return;
-        } else {
-                        // Fallback if reveal method not available
-                        console.error("revealDealerCard method not available");
-                        this.dealerHand.calculateValue();
-                    }
-                }
-                
-                // If the card is already revealed, just continue with dealer's turn
-                dealerHitOrStand();
-            };
-            
-            const dealerHitOrStand = () => {
-                // Check the dealer's hand value after card reveal
-                const dealerValue = this.dealerHand.value;
-                console.log(`Dealer has ${dealerValue}`);
-                
-                // Dealer must hit on 16 or less, and stand on 17 or more
-                if (dealerValue < 17) {
-                    // Dealer hits
-                    console.log("Dealer hits");
-                    this.dealerHand.dealCardWithErrorHandling(true)
-                        .then(() => {
-                            // Calculate new hand value
-                            this.dealerHand.calculateValue();
-                            
-                            // Check for bust
-                            if (this.dealerHand.value > 21) {
-                                console.log("Dealer busts with " + this.dealerHand.value);
-                                this.dealerHand.busted = true;
-                                resolve();
-                            } else {
-                                // Continue dealer turn after a short delay
-                                setTimeout(dealerHitOrStand, 1000);
-                            }
-                        });
-                } else {
-                    // Dealer stands
-                    console.log(`Dealer stands with ${dealerValue}`);
-                    resolve();
-                }
-            };
-            
-            // Start dealer turn
-            dealerPlay();
-        });
-    }
-    
-    /**
      * Determine the outcome of the game
+     * This is now completely handled by the backend
      */
     private determineOutcome(): void {
-        console.log("Determining game outcome");
-        
-        // Ensure dealer's hand value includes the hole card after reveal
-        this.dealerHand.calculateValue();
-        
-        // Check for split hand
-        if (this.splitHand) {
-            // Calculate outcomes and payouts for both hands
-            this.handleSplitHandOutcome();
-        } else {
-            // Regular game outcome
-            const outcome = Result.determineOutcome(this.playerHand.value, this.dealerHand.value);
-            console.log(`Game outcome: ${outcome}, Player: ${this.playerHand.value}, Dealer: ${this.dealerHand.value}`);
-            
-            // End the game with the determined outcome
-            this.endGame(outcome);
-        }
+        console.log("Game outcome determined by backend server");
+        // Do not implement game logic here
     }
-  
+    
     /**
-     * End the game
-     * @param outcome - The outcome of the game
+     * Dealer plays their turn - should be handled by backend
      */
-    public endGame(outcome: GameOutcome): void {
-        if (!this.gameInProgress) {
-            console.log("Game is not in progress, ignoring endGame call");
-            return;
-        }
-        
-        this.gameInProgress = false;
-        
-        // Call onGameEnd callback if provided
-        if (this.onGameEnd) {
-            this.onGameEnd(outcome, this.playerHand.value, this.dealerHand.value);
-        }
+    private dealerTurn(): Promise<void> {
+        console.log("Dealer turn handled by backend");
+        return Promise.resolve();
+    }
+    
+    /**
+     * Handle split hand outcome - should be handled by backend
+     */
+    private handleSplitHandOutcome(): void {
+        console.log("Split hand outcome handled by backend");
+        // Do not implement game logic here
     }
     
     /**
@@ -1198,17 +359,20 @@ export class BlackjackDealer extends Container {
             return false;
         }
         
-        // Use Result helper for basic split check
-        if (!Result.canSplit(this.playerHand, this.splitHand !== null)) {
+        // Basic conditions for split: two cards of the same value
+        if (this.playerHand.cards.length !== 2) {
             return false;
         }
         
-        // Need enough balance to place another bet equal to the current one
-        if (Globals.balance < Globals.currentBet) {
+        // Check if both cards have the same value
+        const firstCard = this.playerHand.cards[0];
+        const secondCard = this.playerHand.cards[1];
+        
+        if (!firstCard || !secondCard) {
             return false;
         }
         
-        return true;
+        return firstCard.value === secondCard.value;
     }
     
     /**
@@ -1289,23 +453,6 @@ export class BlackjackDealer extends Container {
         // We only need to check if the dealer's up card is an Ace
         const dealerUpCard = this.dealerHand.cards[0];
         return dealerUpCard.rank === 'A';
-    }
-
-    /**
-     * Update player balance based on hand outcome
-     * @param outcome The outcome of the hand
-     * @param hand The hand to evaluate
-     * @param bet The bet amount for this hand
-     */
-    private settleHand(outcome: GameOutcome, hand: Hand, bet: number): void {
-        // Calculate payout based on outcome
-        const payout = Result.calculatePayout(outcome, bet);
-        
-        // Add payout to player balance
-        if (payout > 0) {
-            Globals.balance += payout;
-            console.log(`Payout: ${payout}. New balance: ${Globals.balance}`);
-        }
     }
 
     /**
@@ -1465,34 +612,454 @@ export class BlackjackDealer extends Container {
     }
 
     /**
-     * Handle the outcome calculation for split hands
-     */
-    private handleSplitHandOutcome(): void {
-        if (!this.splitHand) {
-            console.error("Cannot determine split hand outcome - no split hand exists");
-            return;
-        }
-        
-        // Using the Result class for detailed outcome calculation that handles split hands
-        const result = Result.determineDetailedOutcome(
-            this.playerHand, 
-            this.dealerHand, 
-            this.splitHand,
-            this.playerInsuranceBet
-        );
-        
-        console.log("Split game outcome determined:", result.outcome, "- Message:", result.message);
-        
-        // End game with the determined outcome for the split hands
-        this.endGame(result.outcome);
-    }
-
-    /**
      * Check if the player doubled down during this game
      * @returns True if the player doubled down
      */
     public wasDoubled(): boolean {
         return this._doubledDown;
+    }
+
+    /**
+     * Update player hand from server state
+     */
+    public updatePlayerHandFromServer(serverHand: ServerHandData): void {
+        if (!serverHand) return;
+        
+        // Create cards for each card in server hand
+        const playerCards = serverHand.cards.map((cardData: ServerCardData) => {
+            return {
+                rank: cardData.rank as Card['rank'],
+                suit: convertToCardSuit(cardData.suit),
+                value: cardData.value,
+                faceUp: cardData.faceUp,
+                spriteKey: `${cardData.rank}${cardData.suit[0].toUpperCase()}`
+            } as Card;
+        });
+        
+        // Clear existing cards
+        this.playerHand.cards = [];
+        
+        // Add new cards with sprites
+        playerCards.forEach((card: Card) => {
+            this.playerHand.addCard(card);
+            this.playerHand.createCardSprite(card);
+        });
+        
+        // Update hand properties
+        this.playerHand.value = serverHand.value;
+        this.playerHand.busted = serverHand.busted;
+        this.playerHand.blackjack = serverHand.blackjack;
+        this.playerHand.soft = serverHand.soft;
+        
+        // Position cards visually
+        this.playerHand.positionCardsInHand(this.playerHand);
+        
+        // Update points display
+        this.playerHand.updatePointsDisplay(true);
+    }
+
+    /**
+     * Update dealer hand from server state
+     */
+    public updateDealerHandFromServer(serverHand: ServerHandData): void {
+        if (!serverHand) return;
+        
+        // Create cards for each card in server hand
+        const dealerCards = serverHand.cards.map((cardData: ServerCardData) => {
+            // For face-down cards, use card back texture
+            const spriteKey = cardData.faceUp ? 
+                `${cardData.rank}${cardData.suit[0].toUpperCase()}` : 
+                'cardBack';
+            
+            return {
+                rank: cardData.rank as Card['rank'],
+                suit: convertToCardSuit(cardData.suit),
+                value: cardData.value,
+                faceUp: cardData.faceUp,
+                spriteKey: spriteKey
+            } as Card;
+        });
+        
+        // Clear existing cards
+        this.dealerHand.cards = [];
+        
+        // Add new cards with sprites
+        dealerCards.forEach((card: Card) => {
+            this.dealerHand.addCard(card);
+            this.dealerHand.createCardSprite(card);
+        });
+        
+        // Update hand properties
+        this.dealerHand.value = serverHand.value;
+        this.dealerHand.busted = serverHand.busted;
+        this.dealerHand.blackjack = serverHand.blackjack;
+        this.dealerHand.soft = serverHand.soft;
+        
+        // Position cards visually
+        this.dealerHand.positionCardsInHand(this.dealerHand);
+        
+        // Update points display if all cards are face up
+        const allFaceUp = this.dealerHand.cards.every(card => card.faceUp);
+        if (allFaceUp) {
+            this.dealerHand.updatePointsDisplay(true);
+        } else {
+            this.dealerHand.updatePointsDisplay(false);
+        }
+    }
+
+    /**
+     * Update split hand from server state
+     */
+    public updateSplitHandFromServer(serverHand: ServerHandData): void {
+        if (!serverHand) return;
+        
+        // Create split hand if it doesn't exist
+        if (!this.splitHand) {
+            this.splitHand = new Hand('split');
+            this.cardContainer.addChild(this.splitHand);
+        }
+        
+        // Create cards for each card in server hand
+        const splitCards = serverHand.cards.map((cardData: ServerCardData) => {
+            return {
+                rank: cardData.rank as Card['rank'],
+                suit: convertToCardSuit(cardData.suit),
+                value: cardData.value,
+                faceUp: cardData.faceUp,
+                spriteKey: `${cardData.rank}${cardData.suit[0].toUpperCase()}`
+            } as Card;
+        });
+        
+        // Since we already checked this.splitHand above, we know it exists
+        const splitHand = this.splitHand;
+        
+        // Clear existing cards
+        splitHand.cards = [];
+        
+        // Add new cards with sprites
+        splitCards.forEach((card: Card) => {
+            splitHand.addCard(card);
+            splitHand.createCardSprite(card);
+        });
+        
+        // Update hand properties
+        splitHand.value = serverHand.value;
+        splitHand.busted = serverHand.busted;
+        splitHand.blackjack = serverHand.blackjack;
+        splitHand.soft = serverHand.soft;
+        
+        // Position hands correctly
+        this.positionHands();
+        
+        // Position cards within the split hand
+        splitHand.positionCardsInHand(splitHand);
+        
+        // Update points display
+        splitHand.updatePointsDisplay(true);
+    }
+
+    /**
+     * Highlight the active hand during split
+     */
+    public highlightActiveHand(activeHand: 'first' | 'second'): void {
+        // Ensure split hand exists
+        if (!this.splitHand) {
+            console.warn("Cannot highlight active hand: split hand doesn't exist");
+            return;
+        }
+        
+        // Set active split hand
+        this.activeSplitHand = activeHand;
+        
+        // Apply visual highlighting
+        const firstHand = this.playerHand;
+        const secondHand = this.splitHand;
+        
+        // Reset highlight
+        firstHand.alpha = 0.7;
+        secondHand.alpha = 0.7;
+        
+        // Highlight active hand
+        if (activeHand === 'first') {
+            firstHand.alpha = 1;
+        } else {
+            secondHand.alpha = 1;
+        }
+        
+        // Update position to ensure proper layout
+        this.positionHands();
+    }
+
+    /**
+     * Reveal dealer's hole card
+     * @param value - Optional value to set for the card (used when dealing from server data)
+     */
+    public revealDealerCard(value?: number): void {
+        console.log("Revealing dealer's hole card");
+        
+        if (this.dealerHand.cards.length < 2) {
+            console.warn("Cannot reveal dealer card: dealer has fewer than 2 cards");
+            return;
+        }
+        
+        // Get the second card (hole card)
+        const holeCard = this.dealerHand.cards[1];
+        
+        // If already face up, nothing to do
+        if (holeCard.faceUp) {
+            console.log("Dealer card is already revealed");
+            return;
+        }
+        
+        // Turn card face up
+        holeCard.faceUp = true;
+        
+        // Use stored value or provided value
+        if (value !== undefined) {
+            holeCard.value = value;
+        } else if (this.dealerHoleCardValue) {
+            holeCard.value = this.dealerHoleCardValue;
+        }
+        
+        // Update card sprite if it exists
+        if (holeCard.sprite) {
+            // Create new texture name based on card info
+            const cardTextureName = `${holeCard.rank}${holeCard.suit[0].toUpperCase()}`;
+            
+            // Get the texture from resources
+            if (Globals.resources[cardTextureName]) {
+                // Get the current sprite parent and position
+                const parent = holeCard.sprite.parent;
+                const position = holeCard.sprite.position.clone();
+                
+                // Remove the current sprite
+                if (parent) {
+                    parent.removeChild(holeCard.sprite);
+                }
+                
+                // Create new sprite with face-up texture
+                holeCard.sprite = new Sprite(Globals.resources[cardTextureName]);
+                holeCard.sprite.position.copyFrom(position);
+                holeCard.sprite.anchor.set(0.5);
+                
+                // Add the new sprite to the parent
+                if (parent) {
+                    parent.addChild(holeCard.sprite);
+                }
+            }
+        }
+        
+        // Recalculate dealer hand value now that hole card is revealed
+        this.dealerHand.calculateValue();
+        
+        // Update points display
+        this.dealerHand.updatePointsDisplay(true);
+        
+        // Call card reveal complete callback if defined
+        if (this.dealerHand.onCardRevealComplete) {
+            setTimeout(() => {
+                if (this.dealerHand.onCardRevealComplete) {
+                    this.dealerHand.onCardRevealComplete();
+                    this.dealerHand.onCardRevealComplete = undefined;
+                }
+            }, 500);
+        }
+    }
+    
+    /**
+     * Deal initial cards (2 to player, 2 to dealer with one face down)
+     * @returns Promise that resolves when all cards are dealt
+     */
+    public dealInitialCards(): Promise<void> {
+        return new Promise<void>((resolve) => {
+            console.log("Dealing initial cards");
+            
+            // Sequence of card dealing
+            const dealSequence = async () => {
+                try {
+                    // Deal first card to player (face up)
+                    await this.playerHand.dealCardWithErrorHandling(true);
+                    
+                    // Deal first card to dealer (face up)
+                    await this.dealerHand.dealCardWithErrorHandling(true);
+                    
+                    // Deal second card to player (face up)
+                    await this.playerHand.dealCardWithErrorHandling(true);
+                    
+                    // Deal second card to dealer (face down)
+                    await this.dealBackCardToDealer();
+                    
+                    // Log initial hand values
+                    console.log("Initial cards dealt");
+                    console.log("Player hand:", this.playerHand.value);
+                    console.log("Dealer visible card:", this.dealerHand.cards[0].value);
+                    
+                    // Check for special conditions (blackjack, insurance, split)
+                    this.checkInitialConditions(() => resolve());
+                } catch (error) {
+                    console.error("Error dealing initial cards:", error);
+                    resolve(); // Resolve the promise even on error to avoid blocking
+                }
+            };
+            
+            // Start dealing
+            dealSequence();
+        });
+    }
+
+    /**
+     * Deal a face-down card to the dealer (second card)
+     * @returns Promise that resolves when the card is dealt
+     */
+    public dealBackCardToDealer(): Promise<Card | null> {
+        return new Promise<Card | null>((resolve) => {
+            // Create a face-down card
+            const card: Card = {
+                rank: '2' as Card['rank'], // Use a valid rank, appearance doesn't matter since it's face down
+                suit: 'hearts', // Doesn't matter for back card
+                value: 0,
+                faceUp: false,
+                sprite: undefined, // Use undefined instead of null
+                spriteKey: 'cardBack' // Use cardBack sprite key for face-down card
+            };
+            
+            // Store reference to the card for later
+            const dealerCard = card;
+            
+            // Add the card to the dealer's hand
+            this.dealerHand.addCard(dealerCard);
+            
+            // Create sprite for the back card
+            this.dealerHand.createCardSprite(dealerCard);
+            
+            // Position the cards in the hand
+            this.dealerHand.positionCardsInHand(this.dealerHand);
+            
+            // Simulate delay for animation
+            setTimeout(() => {
+                resolve(dealerCard);
+            }, 300);
+        });
+    }
+
+    /**
+     * Attempt to deal a recovery card to a hand
+     * @param hand - The hand to deal a recovery card to
+     * @returns The dealt recovery card
+     */
+    private attemptRecoveryCardDeal(hand: Hand): Card {
+        console.log("Attempting recovery card deal");
+        
+        // Create a new card directly since we can't call dealCard on Deck
+        const ranks = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A'];
+        const suits = ['hearts', 'diamonds', 'clubs', 'spades'];
+        
+        const randomRank = ranks[Math.floor(Math.random() * ranks.length)] as Card['rank'];
+        const randomSuit = suits[Math.floor(Math.random() * suits.length)] as 'hearts' | 'diamonds' | 'clubs' | 'spades';
+        
+        // Create a sprite key based on the rank and suit
+        const suitPrefix = getSuitPrefix(randomSuit);
+        const spriteKey = `${randomRank}${suitPrefix.toUpperCase()}`;
+        
+        // Create a new card
+        const recoveryCard: Card = {
+            rank: randomRank,
+            suit: randomSuit,
+            value: this.getCardValue(randomRank),
+            faceUp: true,
+            sprite: undefined, // Use undefined instead of null
+            spriteKey: spriteKey
+        };
+        
+        return recoveryCard;
+    }
+
+    /**
+     * Get the prefix for a suit to use in sprite keys
+     * @param suit - The card suit
+     * @returns The prefix for the suit
+     */
+    private getSuitPrefix(suit: string): string {
+        switch (suit.toLowerCase()) {
+            case "hearts":
+                return "h";
+            case "diamonds":
+                return "d";
+            case "clubs":
+                return "c";
+            case "spades":
+                return "s";
+            default:
+                console.warn(`Unknown suit type: ${suit}, defaulting to hearts`);
+                return "h";
+        }
+    }
+
+    /**
+     * Get the value of a card based on its rank
+     */
+    private getCardValue(rank: string): number {
+        if (rank === 'A') return 11;
+        if (['K', 'Q', 'J', '10'].includes(rank)) return 10;
+        return parseInt(rank, 10);
+    }
+
+    /**
+     * Begin an action - stub for compatibility 
+     * @param action - The action to begin
+     * @returns Whether the action was successfully started
+     */
+    private beginAction(action: string): boolean {
+        console.log(`[UI Only] Beginning action: ${action}`);
+        this.actionInProgress = true;
+        this.currentAction = action;
+        this.actionStartTime = Date.now();
+        return true;
+    }
+    
+    /**
+     * End an action - stub for compatibility
+     * @param action - The action to end
+     */
+    private endAction(action: string): void {
+        console.log(`[UI Only] Ending action: ${action}`);
+        this.actionInProgress = false;
+        this.currentAction = '';
+    }
+
+    /**
+     * Player action: Hit - stub for compatibility
+     * Actual logic handled by backend
+     */
+    public playerHit(): void {
+        console.log("[UI Only] Hit handled by backend");
+    }
+    
+    /**
+     * Player action: Stand - stub for compatibility
+     * Actual logic handled by backend
+     */
+    public playerStand(): void {
+        console.log("[UI Only] Stand handled by backend");
+    }
+    
+    /**
+     * Complete player turn - stub for compatibility
+     * Actual logic handled by backend
+     */
+    private completePlayerTurn(): void {
+        console.log("[UI Only] Player turn completion handled by backend");
+    }
+    
+    /**
+     * End the game - stub for compatibility
+     * @param outcome - The outcome of the game
+     */
+    public endGame(outcome: GameOutcome): void {
+        console.log(`[UI Only] Game end with outcome ${outcome} handled by backend`);
+        if (this.onGameEnd) {
+            this.onGameEnd(outcome, this.playerHand.value, this.dealerHand.value);
+        }
     }
 } 
 

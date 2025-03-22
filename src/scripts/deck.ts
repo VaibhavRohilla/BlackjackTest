@@ -1,60 +1,24 @@
 import { Globals } from "./globals";
 import { Card } from "./hand";
 
+/**
+ * Frontend representation of a deck of cards
+ * Note: All actual deck logic now happens on the backend.
+ * This class only stores UI state relevant to the deck display.
+ */
 export class Deck {
-    private cards: Card[] = [];
+    private cardsRemaining: number = 52;
     
     constructor() {
-        this.initializeDeck();
-        this.shuffleDeck();
+        this.cardsRemaining = 52;
     }
 
     /**
-     * Initialize the deck with 52 cards
+     * Update the number of cards remaining in the deck
+     * This is updated from backend data
      */
-    private initializeDeck(): void {
-        const suits = ['hearts', 'diamonds', 'clubs', 'spades'] as const;
-        const ranks = ['A', '2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K'] as const;
-
-        this.cards = suits.flatMap(suit => 
-            ranks.map(rank => ({
-                suit: suit,
-                rank: rank,
-                value: rank === 'A' ? 11 : (['J', 'Q', 'K'].includes(rank) ? 10 : parseInt(rank)),
-                spriteKey: `${this.getSuitPrefix(suit)}${rank}`,
-                faceUp: false
-            }))
-        );
-    }
-
-    /**
-     * Shuffle the deck
-     */
-    public shuffleDeck(): void {
-        for (let i = this.cards.length - 1; i > 0; i--) {
-            const j = Math.floor(Math.random() * (i + 1));
-            [this.cards[i], this.cards[j]] = [this.cards[j], this.cards[i]];
-        }
-    }
-
-    /**
-     * Deal a card from the deck
-     * @returns The dealt card or null if the deck is empty
-     */
-    public dealCard(): Card {
-        const card = this.cards.pop();
-        if (!card) {
-            throw new Error('Cannot deal card - deck is empty');
-        }
-        return card;
-    }
-
-    /**
-     * Check if the deck is empty
-     * @returns Whether the deck is empty
-     */
-    public isEmpty(): boolean {
-        return this.cards.length === 0;
+    public updateCardsRemaining(count: number): void {
+        this.cardsRemaining = count;
     }
 
     /**
@@ -62,21 +26,29 @@ export class Deck {
      * @returns The number of remaining cards
      */
     public getRemainingCards(): number {
-        return this.cards.length;
+        return this.cardsRemaining;
     }
     
-        /**
     /**
      * Get the prefix for a suit to use in sprite keys
      * @param suit - The card suit
      * @returns The prefix for the suit
      */
-     getSuitPrefix(suit: 'hearts' | 'diamonds' | 'clubs' | 'spades'): string {
+    getSuitPrefix(suit: 'hearts' | 'diamonds' | 'clubs' | 'spades'): string {
         switch (suit) {
             case 'hearts': return 'h';
             case 'diamonds': return 'd';
             case 'clubs': return 'c';
             case 'spades': return 's';
         }
+    }
+    
+    /**
+     * Get a sprite key for a card
+     * @param card The card data from the backend
+     * @returns The sprite key to use
+     */
+    getCardSpriteKey(card: Card): string {
+        return `${this.getSuitPrefix(card.suit)}${card.rank}`;
     }
 } 

@@ -1,6 +1,6 @@
 import { Easing } from "@tweenjs/tween.js";
 import { Tween } from "@tweenjs/tween.js";
-import { Container, Sprite } from "pixi.js";
+import { Container, Sprite, Text } from "pixi.js";
 import { config } from "./appconfig";
 import { BlackjackDealer } from "./blackjackdealer";
 import { CenterChip } from "./centerchip";
@@ -12,7 +12,29 @@ import { Result, GameOutcome } from "./result";
 import { Table, Chips } from "./table";
 import { UiContainer } from "./uicontainer";
 import { ShopPopup } from "./shoppopup";
+import { TextLabel } from "./textlabel";
+import { Card, Hand } from "./hand";
+import { CardMessage } from "../../blackjack-backend/src/models/Message";
+import { log } from "node:console";
 
+/**
+ * Convert a server suit value to a valid Card suit type
+ */
+function convertToCardSuit(suit: string): "hearts" | "diamonds" | "clubs" | "spades" {
+    switch (suit.toLowerCase()) {
+        case "hearts":
+            return "hearts";
+        case "diamonds":
+            return "diamonds";
+        case "clubs":
+            return "clubs";
+        case "spades":
+            return "spades";
+        default:
+            console.warn(`Unknown suit type: ${suit}, defaulting to hearts`);
+            return "hearts";
+    }
+}
 
 export class GameManager extends Container {
       /** Last bet amount for rebet functionality */
@@ -32,13 +54,24 @@ export class GameManager extends Container {
     /** Flag to track if special conditions were detected */
     private _specialConditionsDetected: boolean = false;
     
+    /** Flag to track if the game is connected to the backend */
+    private _isConnectedToBackend: boolean = false;
 
     unlockShopCallback: () => void = () => {};
     cancelShopCallBack: () => void = () => {};
     shopPopup: ShopPopup = new ShopPopup(this.unlockShopCallback, this.cancelShopCallBack);
   
+    /** Connection status indicator */
+    private _connectionIndicator: Container = new Container();
+    private _connectionStatusIcon: Sprite = new Sprite();
+    private _connectionStatusText: TextLabel = new TextLabel(0, 0, 0.5, "", 12);
 
+    // Add a debounce property to prevent rapid clicking issues
+    private _clearClickDebounce: boolean = false;
+    private _pendingClearOperation: boolean = false;
 
+    // Add a debounce property for bet clicking
+    private _betClickDebounce: boolean = false;
 
     constructor() {
         super();
@@ -72,14 +105,30 @@ export class GameManager extends Container {
         
         // Add to scene after all components are initialized
         this.addToScene();
+        
+        // Setup backend event listeners
+        this.setupBackendListeners();
     }
 
     /**
      * Initialize all components in the proper order
      */
     initializeComponents() {
-        Globals.deck = this.deck;
         Globals.popupManager = this.popupManager;
+        
+        // Initialize connection indicators properly
+        this._connectionIndicator = new Container();
+        this._connectionStatusIcon = new Sprite();
+        this._connectionStatusText = new TextLabel(0, 0, 0.5, "", 12);
+        
+        // Add the connection indicator elements to the UI
+        this._connectionIndicator.addChild(this._connectionStatusIcon);
+        this._connectionIndicator.addChild(this._connectionStatusText);
+        this._connectionStatusText.position.set(20, 0);
+        this.uiContainer.addChild(this._connectionIndicator);
+        
+        // Update connection indicator based on current status
+        this.updateConnectionIndicator(this._isConnectedToBackend);
         
         // Set up the shop button callback on the table
         this.table.setShopButtonCallback(() => {
@@ -103,6 +152,10 @@ export class GameManager extends Container {
         this.blackjackDealer.setGameEndCallback((outcome, playerValue, dealerValue) => {
             this.handleGameEnd(outcome, playerValue, dealerValue);
         });
+        
+        // Check if backend is available
+        this._isConnectedToBackend = Globals.backendService?.isConnectedToBackend() || false;
+        Globals.isOnline = this._isConnectedToBackend;
     }
 
     addToScene(): void {
@@ -176,7 +229,7 @@ export class GameManager extends Container {
               this.gameButtonsContainer.showGameplayButtons();
               break;
             case "showBettingButtons":
-              this.gameButtonsContainer.showBettingButtons();
+              this.showBettingButtonsIfNeeded();
               break;
             case "showButton":
               if (msgParams?.type) {
@@ -230,95 +283,45 @@ export class GameManager extends Container {
     onSplitClicked() {
         console.log("Split clicked");
         
-        // Verify the game is in the playing state
-        if (this.gameState !== "playing") {
-            console.log("Cannot split: game not in progress");
+        // Only allow split in playing phase
+        if (this.gameState !== 'playing') {
+            console.log("Cannot split - not in playing phase");
             return;
         }
         
-        // Check if player can split
-        if (!this.canSplit()) {
-            if (Globals.balance < Globals.currentBet) {
-                console.log("Not enough balance to split");
-            } else {
-                console.log("Cannot split: conditions not met");
-            }
+        // Check if an action has been in progress for too long and reset if needed
+        this.checkForStuckAction();
+        
+        // Prevent multiple concurrent actions
+        if (this.blackjackDealer.actionInProgress) {
+            console.log("Action already in progress, ignoring split");
             return;
         }
         
-        // Check if player has enough balance to split (needs to match current bet)
+        // Check if player has enough balance to split
         if (Globals.balance < Globals.currentBet) {
             console.log("Not enough balance to split");
             return;
         }
         
-        // Add debounce for rapid clicks
-        if ((this as any)._processingSplit) {
-            console.log("Already processing Split action, ignoring duplicate click");
+        // When connected to backend, send the split action to the server
+        if (this.shouldUseBackend()) {
+            // Set action in progress to prevent double clicks
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'split';
+            this.blackjackDealer.actionStartTime = Date.now();
+            
+            // Handle split action through the backend
+            this.handleGameAction('split');
+            
+            // Track last action for reference
+            Globals.lastAction = 'split';
+            
             return;
         }
         
-        // Set flag to prevent multiple calls
-        (this as any)._processingSplit = true;
-        
-        try {
-            // Deduct the split bet from the balance
-            Globals.balance -= Globals.currentBet;
-            
-            // Update the UI to reflect the new balance
-            this.uiContainer.updateBalance(Globals.balance);
-            
-            // Create chips for the split bet - use forRebet=true to prevent double counting 
-            this.createChipsForBet(Globals.currentBet, false, true);
-            
-            // Hide all buttons to prevent UI conflicts
-            this.gameButtonsContainer.hideAllButtons();
-            
-            // Player splits their hand
-            this.blackjackDealer.playerSplit();
-            
-            // Clear existing event listeners to prevent duplicates
-            
-                Globals.emitter?.Call("splitPerformed");
-                Globals.emitter?.Call("splitHandSwitch");
-            
-            
-            // Setup event listeners for split-specific events with proper delays
-            Globals.emitter?.Call("splitPerformed", (data: any) => {
-                console.log("Split performed, showing split-spe cific buttons");
-                
-                // Ensure we wait for animations to complete
-                setTimeout(() => {
-                    // Hide any existing buttons to prevent duplicate groups
-                    this.gameButtonsContainer.hideAllButtons();
-                    
-                    // Show appropriate buttons for split hand - use the dedicated method
-                    this.gameButtonsContainer.showButtonGroup('gameplayWithoutSplit');
-                    
-                    this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet * 2)} Chips`);
-                }, 800); // Increased delay for animation completion
-            });
-            
-            // Listen for hand switch events
-            Globals.emitter?.Call("splitHandSwitch", (data: any) => {
-                console.log(`Switching to ${data.activeHand} hand`);
-                
-                // Hide any existing buttons to prevent duplicates
-                this.gameButtonsContainer.hideAllButtons();
-                
-                // Add a delay to ensure UI stability
-                setTimeout(() => {
-                    // Show appropriate buttons for the active split hand
-                    this.gameButtonsContainer.showButtonGroup('gameplayWithoutSplit');
-                }, 400);
-            });
-        } finally {
-            // Clear the processing flag after a delay
-            setTimeout(() => {
-                (this as any)._processingSplit = false;
-            }, 1000);
-        }
-      }
+      
+    }
     
 
     addChip(chipData : any, addDouble : boolean = false, forRebet: boolean = false) {
@@ -361,6 +364,12 @@ export class GameManager extends Container {
    * @param forRebet - Whether this is for a rebet operation (to avoid double counting)
    */
   private updateUIAfterAddingChip(chipValue: number, forRebet: boolean = false): void {
+    // Skip UI updates during clear operations
+    if (this._pendingClearOperation) {
+      console.log("Clear in progress, skipping UI update");
+      return;
+    }
+
     console.log("Updating UI after adding chip:", chipValue, forRebet ? "(for rebet)" : "");
  
     // Update current bet only if not a rebet operation
@@ -371,153 +380,99 @@ export class GameManager extends Container {
     // Update balance display
     this.uiContainer.updateBalance();
     
-    // Update bet amount display
-    this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet)} Chips`);
+    // Update bet amount display with formatted amount
+    const formattedBet = formatBetAmount(Globals.currentBet);
     
-    // Show bet holder and betting buttons if not already visible
-    if(!this.chipsZone.betHolder.visible) {
-      this.chipsZone.betHolder.isVisible(true);
-      this.showGameButtons('betting');
+    // Always update bet holder if there's a bet
+    if (Globals.currentBet > 0) {
+      // If not visible, show it with animation
+      if (!this.chipsZone.betHolder.visible) {
+        console.log("Making bet holder visible with new bet");
+        this.chipsZone.showBetDisplay(Globals.currentBet);
+      } else {
+        // If already visible, just update the text
+        this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formattedBet} Chips`);
+      }
+      
+      // Ensure game state is set to betting
+      if (this.gameState !== 'betting') {
+        this.gameState = 'betting';
+      }
+      
+      // Ensure betting buttons are shown (using direct method to avoid conflicts)
+      if (!this._pendingClearOperation) {
+         this.showBettingButtonsIfNeeded();
+      }
+    } else {
+      // If bet is zero, hide the bet holder
+      this.chipsZone.betHolder.isVisible(false);
     }
   }
     onHitClicked() {
-        // Add debounce for rapid clicks
-        if ((this as any)._processingHit) {
-            console.log("Already processing Hit action, ignoring duplicate click");
+        console.log("Hit clicked");
+        
+        // Verify the game is in the playing state
+        if (this.gameState !== "playing") {
+            console.log("Cannot hit: game not in playing state");
             return;
         }
         
-        // Set flag to prevent multiple calls
-        (this as any)._processingHit = true;
+        // Check if an action has been in progress for too long and reset if needed
+        this.checkForStuckAction();
         
+        // Prevent multiple concurrent actions
+        if (this.blackjackDealer.actionInProgress) {
+            console.log("Action already in progress, ignoring hit");
+            return;
+        }
+        
+        // Get the active split hand if in split mode
+        const activeSplitHand = this.blackjackDealer.getActiveSplitHand();
+        
+        // When connected to backend, send the hit action to the server
+        if (this.shouldUseBackend()) {
+            // Set action in progress to prevent double clicks
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'hit';
+            this.blackjackDealer.actionStartTime = Date.now();
+            
+            // Hide double and split buttons after hit
+            this.gameButtonsContainer.hideDoubleButton();
+            this.gameButtonsContainer.hideSplitButton();
+            
+            // Handle hit action through the backend
+            this.handleGameAction('hit', { hand: activeSplitHand });
+            
+            // Track last action for reference
+            Globals.lastAction = 'hit';
+            
+            return;
+        }
+        
+        // Fallback local implementation
         try {
-            if (this.gameState != "playing") {
-                console.log("Game not in progress, Hit button should only be used during gameplay");
-                return;
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'hit';
+            this.blackjackDealer.actionStartTime = Date.now();
+            
+            // Hide double and split buttons after hit
+            this.gameButtonsContainer.hideDoubleButton();
+            this.gameButtonsContainer.hideSplitButton();
+            
+            // In split mode, hit the active hand
+            if (activeSplitHand) {
+                this.blackjackDealer.playerHitSplitHand(activeSplitHand);
+            } else {
+                // Regular hit
+                this.blackjackDealer.playerHit();
             }
-            
-            console.log("Hit clicked");
-            
-            // Disable all buttons temporarily to prevent spam clicking
-            this.gameButtonsContainer.hideAllButtons();
-            
-            const attemptHit = (retryCount = 0, maxRetries = 5) => {
-                if (retryCount >= maxRetries) {
-                    console.error("Failed to execute hit after multiple attempts");
-                    // Don't restore buttons, let the active hand handler show the right buttons
-                    (this as any)._processingHit = false;
-                    return;
-                }
-                
-                try {
-                    // Check if we're in a split hand scenario
-                    if (this.blackjackDealer.splitHand) {
-                        // Get which hand is active
-                        const activeHand = this.blackjackDealer.getActiveSplitHand();
-                        if (!activeHand) {
-                            console.error("Split hand exists but no active hand is set");
-                            this.blackjackDealer.setActiveSplitHand('first');
-                            console.log("Defaulting to first split hand");
-                        }
-                        
-                        // Use the active hand or default to 'first'
-                        const handToHit = activeHand || 'first';
-                        console.log(`Hit on split hand: ${handToHit}`);
-                        
-                        // Call the appropriate hit method for split hands
-                        this.blackjackDealer.playerHitSplitHand(handToHit);
-                        
-                        // Since split hand hit doesn't set the callback, we need to set a timeout
-                        // to check the hand status after animation completes
-                        setTimeout(() => {
-                            // Check if the game is still in progress
-                            if (this.gameState === "playing") {
-                                const activeHand = this.blackjackDealer.getActiveSplitHand();
-                                
-                                if (activeHand === 'first') {
-                                    const firstHand = this.blackjackDealer.playerHand;
-                                    
-                                    // Auto-switch logic for first hand
-                                    if (firstHand.value >= 21) {
-                                        console.log(`First hand has ${firstHand.value}, auto-switching to second hand`);
-                                        
-                                        // Clear processing flag to allow proper event handling
-                                        (this as any)._processingHit = false;
-                                        
-                                        // Switch to second hand after a short delay
-                                        setTimeout(() => {
-                                            this.blackjackDealer.setActiveSplitHand('second');
-                                        }, 600);
-                                        
-                                        return; // Return early, let activeHandChanged handle buttons
-                                    } else {
-                                        // Show appropriate buttons with a delay to avoid conflicts
-                                        this.safelyShowButtonGroup('gameplayAfterHit', 500);
-                                        setTimeout(() => {
-                                            (this as any)._processingHit = false;
-                                        }, 200);
-                                    }
-                                } else {
-                                    // Second hand - check for bust/21
-                                    const secondHand = this.blackjackDealer.splitHand;
-                                    if (secondHand && (secondHand.value >= 21)) {
-                                        console.log(`Second hand has ${secondHand.value}, showing stand-only button`);
-                                        
-                                        // For busted or 21 hands, only show stand
-                                        setTimeout(() => {
-                                            this.gameButtonsContainer.hideAllButtons();
-                                            this.gameButtonsContainer.showGameplayAfter21Buttons();
-                                            (this as any)._processingHit = false;
-                                        }, 400);
-                                    } else {
-                                        // Normal second hand, just use after hit buttons
-                                        this.safelyShowButtonGroup('gameplayAfterHit', 500);
-                                        setTimeout(() => {
-                                            (this as any)._processingHit = false;
-                                        }, 200);
-                                    }
-                                }
-                            } else {
-                                // Game no longer in playing state
-                                (this as any)._processingHit = false;
-                            }
-                        }, 800);
-                    } else {
-                        // Regular hit for non-split scenario
-                        this.blackjackDealer.playerHit();
-                        
-                        // Set up a callback to evaluate the hand after the hit completes
-                        const checkHandAndShowButtons = () => {
-                            // Check player hand and show appropriate buttons 
-                            // (this method handles button display internally)
-                            this.checkPlayerHandAfterHit();
-                            
-                            // Clear processing flag after a short delay
-                            setTimeout(() => {
-                                (this as any)._processingHit = false;
-                            }, 300);
-                        };
-                        
-                        // Set callback on player hand
-                        if (this.blackjackDealer.playerHand.onCardRevealComplete !== undefined) {
-                            this.blackjackDealer.playerHand.onCardRevealComplete = checkHandAndShowButtons;
-                        } else {
-                            // If callback not available, use timeout
-                            setTimeout(checkHandAndShowButtons, 500);
-                        }
-                    }
-                } catch (error) {
-                    console.log("Hit failed, retrying in 300ms...", error);
-                    setTimeout(() => attemptHit(retryCount + 1), 300);
-                }
-            };
-            
-            // Start the hit attempt process
-            attemptHit();
-        } catch (error) {
-            console.error("Error in hit action:", error);
-            // Release the processing flag in case of error
-            (this as any)._processingHit = false;
+        } finally {
+            // End the action after a delay
+            setTimeout(() => {
+                this.blackjackDealer.actionInProgress = false;
+                this.blackjackDealer.currentAction = '';
+                this.blackjackDealer.actionStartTime = 0;
+            }, 500);
         }
     }
     
@@ -559,419 +514,557 @@ export class GameManager extends Container {
   }
     
     onStandClicked() {
-        // Add debounce for rapid clicks
-        if ((this as any)._processingStand) {
-            console.log("Already processing Stand action, ignoring duplicate click");
+        console.log("Stand clicked");
+        
+        // Verify the game is in the playing state
+        if (this.gameState !== "playing") {
+            console.log("Cannot stand: game not in playing state");
             return;
         }
         
-        // Set flag to prevent multiple calls
-        (this as any)._processingStand = true;
+        // Check if an action has been in progress for too long and reset if needed
+        this.checkForStuckAction();
         
-        try {
-            if (this.gameState != "playing") {
-                return;
-            }
+        // Prevent multiple concurrent actions
+        if (this.blackjackDealer.actionInProgress) {
+            console.log("Action already in progress, ignoring stand");
+            return;
+        }
+        
+        // Get the active split hand if in split mode
+        const activeSplitHand = this.blackjackDealer.getActiveSplitHand();
+        
+            // Set action in progress to prevent double clicks
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'stand';
+            this.blackjackDealer.actionStartTime = Date.now();
             
-            console.log("Stand clicked");
-            
-            // Close any active popups (including insurance popup) before proceeding
-            this.popupManager.hidePopup();
-            
-            // Hide all buttons to prevent further interaction during the process
+            // Hide all gameplay buttons during processing
             this.gameButtonsContainer.hideAllButtons();
             
-            // Retry mechanism for when the stand action is blocked by another action in progress
-            const attemptStand = (retryCount = 0, maxRetries = 5) => {
-                if (retryCount >= maxRetries) {
-                    console.error("Failed to execute stand after multiple attempts");
-                    // Don't restore buttons, let the game state handle it
-                    (this as any)._processingStand = false;
-                    return;
-                }
-                
-                // Check if we're in a split hand scenario
-                if (this.blackjackDealer.splitHand) {
-                    // Get which hand is active
-                    const activeHand = this.blackjackDealer.getActiveSplitHand();
-                    if (!activeHand) {
-                        console.error("Split hand exists but no active hand is set");
-                        this.blackjackDealer.setActiveSplitHand('first');
-                    }
-                    
-                    const handToStand = activeHand || 'first';
-                    console.log(`Stand on split hand: ${handToStand}`);
-                    
-                    // If it's the first hand, switch to the second hand
-                    if (handToStand === 'first') {
-                        // Try to set active split hand, but handle if another action is in progress
-                        if (this.blackjackDealer.actionInProgress) {
-                            console.log("Cannot stand yet - waiting for current action to complete");
-                            setTimeout(() => attemptStand(retryCount + 1), 500);
-                            return;
-                        }
-                        
-                        // Switch to second hand
-                        console.log("Switching from first to second hand after stand");
-                        
-                        // Make sure to hide all buttons before switching to prevent overlaps
-                        this.gameButtonsContainer.hideAllButtons();
-                        
-                        // First complete the standing action on the first hand
-                        try {
-                            this.blackjackDealer.playerStand();
-                        } catch (error) {
-                            console.error("Error standing on first hand:", error);
-                        }
-                        
-                        // Clear the processing flag immediately to prevent conflicts
-                        (this as any)._processingStand = false;
-                        
-                        // Add a delay to ensure UI and game state are fully updated
-                        setTimeout(() => {
-                            // Set the second hand as active
-                            this.blackjackDealer.setActiveSplitHand('second');
-                            
-                            // Highlight the second hand
-                            this.highlightActiveSplitHand('second');
-                            
-                            // Let the activeHandChanged event handle showing buttons
-                            // This avoids duplicate button groups
-                        }, 700);
-                    } else {
-                        // For the second hand, stand proceeds to dealer turn
-                        console.log("Standing on second hand, proceeding to dealer turn");
-                        
-                        // Try to execute stand, but handle if another action is in progress
-                        try {
-                            this.blackjackDealer.playerStand();
-                        } catch (error) {
-                            console.log("Stand failed, retrying in 500ms...", error);
-                            setTimeout(() => attemptStand(retryCount + 1), 500);
-                        }
-                    }
-                } else {
-                    // Regular stand for non-split scenario
-                    try {
-                        // Check if hit is in progress
-                        if (this.blackjackDealer.actionInProgress && this.blackjackDealer.currentAction === 'hit') {
-                            console.log("Hit in progress, stand will be queued after hit completes");
-                            // No need to retry, the dealer will handle it automatically
-                            this.blackjackDealer.playerStand();
-                        } else if (this.blackjackDealer.actionInProgress) {
-                            console.log("Another action in progress, retrying in 500ms...");
-                            setTimeout(() => attemptStand(retryCount + 1), 500);
-                        } else {
-                            this.blackjackDealer.playerStand();
-                        }
-                    } catch (error) {
-                        console.log("Stand failed, retrying in 500ms...", error);
-                        setTimeout(() => attemptStand(retryCount + 1), 500);
-                    }
-                }
-            };
+            // Handle stand action through the backend
+            this.handleGameAction('stand', { hand: activeSplitHand });
             
-            // Start the stand attempt process
-            attemptStand();
-        } finally {
-            // Clear the processing flag after a delay to prevent rapid clicks
-            // Only clear if regular game or second split hand (first hand was cleared early)
-            if (!this.blackjackDealer.splitHand || 
-                this.blackjackDealer.getActiveSplitHand() === 'second') {
-                setTimeout(() => {
-                    (this as any)._processingStand = false;
-                }, 1000);
-            }
-        }
+            // Track last action for reference
+            Globals.lastAction = 'stand';
+            
+            return;
+        
+      
     }
 
       onClearClicked() {
-        console.log("Clear action");
-    
-        // If game is in progress, can't clear
-        if (this.gameState == "playing") {
-          console.log("Can't clear during a game");
-          return;
+        console.log("Clear clicked");
+        
+        // Debounce to prevent rapid clicking issues
+        if (this._clearClickDebounce || this._pendingClearOperation) {
+            console.log("Clear operation in progress, ignoring click");
+            return;
         }
         
-        // Store the current bet value before resetting
-        const currentBetAmount = Globals.currentBet;
+        // Only allow clear in betting phase
+        if (this.gameState !== 'betting') {
+            console.log("Cannot clear - not in betting phase");
+            return;
+        }
         
-        // Hide buttons
+        // If there's no bet to clear, do nothing
+        if (Globals.currentBet <= 0 || this.chipsZone.investedChips.length === 0) {
+            console.log("No bet to clear");
+            return;
+        }
+        
+        // Set debounce flag to prevent rapid clicking
+        this._clearClickDebounce = true;
+        this._pendingClearOperation = true;
+        
+        // Store current bet amount for proper return to balance
+        const currentBet = Globals.currentBet;
+        
+        // Update balance and clear bet amount immediately
+        Globals.balance += currentBet;
+        Globals.currentBet = 0;
+        this.uiContainer.updateBalance(Globals.balance);
+        
+        // When connected to backend, send the clear action to the server
+        if (this.shouldUseBackend()) {
+            // Set action in progress to prevent double clicks
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'clearBet';
+            
+            // Prevent further betting during clear operation
+            this.table.makeButtonsActive(false);
+            
+            // First save current chips as "remove chips" to animate them
+            this.chipsZone.removeChips = [...this.chipsZone.investedChips];
+            
+            // Hide betting buttons during animation
+            this.gameButtonsContainer.hideAllButtons();
+            
+            // Handle clear action through the backend
+            this.handleGameAction('clearBet');
+            
+            // Animate the chips flying out and fade out bet holder
+            this.chipsZone.tweenChipsOut(() => {
+                // Reset display after animation completes
+                this.chipsZone.clearChips();
+                
+                // End the action
+                this.blackjackDealer.actionInProgress = false;
+                this.blackjackDealer.currentAction = '';
+                this.blackjackDealer.actionStartTime = 0;
+                
+                // Update UI - bet text already cleared
+                this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText("0 Chips");
+                
+                // Make sure bet holder is hidden
+                this.chipsZone.betHolder.isVisible(false);
+                
+                // Re-enable chip buttons after a short delay
+                setTimeout(() => {
+                    this.table.makeButtonsActive(true);
+                    
+                    // Reset debounce flag after operation completes
+                    this._clearClickDebounce = false;
+                    this._pendingClearOperation = false;
+                }, 200);
+            }, true); // true to hide bet holder after animation
+            
+            // Safety timeout to ensure UI state is restored even if animation fails
+            setTimeout(() => {
+                if (this._pendingClearOperation) {
+                    console.log("Clear operation safety timeout triggered");
+                    this._clearClickDebounce = false;
+                    this._pendingClearOperation = false;
+                    this.table.makeButtonsActive(true);
+                    this.chipsZone.betHolder.isVisible(false);
+                }
+            }, 2000);
+            
+            return;
+        }
+        
+        // Fallback to local implementation
+        // Prevent further betting during clear operation
+        this.table.makeButtonsActive(false);
+        
+        // Hide betting buttons during animation
         this.gameButtonsContainer.hideAllButtons();
         
-        // Reset the current bet
-        Globals.currentBet = 0;
-       
-        // Edge case: If there are no chips or bet is 0, just reset everything
-        if (this.chipsZone.investedChips.length === 0 || currentBetAmount <= 0) {
-          // Update the bet display
-          this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText("0 Chips");
-          this.chipsZone.betHolder.isVisible(false);
-          return;
-        }
-        
-        // Store chips to be removed
+        // Save current chips to remove chips for animation
         this.chipsZone.removeChips = [...this.chipsZone.investedChips];
-        this.chipsZone.investedChips = [];
         
-        // Animate chips flying out of the canvas
+        // Animate chips flying away
         this.chipsZone.tweenChipsOut(() => {
-          // Update balance after animation completes
-          Globals.balance += currentBetAmount;
-          this.uiContainer.updateBalance();
-          this.table.makeButtonsActive(true);
-          
-          // Update the bet display
-          this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText("0 Chips");
-          this.chipsZone.betHolder.isVisible(false);
-        });
-      }
-      
-    onPlayOnClicked() {
-        console.log("Play On button clicked");
+            // Reset display after animation completes
+            this.chipsZone.clearChips();
+            
+            // Update UI - text already updated above
+            this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText("0 Chips");
+            
+            // Hide bet holder
+            this.chipsZone.betHolder.isVisible(false);
+            
+            // Re-enable chip buttons after a short delay
+            setTimeout(() => {
+                this.table.makeButtonsActive(true);
+                
+                // Reset debounce flags
+                this._clearClickDebounce = false;
+                this._pendingClearOperation = false;
+            }, 200);
+        }, true);
         
-        // Check if we can start a new round
-        if (this.gameState !== 'gameEnd') {
-            console.log("Can only play on after a game has ended");
-            return;
-        }
-        
-        // Hide any active popups - this will close the end game popup
-        this.popupManager.hidePopup();
-        
-        // Reset the game state completely
-        this.resetGame();
-        
-        // Go back to betting state without placing any bet
-        this.gameState = 'betting';
-        
-        
-        // Re-enable chip selection
-        this.table.makeButtonsActive(true);
+        // Safety timeout to ensure UI state is restored even if animation fails
+        setTimeout(() => {
+            if (this._pendingClearOperation) {
+                console.log("Clear operation safety timeout triggered");
+                this._clearClickDebounce = false;
+                this._pendingClearOperation = false;
+                this.table.makeButtonsActive(true);
+                this.chipsZone.betHolder.isVisible(false);
+            }
+        }, 2000);
     }
+      
+
+    /**
+     * Handle when the player clicks the Play button
+     * This transitions the game from Betting phase to GameInProgress phase
+     */
     onPlayClicked() {
-        console.log("Play button clicked");
+        console.log("Play clicked - Starting game");
         
-        if (this.gameState !== 'betting' || Globals.currentBet <= 0) {
-            console.log("Cannot start game: not in betting state or no bet placed");
+        // Phase validation: Only allow starting the game from the betting phase
+        if (this.gameState !== 'betting') {
+            console.log("Cannot start game: not in betting state");
+            Globals.emitter?.Call("show_notification", {
+                message: "Game already in progress",
+                duration: 1500,
+                color: 0xDD0000
+            });
             return;
         }
         
-        // Start the game with current bet
-        this.startGame(undefined, true);
+        // Bet validation: Ensure a bet has been placed
+        if (Globals.currentBet <= 0) {
+            console.log("Cannot start game: no bet placed");
+            Globals.emitter?.Call("show_notification", {
+                message: "Please place a bet first",
+                duration: 1500,
+                color: 0xDD0000
+            });
+            return;
+        }
+        
+        // PHASE TRANSITION: Betting → GameInProgress
+        
+        // 1. Set UI state to indicate transition
+        this.gameButtonsContainer.hideAllButtons();
+        
+        // 2. Show loading indicator
+        Globals.emitter?.Call("show_notification", {
+            message: "Starting game...",
+            duration: 1500,
+            color: 0xFFFFFF
+        });
+        
+        // 3. Send bet to backend
+        this.handleGameAction('bet', { amount: Globals.currentBet });
+        
+        // 4. Start the game by dealing cards through backend
+        this.handleGameAction('deal');
+        
+        // 5. Animate chips down and update UI state
+        this.table.makeButtonsActive(false);
+        this.table.animateChipsDown();
+        
+        // 6. Update game state
+        this.gameState = 'playing';
+        
+        console.log("Game started - Phase transitioned to GameInProgress");
     }
     onSurrenderClicked() {
-        console.log("Surrender action");
-    
-    if (this.gameState == "playing") {
-      // Close any active popups (including insurance popup) before proceeding
-      this.popupManager.hidePopup();
-      
-      
-      // Hide all buttons
-      this.gameButtonsContainer.hideAllButtons();
-      
-      // Surrender (give up half the bet)
-      this.blackjackDealer.playerSurrender();
-      
-      // Note: We don't call resetGame() here anymore
-      // The BlackjackDealer.playerSurrender() will call endGame with SURRENDER outcome
-      // which will trigger handleGameEnd and show the proper popup
-      // This matches the flow of other game end scenarios
-    }
-  }
-    onDoubleClicked() {
-        if (this.gameState != "playing") {
+        console.log("Surrender clicked");
+        
+        // Only allow surrender in playing phase
+        if (this.gameState !== 'playing') {
+            console.log("Cannot surrender - not in playing phase");
             return;
         }
         
+        // Check if an action has been in progress for too long and reset if needed
+        this.checkForStuckAction();
+        
+        // Prevent multiple concurrent actions
+        if (this.blackjackDealer.actionInProgress) {
+            console.log("Action already in progress, ignoring surrender");
+            return;
+        }
+        
+        // When connected to backend, send the surrender action to the server
+        if (this.shouldUseBackend()) {
+            // Set action in progress to prevent double clicks
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'surrender';
+            this.blackjackDealer.actionStartTime = Date.now();
+            
+            // Handle surrender action through the backend
+            this.handleGameAction('surrender');
+            
+            // Track last action for reference
+            Globals.lastAction = 'surrender';
+            
+            return;
+        }
+        
+        // Fallback to local implementation
+        try {
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'surrender';
+            this.blackjackDealer.actionStartTime = Date.now();
+            
+            const halfBet = Globals.currentBet / 2;
+            
+            // Return half the bet to the player
+            Globals.balance += halfBet;
+            
+            // Update UI
+            this.uiContainer.updateBalance(Globals.balance);
+            
+            // Show surrender result
+            this.result.showResult(
+                GameOutcome.SURRENDER,
+                "You surrendered",
+                halfBet
+            );
+            
+            // End game
+            this.gameState = 'gameEnd';
+            this.gameButtonsContainer.showGameEndButtons();
+        } finally {
+            // End the action after a delay
+            setTimeout(() => {
+                this.blackjackDealer.actionInProgress = false;
+                this.blackjackDealer.currentAction = '';
+                this.blackjackDealer.actionStartTime = 0;
+            }, 500);
+        }
+    }
+    onDoubleClicked() {
         console.log("Double Down clicked");
+        
+        // Only allow double down in playing phase
+        if (this.gameState !== 'playing') {
+            console.log("Cannot double down - not in playing phase");
+            return;
+        }
+        
+        // Check if an action has been in progress for too long and reset if needed
+        this.checkForStuckAction();
+        
+        // Prevent multiple concurrent actions
+        if (this.blackjackDealer.actionInProgress) {
+            console.log("Action already in progress, ignoring double down");
+            return;
+        }
         
         // Check if player has enough balance to double down
         if (Globals.balance < Globals.currentBet) {
-          console.log("Not enough balance to double down");
-          return;
+            console.log("Not enough balance to double down");
+            return;
         }
         
-        // Close any active popups before proceeding
-        this.popupManager.hidePopup();
-        
-        // Hide all buttons
-        this.gameButtonsContainer.hideAllButtons();
-        
-        // Store original bet for doubling
-        const originalBet = Globals.currentBet;
-        
-        // Check if we're in a split hand scenario
-        if (this.blackjackDealer.splitHand) {
-            // Get which hand is active
-            const activeHand = this.blackjackDealer.getActiveSplitHand();
-            if (!activeHand) {
-                console.error("Split hand exists but no active hand is set");
-                this.blackjackDealer.setActiveSplitHand('first');
-            }
+        // When connected to backend, send the double down action to the server
+        if (this.shouldUseBackend()) {
+            // Set action in progress to prevent double clicks
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'doubleDown';
+            this.blackjackDealer.actionStartTime = Date.now();
             
-            const handToDouble = activeHand || 'first';
-            console.log(`Double down on split hand: ${handToDouble}`);
+            // Hide all buttons during processing
+            this.gameButtonsContainer.hideAllButtons();
             
-            // Deduct the additional bet from balance
-            Globals.balance -= originalBet;
+            // Handle double down action through the backend
+            this.handleGameAction('doubleDown');
             
-            // Update the bet amount
-            Globals.currentBet = originalBet * 2;
+            // Track last action for reference
+            Globals.lastAction = 'doubleDown';
             
-            // Create visual chips for the doubled amount - we use createChipsForBet with 
-            // a single bet amount to avoid doubling issues
-            this.createChipsForBet(originalBet, false, true);
-            
-            // Execute the double down in BlackjackDealer
-            this.blackjackDealer.playerDoubleDown();
-        } else {
-            // Regular double down for non-split scenario
-            // Deduct the additional bet from balance
-            Globals.balance -= originalBet;
-            
-            // Update the bet amount
-            Globals.currentBet = originalBet * 2;
-            
-            // Create visual chips for the doubled amount - we use createChipsForBet with 
-            // a single bet amount to avoid doubling issues
-            this.createChipsForBet(originalBet, false, true);
-            
-            // Execute the double down in BlackjackDealer
-            this.blackjackDealer.playerDoubleDown();
+            return;
         }
         
-        // Update UI to reflect the changes
-        this.uiContainer.updateBalance(Globals.balance);
-        
-        // Update bet display
-        this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet)} Chips`);
+     
     }
     /**
      * Handle when the player clicks the insurance button
      */
     onInsuranceClicked() {
-        console.log("Insurance action");
-
-        // Check if the game is in progress
-        if(this.gameState != "playing") {
-            console.log("Cannot take insurance - game not in progress");
+        console.log("Insurance clicked");
+        
+        // Only allow insurance in playing phase
+        if (this.gameState !== 'playing') {
+            console.log("Cannot take insurance - not in playing phase");
             return;
         }
         
-        // Check if dealer's up card is an ace
-        if (!Result.isInsuranceAvailable(this.blackjackDealer.dealerHand)) {
-            console.log("Insurance not available - dealer's up card is not an Ace");
+        // Check if an action has been in progress for too long and reset if needed
+        this.checkForStuckAction();
+        
+        // Prevent multiple concurrent actions
+        if (this.blackjackDealer.actionInProgress) {
+            console.log("Action already in progress, ignoring insurance");
             return;
         }
         
-        // Check if player has enough balance for insurance
-        const insuranceBet = Globals.currentBet / 2;
-        if (Globals.balance < insuranceBet) {
-            console.log("Not enough balance for insurance");
+        // When connected to backend, send the insurance action to the server
+        if (this.shouldUseBackend()) {
+            // Set action in progress to prevent double clicks
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'insurance';
+            this.blackjackDealer.actionStartTime = Date.now();
+            
+            // Close insurance popup if open
+            this.popupManager.hidePopup();
+            
+            // Handle insurance action through the backend
+            this.handleGameAction('insurance', { takeInsurance: true });
+            
+            // Track last action for reference
+            Globals.lastAction = 'insurance';
+            
             return;
         }
         
-        console.log("Taking insurance with current bet:", Globals.currentBet);
-        console.log("Insurance bet amount:", insuranceBet);
-        
-        // Deduct the insurance bet from balance
-        Globals.balance -= insuranceBet;
-        
-        // Create chips for the insurance bet
-        this.createChipsForBet(insuranceBet, false);
-        
-        // Hide regular game buttons while showing a message about insurance
-        this.gameButtonsContainer.hideAllButtons();
-        
-        // Set the insurance bet in the BlackjackDealer class
-        this.blackjackDealer.playerInsuranceBet = insuranceBet;
-        
-        // Call the insurance method on BlackjackDealer
-        this.blackjackDealer.playerInsurance();
-        
-        // Update the UI to reflect changes
-        this.uiContainer.updateBalance(Globals.balance);
-        
-        // The buttons will be handled by the insuranceProcessed event callback
-        // so we don't need to show buttons here to avoid duplicates
-        
-        console.log("Balance after insurance deduction:", Globals.balance);
+        // Fallback to local implementation
+        try {
+            this.blackjackDealer.actionInProgress = true;
+            this.blackjackDealer.currentAction = 'insurance';
+            this.blackjackDealer.actionStartTime = Date.now();
+            
+            // Calculate insurance amount (half the original bet)
+            const insuranceAmount = Globals.currentBet / 2;
+            
+            // Deduct insurance amount from balance
+            Globals.balance -= insuranceAmount;
+            
+            // Update UI
+            this.uiContainer.updateBalance(Globals.balance);
+            
+            // Process insurance bet
+            const dealerHasBlackjack = this.blackjackDealer.processDealerBlackjackCheck();
+            
+            if (dealerHasBlackjack) {
+                // Insurance won - end the game immediately with insurance won outcome
+                console.log("Insurance won - dealer has blackjack");
+                
+                // Show the insurance won popup immediately
+                this.popupManager.showInsurancePopup(true);
+                
+                // Calculate insurance payout (2:1 on insurance bet)
+                const insurancePayout = this.blackjackDealer.playerInsuranceBet * 2;
+                
+                // Add the insurance payout to the player's balance
+                Globals.balance += insurancePayout;
+                
+                // Update UI
+                this.uiContainer.updateBalance(Globals.balance);
+                
+                // The game has already ended in the blackjackDealer, so we just need
+                // to update our local game state and show the appropriate buttons
+                this.gameState = 'gameEnd';
+                
+                // Store the bet for rebet functionality - handle doubled bets correctly
+                const wasDoubled = this.blackjackDealer.wasDoubled();
+                const initialBetAmount = wasDoubled ? Globals.currentBet / 2 : Globals.currentBet;
+                this.lastBetAmount = initialBetAmount;
+                
+                // Reset current bet
+                Globals.currentBet = 0;
+                
+                // Update UI
+                this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet)} Chips`);
+                
+                // Show game end buttons
+                this.gameButtonsContainer.showGameEndButtons();
+                
+                console.log(`Game ended with insurance win. Balance: ${Globals.balance}, Insurance payout: ${insurancePayout}`);
+            } else {
+                // Insurance lost - show lost popup then continue game
+                console.log("Insurance lost - dealer doesn't have blackjack");
+                
+                // Show an insurance lost popup if available
+                if (Globals.resources.insuranceLostPopup) {
+                    this.popupManager.showPopup(Globals.resources.insuranceLostPopup);
+                    
+                    // Close the popup after a 2 second delay and show gameplay buttons
+                    setTimeout(() => {
+                        this.popupManager.hidePopup(() => {
+                            this.showGameButtons('gameplay');
+                        });
+                    }, 2000);
+                } else if (Globals.resources.insuranceActivePopup) {
+                    // Fallback to generic insurance popup if specific one not available
+                    this.popupManager.showPopup(Globals.resources.insuranceActivePopup);
+                    
+                    // Close the popup after a 2 second delay and show gameplay buttons
+                    setTimeout(() => {
+                        this.popupManager.hidePopup(() => {
+                            this.showGameButtons('gameplay');
+                        });
+                    }, 2000);
+                } else {
+                    // If no popup available, just show gameplay buttons after delay
+                    setTimeout(() => {
+                        this.showGameButtons('gameplay');
+                    }, 2000);
+                }
+            }
+        } finally {
+            // End the action after a delay
+            setTimeout(() => {
+                this.blackjackDealer.actionInProgress = false;
+                this.blackjackDealer.currentAction = '';
+                this.blackjackDealer.actionStartTime = 0;
+            }, 500);
+        }
     }
     /**
      * Handle rebet button click
      * Places a bet with the same amount as the last bet
      */
     onRebetClicked() {
-        console.log("Rebet button clicked");
-       
-        // Prevent multiple rapid clicks
-        if ((this as any)._processingRebet) {
-            console.log("Already processing Rebet action, ignoring duplicate click");
+        console.log("Rebet clicked - Transitioning to Betting phase with automatic bet");
+        
+        // Phase validation: Only allow rebet from appropriate phases
+        if (this.gameState !== 'betting' && this.gameState !== 'gameEnd') {
+            console.log("Cannot rebet - not in betting or game end phase");
+            Globals.emitter?.Call("show_notification", {
+                message: "Cannot rebet at this time",
+                duration: 1500,
+                color: 0xDD0000
+            });
             return;
         }
         
-        // Set flag to prevent multiple calls
-        (this as any)._processingRebet = true;
-        
-        try {
-            // Hide any active popups - this will close the end game popup
-            this.popupManager.hidePopup();
-            
-            // Hide all buttons to prevent UI conflicts
-            this.gameButtonsContainer.hideAllButtons();
-            
-            // Get the last bet amount - use lastBetAmount directly which now
-            // correctly stores the initial bet amount, not the doubled amount
-            const lastBetAmount = this.lastBetAmount;
-            
-            if (!lastBetAmount || lastBetAmount <= 0) {
-                console.log("No previous bet amount available for rebet");
-                
-                // Re-enable chip selection
-                this.table.makeButtonsActive(true);
-                return;
-            }
-            
-            console.log(`Using last bet amount for rebet: ${lastBetAmount}`);
-            
-            // Check if player has enough balance for the rebet
-            if (lastBetAmount > Globals.balance) {
-                console.log("Insufficient balance for rebet");
-                
-                // Re-enable chip selection
-                this.table.makeButtonsActive(true);
-                return;
-            }
-            
-            // Let animations from previous game finish first
-            this.resetGame(() => {
-                // Place the bet using the modified method with forRebet = true
-                // Pass true to skipShowingButtons to prevent showing betting buttons
-                if (this.placeBet(lastBetAmount, true, true)) {
-                    // Show animation of chips flying to betting area
-                    console.log("Animating chips for rebet");
-                     // Reposition hands
-                    this.blackjackDealer.positionHands();
-                    this.blackjackDealer.playerHand.positionCardsInHand(this.blackjackDealer.playerHand);
-                    this.blackjackDealer.playerHand.alpha = 1;
-                    
-                    // Start the game after animations have completed
-                    // Increased delay to allow for chip animations to complete
-                    setTimeout(() => {
-                        console.log("Starting game after rebet");
-                        this.startGame(undefined, true);
-                    }, 800);
-                }
+        // Check if there's a last bet to repeat
+        if (this.lastBetAmount <= 0) {
+            console.log("No previous bet to repeat");
+            Globals.emitter?.Call("show_notification", {
+                message: "No previous bet to repeat",
+                duration: 1500,
+                color: 0xDD0000
             });
-        } finally {
-            // Clear the processing flag after a delay to prevent rapid clicks
-            setTimeout(() => {
-                (this as any)._processingRebet = false;
-            }, 1000); // Increased to avoid rapid clicking during animations
+            return;
         }
+        
+        // Check if player has enough balance
+        if (Globals.balance < this.lastBetAmount) {
+            console.log("Not enough balance to rebet");
+            Globals.emitter?.Call("show_notification", {
+                message: "Insufficient funds for rebet",
+                duration: 1500,
+                color: 0xDD0000
+            });
+            return;
+        }
+        
+        // PHASE TRANSITION: EndGame → Betting → (automatically) → GameInProgress
+        
+        // 1. If we're in EndGame phase, first reset the game
+        if (this.gameState === 'gameEnd') {
+            // Reset game state first
+            this.resetGame(() => {
+                // Then continue with rebet logic after reset completes
+                this.executeRebet();
+            });
+        } else {
+            // Already in betting phase, just execute the rebet
+            this.executeRebet();
+        }
+    }
+
+    /**
+     * Execute the rebet action after any necessary phase transitions
+     * This places the previous bet and starts a new game
+     */
+    private executeRebet(): void {
+        // 1. Send request to backend to place the previous bet
+        this.handleGameAction('rebet');
+        
+        // 2. Update local UI state to show the bet
+        Globals.emitter?.Call("show_notification", {
+            message: `Repeating previous bet: ${formatBetAmount(this.lastBetAmount)}`,
+            duration: 1500,
+            color: 0xFFFFFF
+        });
+        
+        // 3. Create visual chips for the bet (handled by backend response)
+        
+        // 4. Hide betting buttons while processing
+        this.gameButtonsContainer.hideAllButtons();
+        
+        console.log(`Rebet placed with amount ${this.lastBetAmount} - Starting new game`);
     }
           /**
    * Reset the game for a new round
@@ -1378,7 +1471,7 @@ export class GameManager extends Container {
                   // Add the insurance payout to the player's balance
                   Globals.balance += insurancePayout;
                   
-                  // Update UI to reflect the new balance
+                  // Update UI
                   this.uiContainer.updateBalance(Globals.balance);
                   
                   // The game has already ended in the blackjackDealer, so we just need
@@ -1577,7 +1670,7 @@ export class GameManager extends Container {
         
       case 'insuranceEligible':
         if (this.gameState === 'playing' && 
-            Result.isInsuranceAvailable(this.blackjackDealer.dealerHand) &&
+            GameManager.isInsuranceAvailable(this.blackjackDealer.dealerHand) &&
             Globals.balance >= Globals.currentBet / 2) {
           // Only show insurance if dealer shows an Ace and player has enough balance
           this.gameButtonsContainer.showInsuranceEligibleButtons();
@@ -1595,7 +1688,7 @@ export class GameManager extends Container {
       case 'betting':
         // Only show betting buttons in betting state
         if (this.gameState === 'betting') {
-          this.gameButtonsContainer.showBettingButtons();
+           this.showBettingButtonsIfNeeded();
         } else {
           console.log(`Cannot show betting buttons in ${this.gameState} state`);
         }
@@ -1661,38 +1754,11 @@ export class GameManager extends Container {
   }
 
        /**
-     * Deal the initial cards (2 to player, 2 to dealer with one face down)
-     * and handle initial special conditions like blackjack, insurance, and split
+     * Deal initial cards using blackjackDealer
+     * @returns Promise that resolves when initial cards are dealt
      */
-       dealInitialCards(): void {
-        console.log("Dealing initial cards");
-        
-        // Deal first card to player (face up)
-        this.blackjackDealer.playerHand.dealCardWithErrorHandling(true)
-            .then(() => {
-                // Deal first card to dealer (face up)
-                return this.blackjackDealer.dealerHand.dealCardWithErrorHandling(true);
-            })
-            .then(() => {
-                // Deal second card to player (face up)
-                return this.blackjackDealer.playerHand.dealCardWithErrorHandling(true);
-            })
-            .then(() => {
-                // Deal second card to dealer as a backcard with no value
-                // The actual card value will be stored but not used until insurance or game end
-                return this.blackjackDealer.dealBackCardToDealer();
-            })
-            .then(() => {
-                console.log("Initial cards dealt");
-                console.log("Player hand:", this.blackjackDealer.playerHand.value);
-                console.log("Dealer visible card:", this.blackjackDealer.dealerHand.cards[0].value);
-                
-                // Check for special conditions (blackjack, insurance, split)
-                this.blackjackDealer.checkInitialConditions();
-            })
-            .catch(error => {
-                console.error("Error dealing initial cards:", error);
-            });
+    dealInitialCards(): Promise<void> {
+        return this.blackjackDealer.dealInitialCards();
     }
     
     /**
@@ -1711,8 +1777,7 @@ export class GameManager extends Container {
      * @returns Whether the player can split
      */
     canSplit(): boolean {
-        // Use Result.canSplit for consistent checking
-        return Globals.balance >= Globals.currentBet && Result.canSplit(this.blackjackDealer.playerHand);
+        return this.canPlayerSplit();
     }
 
     /**
@@ -1722,7 +1787,35 @@ export class GameManager extends Container {
      * @param dealerValue - The value of the dealer's hand
      */
     private handleGameEnd(outcome: GameOutcome, playerValue: number, dealerValue: number): void {
-      console.log(`Game ended with outcome: ${outcome}`);
+      // Forward to handleBackendGameEnd since all game logic is now on the backend
+      this.handleBackendGameEnd(outcome, playerValue, dealerValue);
+    }
+
+    /**
+     * Check if insurance is available based on dealer's up card
+     * @param dealerHand - The dealer's hand
+     * @returns Whether insurance is available
+     */
+    public static isInsuranceAvailable(dealerHand: any): boolean {
+      // Insurance is only available when dealer's face-up card is an Ace
+      if (!dealerHand || dealerHand.cards.length === 0) {
+        return false;
+      }
+      
+      const dealerUpCard = dealerHand.cards[0];
+      return dealerUpCard.rank === 'A';
+    }
+
+    /**
+     * Handle the end of the game and determine the outcome based on backend data
+     * This method is called when the backend sends the game result
+     * @param outcome - The game outcome from backend
+     * @param playerValue - The value of the player's hand
+     * @param dealerValue - The value of the dealer's hand
+     * @param payoutFromBackend - Optional payout amount from backend
+     */
+    private handleBackendGameEnd(outcome: GameOutcome, playerValue: number, dealerValue: number, payoutFromBackend?: number): void {
+      console.log(`Game ended with outcome from backend: ${outcome}`);
       console.log(`Player: ${playerValue}, Dealer: ${dealerValue}`);
       
       // Prevent multiple executions of handleGameEnd
@@ -1746,49 +1839,14 @@ export class GameManager extends Container {
       // If the bet was doubled, we need to store only half for rebet
       const wasDoubled = this.blackjackDealer.wasDoubled();
       const initialBetAmount = wasDoubled ? originalBet / 2 : originalBet;
+      this.lastBetAmount = initialBetAmount;
       
-      // Handle surrender outcome specially
-      if (outcome === GameOutcome.SURRENDER) {
-        // For surrender, player gets half their bet back
-        const surrenderPayout = Globals.currentBet / 2;
-        Globals.balance += surrenderPayout;
-        console.log(`Player surrendered. Half bet returned: ${surrenderPayout}`);
-        
-        // Show the surrender popup
-        this.showOutcomePopup(GameOutcome.SURRENDER);
-        
-        // Reset bet for next game
-        Globals.currentBet = 0;
-        
-        // Show end game buttons
-        setTimeout(() => {
-          this.gameButtonsContainer.showGameEndButtons();
-        }, 500); // Add a small delay
-        
-        // Update UI for next game
-        this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet)} Chips`);
-        
-        // Store initial bet amount for potential rebet
-        this.lastBetAmount = initialBetAmount;
-        
-        console.log(`Game ended. balance: ${Globals.balance}, Last bet (for rebet): ${this.lastBetAmount}`);
-        return;
-      }
+      // Use payout from backend if provided
+      const payout = payoutFromBackend !== undefined ? 
+                    payoutFromBackend : 
+                    this.calculateDefaultPayout(outcome, originalBet);
       
-      // Get detailed outcome with payout information for non-surrender outcomes
-      const detailedOutcome = Result.determineDetailedOutcome(
-        this.blackjackDealer.playerHand, 
-        this.blackjackDealer.dealerHand,
-        this.blackjackDealer.splitHand,
-        this.blackjackDealer.playerInsuranceBet
-      );
-      
-      console.log("Detailed outcome:", detailedOutcome);
-      
-      // Calculate payout and update balance
-      let payout = detailedOutcome.payout;
-      
-      // Add payout to balance
+      // Add payout to balance if positive
       if (payout > 0) {
         Globals.balance += payout;
         
@@ -1806,7 +1864,7 @@ export class GameManager extends Container {
       Globals.currentBet = 0;
       
       // Show appropriate outcome popup
-      this.showOutcomePopup(detailedOutcome.outcome);
+      this.showOutcomePopup(outcome);
       
       // Show game end buttons with a delay to ensure popup is shown first
       setTimeout(() => {
@@ -1816,171 +1874,30 @@ export class GameManager extends Container {
       // Update UI for next game
       this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet)} Chips`);
       
-      // Store initial bet amount for potential rebet
-      this.lastBetAmount = initialBetAmount;
-      
       // Update special conditions flag
       this._specialConditionsDetected = false;
       
       console.log(`Game ended. balance: ${Globals.balance}, Last bet (for rebet): ${this.lastBetAmount}`);
     }
-  
-    /**
-     * Show the appropriate outcome popup based on game result
-     * @param outcome - The game outcome
-     */
-    private showOutcomePopup(outcome: GameOutcome): void {
-      console.log(`Showing outcome popup for: ${outcome}`);
-      
-      // Handle insurance outcomes
-      if (outcome === GameOutcome.INSURANCE_WON || outcome === GameOutcome.INSURANCE_LOST) {
-        this.popupManager.showInsurancePopup(outcome === GameOutcome.INSURANCE_WON);
-        return;
-      }
-      
-      // Handle split outcomes with special handling
-      if (outcome === GameOutcome.SPLIT_WIN || 
-          outcome === GameOutcome.SPLIT_LOSE || 
-          outcome === GameOutcome.SPLIT_PUSH ||
-          outcome === GameOutcome.SPLIT_WIN_LOSE ||
-          outcome === GameOutcome.SPLIT_WIN_PUSH ||
-          outcome === GameOutcome.SPLIT_LOSE_PUSH) {
-        
-        // For now, map split outcomes to standard outcomes for popup display
-        // In the future, you could create dedicated split outcome popups
-        let mappedOutcome: GameOutcome;
-        
-        switch (outcome) {
-          case GameOutcome.SPLIT_WIN:
-            mappedOutcome = GameOutcome.PLAYER_WIN;
-            break;
-          case GameOutcome.SPLIT_LOSE:
-            mappedOutcome = GameOutcome.DEALER_WIN;
-            break;
-          case GameOutcome.SPLIT_PUSH:
-            mappedOutcome = GameOutcome.PUSH;
-            break;
-          case GameOutcome.SPLIT_WIN_LOSE:
-          case GameOutcome.SPLIT_WIN_PUSH:
-            mappedOutcome = GameOutcome.PLAYER_WIN;
-            break;
-          case GameOutcome.SPLIT_LOSE_PUSH:
-            mappedOutcome = GameOutcome.DEALER_WIN;
-            break;
-          default:
-            mappedOutcome = outcome;
-        }
-        
-        this.popupManager.showOutcomePopup(mappedOutcome);
-        return;
-      }
-      
-      // For standard outcomes, use popup manager directly
-      this.popupManager.showOutcomePopup(outcome);
-      
-      // End game popups now persist until a button is clicked - no auto-hide
-    }
-  
-    /**
-     * Create and display chips for a bet amount
-     * @param betAmount - The bet amount to create chips for
-     * @param addDouble - Whether this is a double down operation
-     * @param forRebet - Whether this is a rebet operation
-     */
-    private createChipsForBet(betAmount: number, addDouble: boolean = false, forRebet: boolean = false): void {
-      console.log("Creating chips for bet amount:", betAmount, forRebet ? "(for rebet)" : "");
-      
-      // Get available chip values from the table
-      const availableChips = this.table.chips.map(chip => chip.value).sort((a, b) => b - a);
-      
-      if (availableChips.length === 0) {
-        console.warn("No chips available to create bet");
-        return;
-      }
-      
-      // Calculate how many of each chip to use (greedy algorithm)
-      let remainingAmount = betAmount;
-      const chipsToCreate: { value: number, count: number }[] = [];
-      
-      for (const chipValue of availableChips) {
-        if (remainingAmount >= chipValue) {
-          const count = Math.floor(remainingAmount / chipValue);
-          chipsToCreate.push({ value: chipValue, count });
-          remainingAmount -= count * chipValue;
-        }
-      }
-      
-      // If there's still a remaining amount, add the smallest chip
-      if (remainingAmount > 0 && availableChips.length > 0) {
-        const smallestChip = availableChips[availableChips.length - 1];
-        chipsToCreate.push({ value: smallestChip, count: 1 });
-      }
-      
-      console.log("Chips to create:", chipsToCreate);
-      
-      // Create and add each chip
-      chipsToCreate.forEach(chipInfo => {
-        for (let i = 0; i < chipInfo.count; i++) {
-          // Find the matching chip in the table
-          const tableChip = this.table.chips.find(c => c.value === chipInfo.value);
-          
-          if (tableChip) {
-            // Create chip data with the same properties as the table chip
-            const chipData = {
-              value: tableChip.value,
-              texture: tableChip.texture
-            };
-            // Add the chip to the betting area, passing the forRebet flag
-            this.addChip(chipData as any, addDouble, forRebet);
-          }
-        }
-      });
-      // Ensure the bet display is visible after creating all chips
-      if (Globals.currentBet > 0 && !this.chipsZone.betHolder.visible) {
-        this.chipsZone.showBetDisplay(Globals.currentBet);
-      }
-    }
     
     /**
-     * Process special game conditions in the correct order
+     * Calculate default payout for an outcome when not provided by backend
+     * This is a fallback for display purposes only
      */
-    private processSpecialConditions(): void {
-        // This is now handled by BlackjackDealer.checkInitialConditions
-        // No need to handle manually anymore
-        console.log("Processing special conditions via BlackjackDealer");
-    }
-
-    /**
-     * Process the next condition in the queue
-     */
-    private processNextCondition(queue: Array<(next: () => void) => void>): void {
-        // This is now handled by BlackjackDealer.checkInitialConditions
-        // No need to handle manually anymore
-    }
-
-    /**
-     * Check for insurance if dealer shows an Ace
-     */
-    private checkForInsurance(next: () => void): void {
-        // This is now handled by BlackjackDealer.checkInitialConditions and playerInsurance
-        // No need to handle manually anymore
-        next();
-    }
-
-    /**
-     * Check if player can split their hand
-     */
-    private checkForSplitCondition(next: () => void): void {
-        // This is now handled by BlackjackDealer.checkInitialConditions and playerSplit
-        // No need to handle manually anymore
-        next();
-    }
-
-    /**
-     * Determine the outcome of the game
-     */
-    determineOutcome(): GameOutcome {
-        return Result.determineOutcome(this.blackjackDealer.playerHand.value, this.blackjackDealer.dealerHand.value);
+    private calculateDefaultPayout(outcome: GameOutcome, betAmount: number): number {
+      switch (outcome) {
+        case GameOutcome.PLAYER_BLACKJACK:
+          return betAmount * 2.5; // Blackjack pays 3:2
+        case GameOutcome.PLAYER_WIN:
+        case GameOutcome.DEALER_BUST:
+          return betAmount * 2; // Regular win pays 1:1
+        case GameOutcome.PUSH:
+          return betAmount; // Push returns the original bet
+        case GameOutcome.SURRENDER:
+          return betAmount * 0.5; // Surrender returns half the bet
+        default:
+          return 0; // Player loses bet
+      }
     }
 
     /**
@@ -2043,5 +1960,1455 @@ export class GameManager extends Container {
             (this as any)._pendingButtonUpdate = null;
             (this as any)._pendingButtonGroupName = null;
         }, delay);
+    }
+
+    /**
+     * Setup listeners for backend events
+     */
+    setupBackendListeners() {
+        // Skip if no backend service available
+        if (!Globals.backendService) {
+            console.warn("No backend service available, skipping backend event listeners");
+            return;
+        }
+        
+        // Handle connection status changes
+        Globals.backendService.addEventListener('connection_status_changed', (data) => {
+            if (data.connected !== undefined) {
+                this._isConnectedToBackend = data.connected;
+                this.updateConnectionIndicator(data.connected);
+                Globals.isOnline = data.connected;
+                
+                // Notify the user of connection status change
+                Globals.emitter?.Call("show_notification", {
+                    message: data.connected ? "Connected to game server" : "Disconnected from game server",
+                    duration: 3000,
+                    color: data.connected ? 0x00AA00 : 0xAA0000
+                });
+                
+                // If disconnected during gameplay, provide additional info
+                if (!data.connected && this.gameState === 'playing') {
+                    Globals.emitter?.Call("show_notification", {
+                        message: "Connection lost. Game state saved on server.",
+                        duration: 5000,
+                        color: 0xAA5500
+                    });
+                }
+            }
+        });
+        
+        // Handle player data updates including balance
+        Globals.backendService.addEventListener('player_data_updated', (data) => {
+            if (data.balance !== undefined) {
+                console.log(`Updating player balance from server: ${data.balance}`);
+                Globals.balance = data.balance;
+                this.uiContainer.updateBalance(data.balance);
+            }
+        });
+        
+        // Handle reconnection event
+        Globals.backendService.addEventListener('reconnected', () => {
+            console.log("Reconnected to server, requesting game state");
+            
+            // Request current game state after reconnection
+            if (Globals.backendService) {
+                Globals.backendService.getGameState();
+            }
+            
+            // Show notification
+            Globals.emitter?.Call("show_notification", {
+                message: "Reconnected to server. Restoring game state...",
+                duration: 3000,
+                color: 0x00AA00
+            });
+        });
+        
+        // Handle game state updates - primary way backend communicates with frontend
+        Globals.backendService.addEventListener('game_state_updated', (data) => {
+            this.handleGameStateUpdate(data);
+        });
+        
+        // Add specific event listeners for detailed game events
+        
+        // Bet placed event
+        Globals.backendService.addEventListener('bet_placed', (data) => {
+            // Update UI to reflect bet
+            if (data.currentBalance !== undefined) {
+                Globals.balance = data.currentBalance;
+                this.uiContainer.updateBalance(data.currentBalance);
+            }
+            
+            if (data.betAmount !== undefined) {
+                Globals.currentBet = data.betAmount;
+                this.lastBetAmount = data.betAmount;
+                this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(data.betAmount)} Chips`);
+                this.chipsZone.betHolder.isVisible(true);
+                
+                // Create visual chips for the bet amount
+                this.createChipsForBet(data.betAmount, false, false);
+            }
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Insurance offer event
+        Globals.backendService.addEventListener('offer_insurance', (data) => {
+            // Show insurance dialog
+            this.showInsurancePopup(data.dealerCard, data.insuranceAmount);
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Insurance result event
+        Globals.backendService.addEventListener('insurance_result', (data) => {
+            // Handle insurance result
+            this.handleInsuranceResult(data);
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Split offer event
+        Globals.backendService.addEventListener('offer_split', (data) => {
+            // Show split option
+            this.gameButtonsContainer.showButton(GameButtonType.SPLIT);
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Split result event
+        Globals.backendService.addEventListener('split_result', (data) => {
+            // Update UI to show split hands
+            this.handleSplitResult(data);
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Split hand switch event
+        Globals.backendService.addEventListener('split_hand_switch', (data) => {
+            // Highlight the active hand
+            if (data.activeHand) {
+                this.highlightActiveSplitHand(data.activeHand);
+                
+                // Update UI buttons to match active hand
+                setTimeout(() => {
+                    if (this.gameState === 'playing') {
+                        if (data.allowedActions && Array.isArray(data.allowedActions)) {
+                            this.updateButtonsFromAllowedActions(data.allowedActions, 'player_turn');
+                        } else {
+                            this.gameButtonsContainer.showButtonGroup('gameplayAfterHit');
+                        }
+                    }
+                }, 300);
+            }
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Game outcome event
+        Globals.backendService.addEventListener('game_outcome', (data) => {
+            // Show game result
+            this.handleGameOutcome(data);
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Dealer turn event
+        Globals.backendService.addEventListener('dealer_turn', (data) => {
+            // Animate dealer card reveal and dealing
+            this.handleDealerTurn();
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+        });
+        
+        // Card dealt event
+        Globals.backendService.addEventListener('card_dealt', (data) => {
+            // Update the card display based on the data
+            console.log("card dealt to", data);
+            if (data.card && data.target) {
+                console.log(`Card dealt to ${data.target}:`, data.card);
+                
+              
+                // Update the appropriate hand with the new card
+                if (data.target === 'player') {
+                    setTimeout(()=>{
+                        this.blackjackDealer.playerHand.updateCardFromBackend(data.card);
+                    },data.index == 0 ? 500 : 3000*data.index);
+                } else if (data.target === 'dealer') {
+                    setTimeout(()=>{
+                        this.blackjackDealer.dealerHand.updateCardFromBackend(data.card);
+                    },data.index == 0 ? 1000 : 4000*data.index);
+                } else if (data.target === 'split') {
+                    setTimeout(()=>{
+                        if (this.blackjackDealer.splitHand) {
+                            this.blackjackDealer.splitHand.updateCardFromBackend( data.card);
+                        }
+                    },data.index == 0 ? 500 : 1000*data.index);
+                }
+                
+                // Optionally show a notification about the card
+                // Update the game state directly based on the card data
+                // The next game state update will refresh the UI with the correct cards
+                
+                // Note: We don't animate new cards here since the full state update
+                // will handle refreshing the UI with all cards in their proper positions
+                
+                // Optionally show a notification about the card
+                if (data.message) {
+                    Globals.emitter?.Call("show_notification", {
+                        message: data.message,
+                        duration: 1500,
+                        color: 0xFFFFFF
+                    });
+                }
+            }
+            
+            // Reset action in progress state after card dealing animation completes
+            setTimeout(() => {
+                this.blackjackDealer.actionInProgress = false;
+                this.blackjackDealer.currentAction = '';
+            }, 500);
+        });
+        
+        // Action result event
+        Globals.backendService.addEventListener('action_result', (data) => {
+            if (data.success) {
+                // Action was successful, wait for game state update
+                console.log(`Action ${data.action} successful`);
+                
+                // Show brief notification for player
+                if (data.message) {
+                    Globals.emitter?.Call("show_notification", {
+                        message: data.message,
+                        duration: 1500,
+                        color: 0xFFFFFF
+                    });
+                }
+            } else {
+                // Action failed, show error and reset state
+                console.error(`Action ${data.action} failed: ${data.message}`);
+                
+                // Show error to user
+                Globals.emitter?.Call("show_notification", {
+                    message: data.message || `Unable to ${data.action}`,
+                    duration: 3000,
+                    color: 0xAA0000
+                });
+                
+                // Reset action in progress state
+                this.blackjackDealer.actionInProgress = false;
+                this.blackjackDealer.currentAction = '';
+                
+                // Show appropriate buttons
+                if (this.gameState === 'playing') {
+                    this.gameButtonsContainer.showGameplayButtons();
+                } else if (this.gameState === 'betting') {
+                     this.showBettingButtonsIfNeeded();
+                }
+            }
+        });
+        
+        // Handle errors
+        Globals.backendService.addEventListener('server_error', (data) => {
+            // Show error to user
+            Globals.emitter?.Call("show_notification", {
+                message: `Error: ${data.message}`,
+                duration: 3000,
+                color: 0xAA0000
+            });
+            
+            // Reset action in progress state
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+            
+            // Show appropriate buttons
+            if (this.gameState === 'playing') {
+                this.gameButtonsContainer.showGameplayButtons();
+            } else if (this.gameState === 'betting') {
+                 this.showBettingButtonsIfNeeded();
+            }
+        });
+    }
+    
+    /**
+     * Show appropriate controls for offline mode
+     * @deprecated Offline mode is not supported
+     */
+    private showOfflineModeControls(): void {
+        console.warn("Offline mode is not supported");
+    }
+    
+    /**
+     * Reset the game to a clean state
+     * @deprecated Use resetGame instead
+     */
+    private resetGameState(): void {
+        this.resetGame();
+    }
+
+    /**
+     * Update game state from server data
+     */
+    private handleGameStateUpdate(data: any): void {
+        console.log("Handling game state update:", data);
+        
+        // Save game state from server
+        const {
+            playerHand,
+            dealerHand,
+            splitHand,
+            activeSplitHand,
+            playerBalance,
+            currentBet,
+            insuranceBet,
+            gamePhase,
+            allowedActions,
+            outcome,
+            message,
+            payout
+        } = data;
+        
+        // Reset the action in progress state since we received an update
+        this.blackjackDealer.actionInProgress = false;
+        this.blackjackDealer.currentAction = '';
+        
+        // Update balance if provided
+        if (playerBalance !== undefined) {
+            Globals.balance = playerBalance;
+            this.uiContainer.updateBalance(playerBalance);
+        }
+        
+        // Update bet amount if provided
+        if (currentBet !== undefined) {
+            Globals.currentBet = currentBet;
+            this.lastBetAmount = currentBet;
+            
+            // Update bet display
+            this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(currentBet)} Chips`);
+            this.chipsZone.betHolder.isVisible(currentBet > 0);
+        }
+        
+        // Update insurance bet if provided
+        if (insuranceBet !== undefined && this.blackjackDealer) {
+            this.blackjackDealer.playerInsuranceBet = insuranceBet;
+        }
+        
+        // Save the previous game phase to handle transitions
+        const previousGamePhase = gamePhase ? this.gameState : null;
+        
+        // Update game phase if provided
+        if (gamePhase !== undefined) {
+            const oldGameState = this.gameState;
+            
+            // Map backend game phase to frontend game state
+            switch (gamePhase) {
+                case 'betting':
+                    this.gameState = 'betting';
+                    break;
+                case 'dealing':
+                case 'player_turn':
+                    this.gameState = 'playing';
+                    break;
+                case 'dealer_turn':
+                    this.gameState = 'playing';
+                    break;
+                case 'complete':
+                    this.gameState = 'gameEnd';
+                    break;
+            }
+            
+            // Handle phase transitions
+            if (oldGameState !== this.gameState) {
+                console.log(`Game phase changed from ${oldGameState} to ${this.gameState}`);
+                
+                // PHASE 1: GAME START - Betting to Playing transition
+                if (oldGameState === 'betting' && this.gameState === 'playing') {
+                    // Disable chip selection during gameplay
+                    this.table.makeButtonsActive(false);
+                    
+                    // Animate chips down and out of the way
+                    this.table.animateChipsDown();
+                    
+                    // Ensure cards are dealt on the frontend when transitioning to playing state
+                    this.ensureCardsDealt(playerHand, dealerHand, splitHand);
+                }
+                // PHASE 3: GAME END - Playing to GameEnd transition
+                else if (oldGameState === 'playing' && this.gameState === 'gameEnd') {
+                    // Show game outcome when transitioning to game end state
+                    if (outcome) {
+                        // If payout is provided, show win animation
+                        if (payout && payout > 0) {
+                            this.result.showWin(payout);
+                        }
+                        
+                        this.handleServerGameOutcome(outcome, message);
+                    }
+                    
+                    // Show game end buttons
+                    this.gameButtonsContainer.showGameEndButtons();
+                }
+                // Handle any other transitions
+                else if (this.gameState === 'betting') {
+                    // Reset the table when returning to betting phase
+                    this.chipsZone.clearChips();
+                    this.blackjackDealer.resetHands();
+                    
+                    // Re-enable chip selection
+                    this.table.makeButtonsActive(true);
+                    
+                    // Restore chips to their original position
+                    this.table.animateChipsUp();
+                    
+                    // Show betting buttons
+                     this.showBettingButtonsIfNeeded();
+                }
+            }
+        }
+        
+        // PHASE 2: GAMEPLAY - Update hands from server state when in playing phase
+        if (this.gameState === 'playing') {
+            this.updateHandsFromServerState(playerHand, dealerHand, splitHand);
+            
+            // Update active split hand if in split mode
+            if (splitHand && activeSplitHand) {
+                this.blackjackDealer.setActiveSplitHand(activeSplitHand);
+                this.highlightActiveSplitHand(activeSplitHand);
+            }
+            
+            // If we're in dealer turn phase, make sure dealer's hole card is revealed
+            if (gamePhase === 'dealer_turn') {
+                this.revealDealerCardIfNeeded();
+                
+                // Hide all buttons during dealer turn
+                this.gameButtonsContainer.hideAllButtons();
+                
+                // Show message to user
+                Globals.emitter?.Call("show_notification", {
+                    message: "Dealer's turn",
+                    duration: 2000,
+                    color: 0xFFFFFF
+                });
+            }
+        }
+        
+        // Update buttons based on allowed actions if we're in betting, dealing, or player turn phase
+        if (allowedActions && Array.isArray(allowedActions) && 
+            (gamePhase === 'betting' || gamePhase === 'dealing' || gamePhase === 'player_turn')) {
+            this.updateButtonsFromAllowedActions(allowedActions, gamePhase);
+        }
+    }
+
+    /**
+     * Update buttons based on allowed actions from server
+     */
+    private updateButtonsFromAllowedActions(allowedActions: string[], gamePhase: string): void {
+        if (!allowedActions || allowedActions.length === 0) {
+            // If no actions are allowed, hide all buttons
+            this.gameButtonsContainer.hideAllButtons();
+            return;
+        }
+        
+        console.log(`Updating buttons based on allowed actions: ${allowedActions.join(', ')} in phase ${gamePhase}`);
+        
+        // Convert action strings to uppercase for consistent comparison
+        const actions = allowedActions.map(action => action.toUpperCase());
+        
+        // Handle different game phases with specialized button logic
+        switch (gamePhase) {
+            case 'betting':
+                // In betting phase, show bet controls and play/rebet/clear buttons
+                if (actions.includes('PLACE_BET')) {
+                    // Make table chip buttons active
+                    this.table.makeButtonsActive(true);
+                    
+                    // Show betting button group with appropriate buttons based on allowed actions
+                    const buttonGroup = this.gameButtonsContainer.showButtonGroup('betting');
+                    
+                    // Only show rebet if it's allowed
+                    if (!actions.includes('REBET')) {
+                        this.gameButtonsContainer.hideRebetButton();
+                    }
+                    
+                    // Only show clear if there's a bet to clear
+                    if (Globals.currentBet <= 0) {
+                        this.gameButtonsContainer.hideClearButton();
+                    }
+                } else {
+                    // If betting is not allowed, disable chip selection
+                    this.table.makeButtonsActive(false);
+                }
+                break;
+                
+            case 'dealing':
+            case 'player_turn':
+                // In player's turn, determine the appropriate button combination based on available actions
+                
+                // Special case: Insurance option
+                if (actions.includes('INSURANCE')) {
+                    // Show insurance dialog instead of buttons
+                    const dealerCard = this.blackjackDealer.dealerHand.cards[0];
+                    const insuranceAmount = Globals.currentBet / 2;
+                    this.showInsurancePopup(dealerCard, insuranceAmount);
+                    return;
+                }
+                
+                // Hide all buttons first to prevent stale UI
+        this.gameButtonsContainer.hideAllButtons();
+                
+                // Clear any pending button updates
+                if ((this as any)._pendingButtonUpdate) {
+                    clearTimeout((this as any)._pendingButtonUpdate);
+                    (this as any)._pendingButtonUpdate = null;
+                }
+                
+                // Determine which gameplay button set to show
+                if (actions.includes('SPLIT') && actions.includes('DOUBLE_DOWN')) {
+                    // Both split and double down available - full options
+                    this.gameButtonsContainer.showButtonGroup('splitEligible');
+                } 
+                else if (actions.includes('SPLIT')) {
+                    // Only split available (not enough balance for double down)
+                    this.gameButtonsContainer.showButtonGroup('splitEligibleNoDouble');
+                } 
+                else if (actions.includes('DOUBLE_DOWN')) {
+                    // Double down available but not split
+                    this.gameButtonsContainer.showButtonGroup('gameplay');
+                } 
+                else if (actions.includes('HIT') && actions.includes('STAND')) {
+                    // Basic hit/stand options - likely after first hit or when doubled not allowed
+                    this.gameButtonsContainer.showButtonGroup('gameplayAfterHit');
+                }
+                else if (actions.includes('STAND') && !actions.includes('HIT')) {
+                    // Only stand available - typically when player has 21
+                    this.gameButtonsContainer.showGameplayAfter21Buttons();
+                }
+                else if (actions.includes('SURRENDER')) {
+                    // Show surrender button if available
+                    this.gameButtonsContainer.showSurrenderButton();
+                }
+                
+                // Check for split mode specific logic
+                const activeSplitHand = this.blackjackDealer.getActiveSplitHand();
+                if (activeSplitHand) {
+                    // Highlight the active split hand
+                    this.highlightActiveSplitHand(activeSplitHand);
+                }
+                break;
+                
+            case 'dealer_turn':
+                // No buttons during dealer turn
+        this.gameButtonsContainer.hideAllButtons();
+        
+                // Show message to user
+            Globals.emitter?.Call("show_notification", {
+                    message: "Dealer's turn",
+                    duration: 2000,
+            color: 0xFFFFFF
+        });
+                    break;
+                
+            case 'complete':
+                // When game is complete, show game end buttons (PLAY_AGAIN, REBET)
+                this.gameButtonsContainer.showGameEndButtons();
+                    break;
+                
+                default:
+                console.warn(`Unknown game phase: ${gamePhase}`);
+                // As a fallback, show buttons based on provided allowed actions
+                this.showButtonsBasedOnAllowedActions(actions);
+        }
+    }
+
+    /**
+     * Fallback method to show buttons based solely on allowed actions list
+     * @param actions List of allowed actions from the server
+     */
+    private showButtonsBasedOnAllowedActions(actions: string[]): void {
+        // Hide all buttons first
+        this.gameButtonsContainer.hideAllButtons();
+        
+        // Show the relevant buttons based on allowed actions
+        if (actions.includes('HIT')) {
+            this.gameButtonsContainer.showHitButton();
+        }
+        
+        if (actions.includes('STAND')) {
+            this.gameButtonsContainer.showStandButton();
+        }
+        
+        if (actions.includes('DOUBLE_DOWN')) {
+            this.gameButtonsContainer.showDoubleButton();
+        }
+        
+        if (actions.includes('SPLIT')) {
+            this.gameButtonsContainer.showSplitButton();
+        }
+        
+        if (actions.includes('SURRENDER')) {
+            this.gameButtonsContainer.showSurrenderButton();
+        }
+        
+        if (actions.includes('INSURANCE')) {
+            this.gameButtonsContainer.showInsuranceButton();
+        }
+        
+        if (actions.includes('PLACE_BET') || actions.includes('DEAL_CARDS')) {
+            this.gameButtonsContainer.showPlayButton();
+        }
+        
+        if (actions.includes('REBET')) {
+            this.gameButtonsContainer.showRebetButton();
+        }
+        
+        if (Globals.currentBet > 0 && this.gameState === 'betting') {
+            this.gameButtonsContainer.showClearButton();
+        }
+    }
+
+    /**
+     * Ensure cards are properly dealt on the frontend to match backend state
+     */
+    private ensureCardsDealt(playerHand: any, dealerHand: any, splitHand: any): void {
+        // If frontend has no cards but backend does, animate dealing cards
+        const frontendHasCards = this.blackjackDealer.playerHand.cards.length > 0;
+        const backendHasCards = playerHand && playerHand.cards && playerHand.cards.length > 0;
+        
+        if (!frontendHasCards && backendHasCards) {
+            // Trigger card dealing animation
+            console.log("Syncing frontend with backend cards state");
+            
+            // Deal the cards with animation
+            this.dealInitialCards().then(() => {
+                console.log("Initial cards dealt, showing gameplay buttons");
+                
+                // Show gameplay buttons after dealing animation completes
+                if (this.gameState === 'playing') {
+                    setTimeout(() => {
+                        // Ensure buttons are shown based on allowed actions
+                        this.gameButtonsContainer.showGameplayButtons();
+                    }, 500);
+                }
+            });
+        }
+    }
+
+    /**
+     * Handle game outcome received from server
+     */
+    private handleServerGameOutcome(outcome: string, message: string): void {
+        // Convert server outcome to frontend outcome enum
+        let frontendOutcome: GameOutcome;
+        
+        switch (outcome) {
+            case 'player_win':
+                frontendOutcome = GameOutcome.PLAYER_WIN;
+                break;
+            case 'dealer_win':
+                frontendOutcome = GameOutcome.DEALER_WIN;
+                break;
+            case 'push':
+                frontendOutcome = GameOutcome.PUSH;
+                break;
+            case 'player_blackjack':
+                frontendOutcome = GameOutcome.PLAYER_BLACKJACK;
+                break;
+            case 'player_bust':
+                frontendOutcome = GameOutcome.PLAYER_BUST;
+                break;
+            case 'dealer_bust':
+                frontendOutcome = GameOutcome.DEALER_BUST;
+                break;
+            case 'surrender':
+                frontendOutcome = GameOutcome.SURRENDER;
+                break;
+            default:
+                console.warn(`Unknown outcome from server: ${outcome}`);
+                frontendOutcome = GameOutcome.PLAYER_WIN;
+                break;
+        }
+        
+        // Show outcome popup with a slight delay to allow animations to complete
+        setTimeout(() => {
+            this.showOutcomePopup(frontendOutcome);
+        }, 500);
+    }
+    
+    /**
+     * Update UI hands from server state
+     */
+    private updateHandsFromServerState(playerHand: any, dealerHand: any, splitHand: any): void {
+        // Update player hand
+        if (playerHand) {
+            this.blackjackDealer.updatePlayerHandFromServer(playerHand);
+        }
+        
+        // Update dealer hand
+        if (dealerHand) {
+            this.blackjackDealer.updateDealerHandFromServer(dealerHand);
+        }
+        
+        // Update split hand if available
+        if (splitHand) {
+            this.blackjackDealer.updateSplitHandFromServer(splitHand);
+        }
+    }
+    
+    /**
+     * Handle insurance result
+     */
+    private handleInsuranceResult(data: any): void {
+        const { dealerHasBlackjack, payout } = data;
+        
+        if (dealerHasBlackjack) {
+            // Dealer has blackjack, insurance pays out
+            this.blackjackDealer.revealDealerCard();
+            
+            // Show insurance win notification
+            Globals.emitter?.Call("show_notification", {
+                message: `Insurance pays ${formatBetAmount(payout)} chips`,
+                duration: 3000
+            });
+        } else {
+            // Dealer doesn't have blackjack, insurance lost
+            Globals.emitter?.Call("show_notification", {
+                message: "Insurance lost",
+                duration: 2000
+            });
+        }
+        
+        // Close insurance popup
+        this.popupManager.hidePopup();
+    }
+    
+    /**
+     * Handle split result from server
+     */
+    private handleSplitResult(data: any): void {
+        const { playerHand, splitHand, activeHand, balance } = data;
+        
+        // Update balance
+        if (balance !== undefined) {
+            Globals.balance = balance;
+            this.uiContainer.updateBalance(balance);
+        }
+        
+        // Update hands from server data
+        if (playerHand) {
+            this.blackjackDealer.updatePlayerHandFromServer(playerHand);
+        }
+        
+        if (splitHand) {
+            this.blackjackDealer.updateSplitHandFromServer(splitHand);
+        }
+        
+        // Set the active hand
+        if (activeHand) {
+            this.blackjackDealer.setActiveSplitHand(activeHand);
+            this.highlightActiveSplitHand(activeHand);
+        }
+        
+        // Hide split and insurance buttons, show hit/stand
+        this.gameButtonsContainer.hideSplitButton();
+        this.gameButtonsContainer.hideInsuranceButton();
+        this.gameButtonsContainer.showHitStandButtons();
+        
+        // Check if double down is still allowed for the first hand
+        if (data.allowedActions && data.allowedActions.includes('doubleDown')) {
+            this.gameButtonsContainer.showDoubleButton();
+        } else {
+            this.gameButtonsContainer.hideDoubleButton();
+        }
+    }
+    
+    /**
+     * Handle dealer turn animation
+     */
+    private handleDealerTurn(): void {
+        // First reveal dealer's hole card if not already revealed
+        this.revealDealerCardIfNeeded();
+        
+        // Then proceed with dealer turn (will be handled by backend)
+        console.log("Dealer turn in progress...");
+        
+        // Notify UI to hide buttons during dealer turn
+        this.gameButtonsContainer.hideAllButtons();
+    }
+    
+    /**
+     * Reveal dealer's hole card if needed
+     */
+    private revealDealerCardIfNeeded(): void {
+        if (this.blackjackDealer && 
+            this.blackjackDealer.dealerHand && 
+            this.blackjackDealer.dealerHand.cards.length > 1 && 
+            !this.blackjackDealer.dealerHand.cards[1].faceUp) {
+            
+            // Reveal the dealer's hole card by calling the appropriate method on the hand
+            if (typeof this.blackjackDealer.dealerHand.revealDealerCard === 'function') {
+                this.blackjackDealer.dealerHand.revealDealerCard();
+            } else {
+                console.warn("revealDealerCard method not available on dealer hand");
+                // Make the card face up directly as a fallback
+                this.blackjackDealer.dealerHand.cards[1].faceUp = true;
+                this.blackjackDealer.dealerHand.calculateValue();
+            }
+        }
+    }
+    
+    /**
+     * Handle game outcome
+     */
+    private handleGameOutcome(data: any): void {
+        const { outcome, message, payout, playerBalance } = data;
+        
+        // Update balance
+        if (playerBalance !== undefined) {
+            Globals.balance = playerBalance;
+            this.uiContainer.updateBalance(Globals.balance);
+        }
+        
+        // Show game result
+        if (this.result) {
+            this.result.showResult(outcome, message || "Game ended", payout || 0);
+        }
+        
+        // Update game state
+        this.gameState = 'gameEnd';
+        
+        // Show play on button after a short delay
+        setTimeout(() => {
+            this.gameButtonsContainer.showButtonGroup('gameEnd');
+        }, 2000);
+    }
+    
+    /**
+     * Display insurance popup
+     * @param dealerCard - The dealer's face-up card
+     * @param insuranceAmount - The amount of insurance
+     */
+    private showInsurancePopup(dealerCard: any, insuranceAmount: number): void {
+        // Display insurance popup
+        this.popupManager.showInsurancePopup(
+            dealerCard,
+            insuranceAmount,
+            // Yes callback
+            () => {
+                if (Globals.backendService) {
+                    Globals.backendService.insurance(true);
+                }
+            },
+            // No callback
+            () => {
+                if (Globals.backendService) {
+                    Globals.backendService.insurance(false);
+                }
+            }
+        );
+    }
+
+    /**
+     * Handle bet click from the table
+     */
+    onBetClicked(chipType: any, chipValue: number) {
+        console.log("Bet clicked", chipType, chipValue);
+        
+        // Prevent rapid clicking or clicking during clear operation
+        if (this._betClickDebounce || this._pendingClearOperation) {
+            console.log("Bet click debounced or clear in progress, ignoring");
+            return;
+        }
+        
+        // Set debounce flag (will be reset after a short delay)
+        this._betClickDebounce = true;
+        
+        // Only allow betting in betting phase
+        if (this.gameState !== 'betting') {
+            console.log("Cannot bet - not in betting phase");
+            this._betClickDebounce = false;
+            return;
+        }
+        
+        // Check if the player has enough balance
+        if (Globals.balance < chipValue) {
+            console.log("Not enough balance to place bet");
+            this._betClickDebounce = false;
+            return;
+        }
+        
+        // When connected to backend, send the bet action to the server
+        if (this.shouldUseBackend()) {
+            // Update UI immediately for responsive feel
+            Globals.balance -= chipValue;
+            Globals.currentBet += chipValue;
+            this.lastBetAmount = Globals.currentBet;
+            
+            // Update UI
+            this.uiContainer.updateBalance(Globals.balance);
+            
+            // Send the bet action to the server
+            this.handleGameAction('bet', { amount: chipValue });
+            
+            // Update bet amount display
+            const formattedBet = formatBetAmount(Globals.currentBet);
+            this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formattedBet} Chips`);
+            
+            // Ensure the bet holder is visible
+            if (!this.chipsZone.betHolder.visible) {
+                this.chipsZone.showBetDisplay(Globals.currentBet);
+            }
+            
+            // Ensure betting buttons are shown (only if needed)
+            this.showBettingButtonsIfNeeded();
+            
+            // Reset debounce flag after a longer delay (150ms) - gives time for animations
+            setTimeout(() => {
+                this._betClickDebounce = false;
+            }, 150);
+            
+            return;
+        }
+        
+        // Fallback to local implementation
+        Globals.balance -= chipValue;
+        Globals.currentBet += chipValue;
+        this.lastBetAmount = Globals.currentBet;
+        
+        // Update UI
+        this.uiContainer.updateBalance(Globals.balance);
+        this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet)} Chips`);
+        
+        // Ensure the bet holder is visible
+        if (!this.chipsZone.betHolder.visible) {
+            this.chipsZone.showBetDisplay(Globals.currentBet);
+        }
+        
+        
+        // Reset debounce flag after a longer delay
+        setTimeout(() => {
+            this._betClickDebounce = false;
+        }, 150);
+    }
+
+    /**
+     * Handle deal button click
+     */
+    onDealClicked() {
+        console.log("Deal clicked");
+        
+        // Only allow dealing in betting phase with a bet placed
+        if (this.gameState !== 'betting' || Globals.currentBet <= 0) {
+            console.log("Cannot deal - not in betting phase or no bet placed");
+            return;
+        }
+        
+        // When connected to backend, send the deal action to the server
+        if (this.shouldUseBackend()) {
+            this.handleGameAction('deal');
+            return;
+        }
+        
+        // Fallback to local implementation
+        this.gameState = 'playing';
+        this.blackjackDealer.dealInitialCards();
+        
+        // Hide betting buttons
+        this.gameButtonsContainer.hideAllButtons();
+        
+        // Show appropriate gameplay buttons
+        this.setupGameEventCallback();
+    }
+
+    /**
+     * Handle double down button click
+     */
+    onDoubleDownClicked() {
+        console.log("Double Down clicked");
+        
+        // Only allow double down in playing phase
+        if (this.gameState !== 'playing') {
+            console.log("Cannot double down - not in playing phase");
+            return;
+        }
+        
+        // Check if an action has been in progress for too long and reset if needed
+        this.checkForStuckAction();
+        
+        // Prevent multiple concurrent actions
+        if (this.blackjackDealer.actionInProgress) {
+            console.log("Action already in progress, ignoring double down");
+            return;
+        }
+        
+        // Check if player has enough balance to double down
+        if (Globals.balance < Globals.currentBet) {
+            console.log("Not enough balance to double down");
+            return;
+        }
+        
+        // Use backend if connected
+        if (this._isConnectedToBackend && Globals.backendService) {
+            // Send double down command to backend
+            Globals.backendService.doubleDown();
+            Globals.lastAction = 'doubleDown';
+            return;
+        }
+        
+        // Fallback to local implementation
+        Globals.balance -= Globals.currentBet;
+        Globals.currentBet *= 2;
+        
+        // Update UI
+        this.uiContainer.updateBalance(Globals.balance);
+        this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText(`${formatBetAmount(Globals.currentBet)} Chips`);
+        
+      
+        // Hide all buttons during dealer's turn
+        this.gameButtonsContainer.hideAllButtons();
+    }
+
+    /**
+     * Handle play on button click
+     * This transitions the game from EndGame phase back to Betting phase
+     */
+    onPlayOnClicked() {
+        console.log("Play On clicked - Transitioning to Betting phase");
+        
+        // Phase validation: Only allow transition from EndGame phase
+        if (this.gameState !== 'gameEnd') {
+            console.log("Cannot play on - not in game end phase");
+            Globals.emitter?.Call("show_notification", {
+                message: "Game not completed yet",
+                duration: 1500,
+                color: 0xDD0000
+            });
+            return;
+        }
+        
+        // PHASE TRANSITION: EndGame → Betting
+        
+        // 1. Set UI state to indicate transition
+        this.gameButtonsContainer.hideAllButtons();
+        
+        // 2. Show loading indicator
+        Globals.emitter?.Call("show_notification", {
+            message: "Starting new round...",
+            duration: 1500,
+            color: 0xFFFFFF
+        });
+        
+        // 3. Animate the transition visually
+        this.resetGame(() => {
+            // 4. Send request to backend to transition to betting phase
+            if (Globals.backendService) {
+                Globals.backendService.returnToBettingPhase();
+            }
+            
+            // 5. Update local game state
+            this.gameState = 'betting';
+            
+            // 6. Re-enable chip selection
+            this.table.makeButtonsActive(true);
+        });
+        
+        console.log("New round ready - Phase transitioned to Betting");
+    }
+
+    /**
+     * Check if backend connectivity should be used
+     * @returns Always true since all game logic is managed by the backend
+     */
+    private shouldUseBackend(): boolean {
+        // Always use backend for game logic - local game logic has been removed
+        return true;
+    }
+
+
+    /**
+     * Centralized handler for all gameplay actions
+     * This ensures all player actions are routed through the backend when available
+     * @param action The action to perform
+     * @param params Additional parameters for the action
+     */
+    private handleGameAction(action: string, params: any = {}): void {
+        // Prevent redundant actions if one is already in progress
+        if (this.blackjackDealer.actionInProgress && 
+            !(action === 'stand' && this.blackjackDealer.currentAction === 'hit')) {
+            console.log(`Action ${action} skipped - action ${this.blackjackDealer.currentAction} already in progress`);
+            return;
+        }
+        
+        console.log(`Sending action to backend: ${action}`, params);
+        
+        // Track the action being sent to backend
+        this.blackjackDealer.actionInProgress = true;
+        this.blackjackDealer.currentAction = action;
+        this.blackjackDealer.actionStartTime = Date.now();
+        
+        // Set a safety timeout to reset action flag if no response is received
+        // This prevents the UI from getting stuck if there's a communication issue
+        const safetyTimeout = setTimeout(() => {
+            if (this.blackjackDealer.actionInProgress && this.blackjackDealer.currentAction === action) {
+                console.log(`Safety timeout triggered for action ${action} - resetting action in progress state`);
+                this.blackjackDealer.actionInProgress = false;
+                this.blackjackDealer.currentAction = '';
+                this.blackjackDealer.actionStartTime = 0;
+            }
+        }, 3000); // 3 second safety timeout
+        
+        // Send action to backend with error handling
+        try {
+            // Ensure backendService exists
+            if (!Globals.backendService) {
+                throw new Error("Backend service not available");
+            }
+            
+            // Direct call to the appropriate backend service method
+            switch(action) {
+                case 'bet':
+                    Globals.backendService.placeBet(params.amount);
+                    break;
+                case 'deal':
+                    Globals.backendService.dealCards();
+                    break;
+                case 'hit':
+                    Globals.backendService.hit(params.hand);
+                    break;
+                case 'stand':
+                    Globals.backendService.stand(params.hand);
+                    break;
+                case 'doubleDown':
+                    Globals.backendService.doubleDown();
+                    break;
+                case 'split':
+                    Globals.backendService.split();
+                    break;
+                case 'insurance':
+                    Globals.backendService.insurance(params.takeInsurance);
+                    break;
+                case 'surrender':
+                    Globals.backendService.surrender();
+                    break;
+                case 'rebet':
+                    Globals.backendService.rebet();
+                    break;
+                case 'clearBet':
+                    Globals.backendService.clearBet();
+                    break;
+                default:
+                    console.error(`Unknown action: ${action}`);
+                    // Clear the action in progress state
+                    clearTimeout(safetyTimeout);
+                    this.blackjackDealer.actionInProgress = false;
+                    this.blackjackDealer.currentAction = '';
+                    this.blackjackDealer.actionStartTime = 0;
+            }
+            
+            // Set a timeout to clear action in progress if no response
+            // This prevents UI from being stuck if backend doesn't respond
+            setTimeout(() => {
+                if (this.blackjackDealer.actionInProgress && this.blackjackDealer.currentAction === action) {
+                    console.warn(`Action ${action} timed out, resetting state`);
+                    this.blackjackDealer.actionInProgress = false;
+                    this.blackjackDealer.currentAction = '';
+                    this.blackjackDealer.actionStartTime = 0;
+                    
+                    // Show appropriate buttons based on game state
+                    if (this.gameState === 'playing') {
+                        this.gameButtonsContainer.showGameplayButtons();
+                    } else if (this.gameState === 'betting') {
+                        this.showBettingButtonsIfNeeded();
+                    }
+                }
+            }, 5000); // 5 second timeout
+            
+        } catch (error) {
+            clearTimeout(safetyTimeout);
+            this.handleBackendError(error, action);
+        }
+    }
+    
+    /**
+     * Handle backend errors with specific messaging based on error type
+     * @param error The error that occurred
+     * @param action The action that failed
+     */
+    private handleBackendError(error: any, action: string): void {
+        console.error(`Backend error during ${action}:`, error);
+        
+        // Clear the action in progress state
+        this.blackjackDealer.actionInProgress = false;
+        this.blackjackDealer.currentAction = '';
+        this.blackjackDealer.actionStartTime = 0;
+        
+        // Default error message
+        let errorMessage = "Connection error. Please try again.";
+        let errorColor = 0xDD0000;
+        
+        // Check for specific error types based on the error object and action
+        if (error && typeof error === 'object') {
+            // Handle specific error codes or messages
+            if (error.code === "INSUFFICIENT_FUNDS" || error.message?.includes("insufficient")) {
+                errorMessage = "Insufficient funds for this action.";
+            } 
+            else if (error.code === "INVALID_BET" || error.message?.includes("bet")) {
+                errorMessage = "Invalid bet amount.";
+            }
+            else if (error.code === "SPLIT_NOT_ALLOWED" || error.message?.includes("split")) {
+                errorMessage = "Cannot split these cards.";
+            }
+            else if (error.code === "DOUBLE_NOT_ALLOWED" || error.message?.includes("double")) {
+                errorMessage = "Double down not allowed in this situation.";
+            }
+            else if (error.code === "INSURANCE_NOT_AVAILABLE" || error.message?.includes("insurance")) {
+                errorMessage = "Insurance not available.";
+            }
+            else if (error.code === "CONNECTION_ERROR" || error.message?.includes("connection")) {
+                errorMessage = "Connection to game server lost. Please try again.";
+                // Try to reconnect after a delay
+                setTimeout(() => {
+                    if (Globals.backendService) {
+                        // Use connect instead of reconnect as that's the available method
+                        Globals.backendService.connect();
+                    }
+                }, 5000);
+            }
+            // Use error message from the error object if available
+            if (error.message && typeof error.message === 'string') {
+                errorMessage = error.message;
+            }
+        }
+        
+        // Show error notification to user
+        Globals.emitter?.Call("show_notification", {
+            message: errorMessage,
+            duration: 3000,
+            color: errorColor
+        });
+        
+        // Show appropriate buttons based on game state
+        if (this.gameState === 'playing') {
+            this.gameButtonsContainer.showGameplayButtons();
+        } else if (this.gameState === 'betting') {
+             this.showBettingButtonsIfNeeded();
+        }
+    }
+
+  
+
+
+ 
+   
+    /**
+     * Update the connection status indicator
+     * @param isConnected - Whether connected to the backend
+     */
+    private updateConnectionIndicator(isConnected: boolean): void {
+        // Update icon texture based on connection status
+        const iconTexture = isConnected ? 
+            Globals.resources.connectionOnline || Globals.resources.GreenNormal : 
+            Globals.resources.connectionOffline || Globals.resources.RedNormal;
+        
+        this._connectionStatusIcon.texture = iconTexture;
+        this._connectionStatusIcon.width = 16;
+        this._connectionStatusIcon.height = 16;
+        
+        // Update text based on connection status
+        this._connectionStatusText.updateLabelText(isConnected ? "Online" : "Offline");
+        this._connectionStatusText.updateColor(isConnected ? 0x00AA00 : 0xAA0000);
+        
+        // Position the indicator in the corner of the screen
+        this._connectionIndicator.position.set(
+            window.innerWidth - 100,
+            30
+        );
+        
+        // Show or hide based on debug settings
+        this._connectionIndicator.visible = true;
+    }
+
+
+    
+    /**
+     * Check if player can split based on their hand
+     * This is now determined by the backend, but we provide this helper for UI
+     * @returns Whether split appears possible based on local card state
+     */
+    private canPlayerSplit(): boolean {
+      const playerHand = this.blackjackDealer.playerHand;
+      // Need exactly 2 cards of the same rank to split
+      return playerHand.cards.length === 2 && 
+             playerHand.cards[0].value === playerHand.cards[1].value && 
+             Globals.balance >= Globals.currentBet;
+    }
+    
+    /**
+     * Show the appropriate outcome popup based on game result
+     * @param outcome - The game outcome
+     */
+    private showOutcomePopup(outcome: GameOutcome): void {
+        console.log(`Showing outcome popup for: ${outcome}`);
+      
+        // Handle insurance outcomes
+        if (outcome === GameOutcome.INSURANCE_WON || outcome === GameOutcome.INSURANCE_LOST) {
+            this.popupManager.showInsurancePopup(outcome === GameOutcome.INSURANCE_WON);
+            return;
+        }
+      
+        // Handle split outcomes with special handling
+        if (outcome === GameOutcome.SPLIT_WIN || 
+            outcome === GameOutcome.SPLIT_LOSE || 
+            outcome === GameOutcome.SPLIT_PUSH ||
+            outcome === GameOutcome.SPLIT_WIN_LOSE ||
+            outcome === GameOutcome.SPLIT_WIN_PUSH ||
+            outcome === GameOutcome.SPLIT_LOSE_PUSH) {
+          
+            // For now, map split outcomes to standard outcomes for popup display
+            // In the future, you could create dedicated split outcome popups
+            let mappedOutcome: GameOutcome;
+          
+            switch (outcome) {
+                case GameOutcome.SPLIT_WIN:
+                    mappedOutcome = GameOutcome.PLAYER_WIN;
+                    break;
+                case GameOutcome.SPLIT_LOSE:
+                    mappedOutcome = GameOutcome.DEALER_WIN;
+                    break;
+                case GameOutcome.SPLIT_PUSH:
+                    mappedOutcome = GameOutcome.PUSH;
+                    break;
+                case GameOutcome.SPLIT_WIN_LOSE:
+                case GameOutcome.SPLIT_WIN_PUSH:
+                    mappedOutcome = GameOutcome.PLAYER_WIN;
+                    break;
+                case GameOutcome.SPLIT_LOSE_PUSH:
+                    mappedOutcome = GameOutcome.DEALER_WIN;
+                    break;
+                default:
+                    mappedOutcome = outcome;
+            }
+          
+            this.popupManager.showOutcomePopup(mappedOutcome);
+            return;
+        }
+      
+        // For standard outcomes, use popup manager directly
+        this.popupManager.showOutcomePopup(outcome);
+      
+        // End game popups now persist until a button is clicked - no auto-hide
+    }
+  
+    /**
+     * Create and display chips for a bet amount
+     * @param betAmount - The bet amount to create chips for
+     * @param addDouble - Whether this is a double down operation
+     * @param forRebet - Whether this is a rebet operation
+     */
+    private createChipsForBet(betAmount: number, addDouble: boolean = false, forRebet: boolean = false): void {
+        console.log("Creating chips for bet amount:", betAmount, forRebet ? "(for rebet)" : "");
+      
+        // Get available chip values from the table
+        const availableChips = this.table.chips.map(chip => chip.value).sort((a, b) => b - a);
+      
+        if (availableChips.length === 0) {
+            console.warn("No chips available to create bet");
+            return;
+        }
+      
+        // Calculate how many of each chip to use (greedy algorithm)
+        let remainingAmount = betAmount;
+        const chipsToCreate: { value: number, count: number }[] = [];
+      
+        for (const chipValue of availableChips) {
+            if (remainingAmount >= chipValue) {
+                const count = Math.floor(remainingAmount / chipValue);
+                chipsToCreate.push({ value: chipValue, count });
+                remainingAmount -= count * chipValue;
+            }
+        }
+      
+        // If there's still a remaining amount, add the smallest chip
+        if (remainingAmount > 0 && availableChips.length > 0) {
+            const smallestChip = availableChips[availableChips.length - 1];
+            chipsToCreate.push({ value: smallestChip, count: 1 });
+        }
+      
+        console.log("Chips to create:", chipsToCreate);
+      
+        // Create and add each chip
+        chipsToCreate.forEach(chipInfo => {
+            for (let i = 0; i < chipInfo.count; i++) {
+                // Find the matching chip in the table
+                const tableChip = this.table.chips.find(c => c.value === chipInfo.value);
+            
+                if (tableChip) {
+                    // Create chip data with the same properties as the table chip
+                    const chipData = {
+                        value: tableChip.value,
+                        texture: tableChip.texture
+                    };
+                    // Add the chip to the betting area, passing the forRebet flag
+                    this.addChip(chipData as any, addDouble, forRebet);
+                }
+            }
+        });
+        // Ensure the bet display is visible after creating all chips
+        if (Globals.currentBet > 0 && !this.chipsZone.betHolder.visible) {
+            this.chipsZone.showBetDisplay(Globals.currentBet);
+        }
+    }
+
+    /**
+     * Helper method to check if an action has been stuck for too long and reset if needed
+     */
+    private checkForStuckAction(): void {
+        // If an action has been in progress for more than 5 seconds, it's probably stuck
+        if (this.blackjackDealer.actionInProgress && 
+            this.blackjackDealer.actionStartTime > 0 &&
+            Date.now() - this.blackjackDealer.actionStartTime > 5000) {
+            
+            console.log(`Action ${this.blackjackDealer.currentAction} has been stuck for too long, resetting`);
+            this.blackjackDealer.actionInProgress = false;
+            this.blackjackDealer.currentAction = '';
+            this.blackjackDealer.actionStartTime = 0;
+            
+            // Re-show appropriate buttons
+            if (this.gameState === 'playing') {
+                this.gameButtonsContainer.showGameplayButtons();
+            } else if (this.gameState === 'betting') {
+                 this.showBettingButtonsIfNeeded();
+            }
+        }
+    }
+
+    /**
+     * Check if betting buttons are already visible
+     * @returns True if betting buttons are already visible
+     */
+    private areBettingButtonsVisible(): boolean {
+        return this.gameButtonsContainer.areBettingButtonsVisible();
+    }
+
+    /**
+     * Show betting buttons only if they're not already visible
+     */
+    private showBettingButtonsIfNeeded(): void {
+        if (!this.areBettingButtonsVisible()) {
+            this.gameButtonsContainer.showButtonGroup('betting');
+        }
     }
 } 
