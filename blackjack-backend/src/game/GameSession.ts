@@ -1,4 +1,4 @@
-import { BlackjackServer } from '../server/BlackjackServer';
+import { BlackjackServer } from '../server/blackjackserver';
 import { 
   ClientMessage, 
   ServerMessage, 
@@ -7,9 +7,9 @@ import {
   HandMessage,
   CardMessage,
   GameOutcomeMessage
-} from '../models/Message';
-import { Card, Deck } from './Deck';
-import { BlackjackGame } from './BlackjackGame';
+} from '../models/message';
+import { Card, Deck } from './deck';
+import { BlackjackGame } from './blackjackgame';
 
 /**
  * Represents a hand in the UI
@@ -31,6 +31,8 @@ export class GameSession {
   private server: BlackjackServer;
   private game: BlackjackGame;
   private playerBalance: number = 1000; // Starting balance
+  private gameData: any; // Store game data for reconnection
+  private endGameTimeout: NodeJS.Timeout | null = null; // Timeout for holding game data
   
   constructor(clientId: string, _unusedParam: string, server: BlackjackServer) {
     this.clientId = clientId;
@@ -39,14 +41,15 @@ export class GameSession {
     
     // Initialize the game
     this.initialize();
+    this.gameData = null; // Initialize game data
   }
   
   /**
    * Initialize the session
    */
   private initialize(): void {
-    // Initialize with starting balance
-    this.sendPlayerBalanceUpdate();
+    // Initialize with starting balance but don't send game state
+    this.playerBalance = 1000;
   }
   
   /**
@@ -90,6 +93,158 @@ export class GameSession {
       // Send updated game state
       this.sendGameState();
     }
+  }
+  
+  /**
+   * Start the game with a bet amount and transition to playing state
+   */
+  public startGame(betAmount: number): void {
+    // Validate bet amount
+    if (betAmount <= 0 || betAmount > this.playerBalance) {
+      throw new Error('Invalid bet amount');
+    }
+    console.log("---------STARTING GAME---------", betAmount);
+
+    // Place the bet
+    this.game.placeBet(betAmount);
+    this.playerBalance -= betAmount;
+
+    // Transition to dealing phase and deal cards
+    this.game.setGamePhase('dealing');
+    this.game.dealInitialCards();
+
+    // Get the initial game state with dealt cards
+    const gameState = this.game.getGameState();
+
+    // Get initial allowed actions including surrender and double down
+    const initialAllowedActions = this.determineInitialAllowedActions();
+
+    // Transition to player turn
+    this.game.setGamePhase('player_turn');
+
+    // Create standardized game state message
+    const stateMessage = {
+      playerHand: gameState.playerHand,
+      dealerHand: gameState.dealerHand,
+      splitHand: gameState.splitHand,
+      activeSplitHand: gameState.activeSplitHand,
+      playerBalance: this.playerBalance,
+      currentBet: this.game.getCurrentBet(),
+      insuranceBet: this.game.getInsuranceBet(),
+      gamePhase: 'player_turn',
+      allowedActions: initialAllowedActions
+    };
+
+    // Send START_GAME message with complete initial state
+    this.sendToClient({
+      type: MessageType.START_GAME,
+      data: stateMessage
+    });
+  }
+  
+  /**
+   * Determine the initial allowed actions when game starts
+   */
+  private determineInitialAllowedActions(): MessageType[] {
+    const allowedActions: MessageType[] = [];
+    
+    // Base actions always available
+    allowedActions.push(MessageType.HIT);
+    allowedActions.push(MessageType.STAND);
+    
+    // Add surrender and double down for initial hand if player has enough balance
+    if (this.playerBalance >= this.game.getCurrentBet()) {
+      allowedActions.push(MessageType.DOUBLE_DOWN);
+    }
+    allowedActions.push(MessageType.SURRENDER);
+    
+    // Check for split - only available with two cards of same value and sufficient balance
+    const playerCards = this.game.getPlayerCards();
+    if (playerCards.length === 2 && 
+        playerCards[0].value === playerCards[1].value && 
+        this.playerBalance >= this.game.getCurrentBet()) {
+      allowedActions.push(MessageType.SPLIT);
+    }
+    
+    // Check for insurance - only available when dealer shows an Ace
+    const dealerUpCard = this.game.getDealerUpCard();
+    if (dealerUpCard && 
+        dealerUpCard.rank === 'A' && 
+        this.playerBalance >= this.game.getCurrentBet() / 2) {
+      allowedActions.push(MessageType.INSURANCE);
+    }
+    
+    return allowedActions;
+  }
+  
+  /**
+   * Handle player actions in a centralized manner
+   */
+  public handlePlayerAction(action: MessageType, data?: any): void {
+    switch (action) {
+      case MessageType.HIT:
+        this.handleHit(data);
+        break;
+      case MessageType.STAND:
+        this.handleStand(data);
+        break;
+      // ... other actions ...
+      default:
+        throw new Error(`Unsupported action: ${action}`);
+    }
+  }
+  
+  /**
+   * End the game and determine the outcome
+   */
+  public endGame(): void {
+    const outcome = this.game.determineOutcome();
+    const payout = this.game.calculatePayoutForOutcome(outcome);
+    this.playerBalance += payout;
+
+    // Get final game state
+    const gameState = this.game.getGameState();
+
+    // Determine next actions (rebet and play on)
+    const nextActions: MessageType[] = [MessageType.PLACE_BET];
+    if (this.game.getCurrentBet() > 0 && this.playerBalance >= this.game.getCurrentBet()) {
+      nextActions.push(MessageType.REBET);
+    }
+
+    // Create standardized game outcome message
+    const outcomeData = {
+      playerHand: gameState.playerHand,
+      dealerHand: gameState.dealerHand,
+      splitHand: gameState.splitHand,
+      activeSplitHand: gameState.activeSplitHand,
+      playerBalance: this.playerBalance,
+      currentBet: this.game.getCurrentBet(),
+      insuranceBet: this.game.getInsuranceBet(),
+      insurancePayout: this.game.getInsuranceBet() > 0 ? this.game.getInsuranceBet() * 2 : 0,
+      gamePhase: 'complete',
+      allowedActions: nextActions,
+      outcome,
+      payout,
+      newBalance: this.playerBalance,
+      message: this.getOutcomeMessage(outcome)
+    };
+
+    // Store game data for reconnection
+    this.gameData = outcomeData;
+
+    // Set a timeout to clear game data
+    this.endGameTimeout = setTimeout(() => {
+      this.gameData = null;
+    }, 10 * 60 * 1000);
+
+    // Send game outcome
+    this.sendToClient({
+      type: MessageType.GAME_OUTCOME,
+      data: outcomeData
+    });
+
+    // Reset the game state
+    this.game.reset();
   }
   
   /**
@@ -161,53 +316,7 @@ export class GameSession {
       // Step 4: Deal initial cards
       this.game.dealInitialCards();
       
-      // Step 5: Send each card individually for animation purposes
-      const playerCards = this.game.getPlayerCards();
-      const dealerCards = this.game.getDealerCards();
-      
-      // First card to player
-      this.sendToClient({
-        type: MessageType.CARD_DEALT,
-        data: { 
-          card: playerCards[0],
-          target: 'player',
-          index: 0,
-          message: `Card dealt to player: ${playerCards[0].rank} of ${playerCards[0].suit}`
-        }
-      });
-      
-      // First card to dealer
-      this.sendToClient({
-        type: MessageType.CARD_DEALT,
-        data: { 
-          card: dealerCards[0],
-          target: 'dealer',
-          index: 0,
-          message: `Card dealt to dealer: ${dealerCards[0].rank} of ${dealerCards[0].suit}`
-        }
-      });
-      
-      // Second card to player
-      this.sendToClient({
-        type: MessageType.CARD_DEALT,
-        data: { 
-          card: playerCards[1],
-          target: 'player',
-          index: 1,
-          message: `Card dealt to player: ${playerCards[1].rank} of ${playerCards[1].suit}`
-        }
-      });
-      
-      // Second card to dealer (face down)
-      this.sendToClient({
-        type: MessageType.CARD_DEALT,
-        data: { 
-          card: dealerCards[1],
-          target: 'dealer',
-          index: 1,
-          message: `Card dealt face down to dealer`
-        }
-      });
+     
       
       // Check for special conditions like blackjack, insurance, etc.
       const specialConditions = this.game.checkSpecialConditions();
@@ -357,15 +466,24 @@ export class GameSession {
     
     // Reveal dealer's hole card
     this.game.revealDealerCard();
-    console.log(`Dealer's hole card revealed: ${this.game.getDealerCards()[1].rank} of ${this.game.getDealerCards()[1].suit}`);
+    const dealerHoleCard = this.game.getDealerCards()[1];
+    console.log(`Dealer's hole card revealed: ${dealerHoleCard.rank} of ${dealerHoleCard.suit}`);
     console.log(`Dealer's hand value after reveal: ${this.game.getDealerValue()}`);
     
-    // Send message about revealed card
+    // Send HAND_UPDATED message for revealed hole card
     this.sendToClient({
-      type: MessageType.DEALER_CARD_REVEALED,
+      type: MessageType.HAND_UPDATED,
       data: {
-        card: this.game.getDealerCards()[1],
-        message: "Dealer's card revealed"
+        dealerHand: this.mapHand(this.game.getDealerCards()),
+        playerHand: this.mapHand(this.game.getPlayerCards()),
+        splitHand: this.game.hasSplit() ? this.mapHand(this.game.getSplitCards() || []) : null,
+        activeSplitHand: this.getActiveSplitHand(),
+        playerBalance: this.playerBalance,
+        currentBet: this.game.getCurrentBet(),
+        insuranceBet: this.game.getInsuranceBet(),
+        gamePhase: this.game.getGamePhase(),
+        allowedActions: [],
+        message: "Dealer's hole card revealed"
       }
     });
     
@@ -394,90 +512,49 @@ export class GameSession {
       dealerCards.push(card);
       console.log(`Dealer draws: ${card.rank} of ${card.suit}, new hand value: ${this.game.getDealerValue()}`);
       
-      // Notify client about the dealer's new card
+      // Send HAND_UPDATED message for each new dealer card
       this.sendToClient({
-        type: MessageType.CARD_DEALT,
+        type: MessageType.HAND_UPDATED,
         data: {
-          card: card,
-          target: 'dealer',
-          index: this.game.getDealerCards().length - 1,
+          dealerHand: this.mapHand(this.game.getDealerCards()),
+          playerHand: this.mapHand(this.game.getPlayerCards()),
+          splitHand: this.game.hasSplit() ? this.mapHand(this.game.getSplitCards() || []) : null,
+          activeSplitHand: this.getActiveSplitHand(),
+          playerBalance: this.playerBalance,
+          currentBet: this.game.getCurrentBet(),
+          insuranceBet: this.game.getInsuranceBet(),
+          gamePhase: this.game.getGamePhase(),
+          allowedActions: [],
           message: `Dealer draws: ${card.rank} of ${card.suit}`
         }
       });
-      
-      // Add a short delay between cards (for client-side animation)
-      // We can't use setTimeout here since this is synchronous,
-      // but the frontend can add delays between animations
     }
     
     // Log dealer's final status
-    if (this.game.getDealerValue() > 21) {
-      console.log(`Dealer busted with ${this.game.getDealerValue()}`);
-    } else {
-      console.log(`Dealer stands with ${this.game.getDealerValue()}`);
-    }
+    const finalMessage = this.game.getDealerValue() > 21 
+      ? `Dealer busted with ${this.game.getDealerValue()}`
+      : `Dealer stands with ${this.game.getDealerValue()}`;
+    console.log(finalMessage);
+    
+    // Send final HAND_UPDATED message with dealer's final status
+    this.sendToClient({
+      type: MessageType.HAND_UPDATED,
+      data: {
+        action: this.game.getDealerValue() > 21 ? 'bust' : 'stand',
+        dealerHand: this.mapHand(this.game.getDealerCards()),
+        playerHand: this.mapHand(this.game.getPlayerCards()),
+        splitHand: this.game.hasSplit() ? this.mapHand(this.game.getSplitCards() || []) : null,
+        activeSplitHand: this.getActiveSplitHand(),
+        playerBalance: this.playerBalance,
+        currentBet: this.game.getCurrentBet(),
+        insuranceBet: this.game.getInsuranceBet(),
+        gamePhase: this.game.getGamePhase(),
+        allowedActions: [],
+        message: finalMessage
+      }
+    });
     
     return dealerCards;
-  }
-  
-  /**
-   * End the game and determine the outcome
-   * This transitions the game from GameInProgress to EndGame phase
-   */
-  public endGame(): void {
-    console.log(`Ending game for client ${this.clientId} - Transitioning to EndGame phase`);
-    
-    // PHASE TRANSITION: GameInProgress → EndGame
-    
-    // 1. Determine game outcome
-    const outcome = this.game.determineOutcome();
-    console.log(`Game outcome determined: ${outcome}`);
-    
-    // 2. Calculate payout - use the game's payout calculation directly
-    const payout = this.game.calculatePayoutForOutcome(outcome);
-    console.log(`Payout calculated: ${payout} (original bet: ${this.game.getCurrentBet()})`);
-    
-    // 3. Update player balance
-    this.playerBalance += payout;
-    console.log(`Player balance updated to: ${this.playerBalance}`);
-    this.sendPlayerBalanceUpdate();
-    
-    // 4. Send phase change notification
-    this.sendToClient({
-      type: MessageType.PHASE_CHANGE,
-      data: {
-        from: this.game.getGamePhase(),
-        to: 'complete',
-        message: "Game complete"
-      }
-    });
-    
-    // 5. Send detailed outcome to client
-    this.sendToClient({
-      type: MessageType.GAME_OUTCOME,
-      data: {
-        outcome: outcome,
-        message: this.getOutcomeMessage(outcome),
-        payout: payout,
-        playerHandValue: this.game.getPlayerValue(),
-        dealerHandValue: this.game.getDealerValue(),
-        playerBalance: this.playerBalance
-      }
-    });
-    
-    // 6. Mark game as complete in the game model
-    this.game.setGamePhase('complete');
-    
-    // 7. Send updated game state
-    this.sendGameState();
-    
-    // 8. Determine allowed actions for the EndGame phase
-    this.sendAllowedActions();
-    
-    // Log detailed outcome
-    console.log(`Game ended with outcome: ${outcome}`);
-    console.log(`Player hand: ${this.game.getPlayerValue()}, Dealer hand: ${this.game.getDealerValue()}`);
-    console.log(`Payout: ${payout}, New balance: ${this.playerBalance}`);
   }
   
   /**
@@ -520,21 +597,23 @@ export class GameSession {
   private getOutcomeMessage(outcome: string): string {
     switch (outcome) {
       case 'player_blackjack':
-        return "Blackjack! You win!";
+        return `Blackjack! You win 3:2! New balance: ${this.playerBalance}`;
       case 'player_win':
-        return "You win!";
+        return `Congratulations! You win! New balance: ${this.playerBalance}`;
       case 'dealer_win':
-        return "Dealer wins";
+        return `Dealer wins. Better luck next time! New balance: ${this.playerBalance}`;
       case 'push':
-        return "Push - it's a tie";
+        return `It's a tie! Your bet has been returned. New balance: ${this.playerBalance}`;
       case 'player_bust':
-        return "Bust! You lose";
+        return `Bust! Your hand went over 21. New balance: ${this.playerBalance}`;
       case 'dealer_bust':
-        return "Dealer busts! You win";
+        return `Dealer busts! You win! New balance: ${this.playerBalance}`;
       case 'surrender':
-        return "You surrendered";
+        return `You surrendered. Half your bet is returned. New balance: ${this.playerBalance}`;
+      case 'insurance_win':
+        return `Dealer has Blackjack. Insurance pays 2:1! New balance: ${this.playerBalance}`;
       default:
-        return "Game over";
+        return `Game over. New balance: ${this.playerBalance}`;
     }
   }
   
@@ -563,8 +642,39 @@ export class GameSession {
       return;
     }
     
-    // Auto-end game if player has blackjack and no dealer ace showing
-    if (specialConditions.playerBlackjack && !specialConditions.insuranceAvailable) {
+    // Auto-end game if player has blackjack - MODIFIED TO ALWAYS END IMMEDIATELY
+    if (specialConditions.playerBlackjack) {
+      console.log('Player has blackjack! Ending game immediately.');
+      
+      // Calculate blackjack payout (typically 3:2)
+      const bet = this.game.getCurrentBet();
+      const blackjackPayout = bet * 2.5; // Original bet + 1.5x win
+      
+      // Update player balance with blackjack payout
+      this.playerBalance += blackjackPayout;
+      
+      // Reveal dealer's hole card before ending
+      this.game.revealDealerCard();
+      
+      // Send HAND_UPDATED message for revealed hole card
+      this.sendToClient({
+        type: MessageType.HAND_UPDATED,
+        data: {
+          action: 'blackjack',
+          dealerHand: this.mapHand(this.game.getDealerCards()),
+          playerHand: this.mapHand(this.game.getPlayerCards()),
+          splitHand: null,
+          activeSplitHand: null,
+          playerBalance: this.playerBalance,
+          currentBet: this.game.getCurrentBet(),
+          insuranceBet: this.game.getInsuranceBet(),
+          gamePhase: 'complete',
+          allowedActions: [],
+          message: "Player has Blackjack!"
+        }
+      });
+      
+      // End the game immediately
       this.endGame();
       return;
     }
@@ -597,37 +707,40 @@ export class GameSession {
   private determineAllowedActions(): MessageType[] {
     const allowedActions: MessageType[] = [];
     const gamePhase = this.game.getGamePhase();
+    const gameState = this.game.getGameState();
     
     if (gamePhase === 'betting') {
       allowedActions.push(MessageType.PLACE_BET);
-      allowedActions.push(MessageType.DEAL_CARDS);
       
       // Add rebet if there's a previous bet
-      if (this.game.getLastBet() > 0) {
+      if (this.game.getLastBet() > 0 && this.playerBalance >= this.game.getLastBet()) {
         allowedActions.push(MessageType.REBET);
       }
-      
-      allowedActions.push(MessageType.CLEAR_BET);
     }
     else if (gamePhase === 'player_turn') {
       // Base actions always available during player turn
       allowedActions.push(MessageType.HIT);
       allowedActions.push(MessageType.STAND);
       
-      // Check for special actions
-      if (this.game.canDoubleDown()) {
-        allowedActions.push(MessageType.DOUBLE_DOWN);
-      }
+      // Check if this is the initial phase (only 2 cards)
+      const playerCards = this.game.getPlayerCards();
+      const isInitialPhase = playerCards.length === 2;
       
-      if (this.canPlayerSplit()) {
-        allowedActions.push(MessageType.SPLIT);
-      }
-      
-      if (this.game.canSurrender()) {
+      if (isInitialPhase) {
+        // Surrender and double down only available initially
         allowedActions.push(MessageType.SURRENDER);
+        if (this.playerBalance >= this.game.getCurrentBet()) {
+          allowedActions.push(MessageType.DOUBLE_DOWN);
+        }
+        
+        // Split only available initially with matching cards and sufficient balance
+        if (this.canPlayerSplit() && this.playerBalance >= this.game.getCurrentBet()) {
+          allowedActions.push(MessageType.SPLIT);
+        }
       }
       
-      if (this.game.canTakeInsurance()) {
+      // Insurance check is independent of initial phase
+      if (this.game.canTakeInsurance() && this.playerBalance >= this.game.getCurrentBet() / 2) {
         allowedActions.push(MessageType.INSURANCE);
       }
     }
@@ -658,10 +771,10 @@ export class GameSession {
       
       // Process the message based on type
       switch (message.type) {
-        case MessageType.PLACE_BET:
+        case MessageType.START_GAME:
           // Start new game with bet - centralized phase transition
           if (message.data && typeof message.data.amount === 'number') {
-            this.startGameWithBet(message.data.amount);
+            this.startGame(message.data.amount);
           } else {
             throw new Error("Invalid bet amount");
           }
@@ -677,7 +790,6 @@ export class GameSession {
               throw new Error("Cannot deal cards - not in betting phase");
             }
           }
-          this.startGameWithBet();
           break;
           
         // All gameplay actions are now handled by centralized handler
@@ -740,14 +852,24 @@ export class GameSession {
    */
   public sendGameState(targetClientId: string = this.clientId): void {
     const gameState = this.game.getGameState();
-    
-    const stateMessage: GameStateMessage = {
-      ...gameState,
-      playerBalance: this.playerBalance
+    const allowedActions = this.determineAllowedActions();
+
+    // Create standardized game state message
+    const stateMessage = {
+      playerHand: gameState.playerHand,
+      dealerHand: gameState.dealerHand,
+      splitHand: gameState.splitHand,
+      activeSplitHand: gameState.activeSplitHand,
+      playerBalance: this.playerBalance,
+      currentBet: this.game.getCurrentBet(),
+      insuranceBet: this.game.getInsuranceBet(),
+      gamePhase: gameState.gamePhase,
+      allowedActions: allowedActions
     };
-    
+
+    // Send HAND_UPDATED for all game state updates
     this.server.sendToClient(targetClientId, {
-      type: MessageType.INITIAL_STATE,
+      type: MessageType.HAND_UPDATED,
       data: stateMessage
     });
   }
@@ -790,16 +912,24 @@ export class GameSession {
   private handleSplitHandSwitch(hand: 'first' | 'second'): void {
     this.game.setActiveSplitHandUI(hand);
     
-    this.sendToClient({
-      type: MessageType.SPLIT_HAND_SWITCH,
-      data: {
-        activeHand: hand,
-        message: `Now playing ${hand === 'first' ? 'first' : 'second'} hand`
-      }
-    });
+    const gameState = this.game.getGameState();
+    const stateMessage = {
+      playerHand: gameState.playerHand,
+      dealerHand: gameState.dealerHand,
+      splitHand: gameState.splitHand,
+      activeSplitHand: hand,
+      playerBalance: this.playerBalance,
+      currentBet: this.game.getCurrentBet(),
+      insuranceBet: this.game.getInsuranceBet(),
+      gamePhase: gameState.gamePhase,
+      allowedActions: this.determineAllowedActions(),
+      message: `Now playing ${hand === 'first' ? 'first' : 'second'} hand`
+    };
     
-    // Send allowed actions for the active hand
-    this.sendAllowedActions();
+    this.sendToClient({
+      type: MessageType.HAND_UPDATED,
+      data: stateMessage
+    });
   }
   
   /**
@@ -863,12 +993,12 @@ export class GameSession {
         
         // Send card dealt notification
         this.sendToClient({
-          type: MessageType.CARD_DEALT,
+          type: MessageType.HAND_UPDATED,
           data: {
             card: cardDealt,
             target: 'player',
-            index: this.game.getPlayerCards().length - 1,
-            message: `Card dealt to first hand: ${cardDealt.rank} of ${cardDealt.suit}`
+            handType: 'first',
+            allowedActions: this.determineAllowedActions()
           }
         });
         
@@ -893,12 +1023,12 @@ export class GameSession {
         
         // Send card dealt notification
         this.sendToClient({
-          type: MessageType.CARD_DEALT,
+          type: MessageType.HAND_UPDATED,
           data: {
             card: cardDealt,
-            target: 'split',
-            index: this.game.getSplitCards()?.length || 0 - 1,
-            message: `Card dealt to second hand: ${cardDealt.rank} of ${cardDealt.suit}`
+            target: 'player',
+            handType: 'second',
+            allowedActions: this.determineAllowedActions()
           }
         });
         
@@ -906,9 +1036,23 @@ export class GameSession {
         const splitHand = this.mapHand(this.game.getSplitCards() || []);
         console.log(`Second hand after hit: value=${splitHand.value}, busted=${splitHand.busted}`);
         
-        if (splitHand.busted || splitHand.value === 21) {
-          console.log('Second hand busted or has 21, proceeding to dealer turn');
-          // If split hand is bust or 21, player turn is over
+        if (splitHand.busted) {
+          // Send final hand state before ending game
+          this.sendToClient({
+            type: MessageType.HAND_UPDATED,
+            data: {
+              card: cardDealt,
+              target: 'player',
+              handType: 'second',
+              allowedActions: []
+            }
+          });
+          console.log('Second hand busted, proceeding to dealer turn');
+          // If split hand is bust, player turn is over
+          this.processDealerTurn();
+        }
+        else if (splitHand.value === 21) {
+          console.log('Second hand has 21, proceeding to dealer turn');
           this.processDealerTurn();
         }
       }
@@ -920,12 +1064,11 @@ export class GameSession {
       
       // Send card dealt notification
       this.sendToClient({
-        type: MessageType.CARD_DEALT,
+        type: MessageType.HAND_UPDATED,
         data: {
           card: cardDealt,
           target: 'player',
-          index: this.game.getPlayerCards().length - 1,
-          message: `Card dealt: ${cardDealt.rank} of ${cardDealt.suit}`
+          allowedActions: this.determineAllowedActions()
         }
       });
       
@@ -934,6 +1077,15 @@ export class GameSession {
       console.log(`Player hand after hit: value=${playerHand.value}, busted=${playerHand.busted}`);
       
       if (playerHand.busted) {
+        // Send final hand state before ending game
+        this.sendToClient({
+          type: MessageType.HAND_UPDATED,
+          data: {
+            card: cardDealt,
+            target: 'player',
+            allowedActions: []
+          }
+        });
         console.log('Player busted, ending game');
         // If player busts, dealer's turn is skipped
         this.endGame();
@@ -944,9 +1096,6 @@ export class GameSession {
         this.handleStand();
       }
     }
-    
-    // Send updated allowed actions
-    this.sendAllowedActions();
   }
   
   /**
@@ -959,6 +1108,24 @@ export class GameSession {
     if (this.game.getGamePhase() !== 'player_turn') {
       throw new Error('Cannot stand - not in player turn phase');
     }
+    
+    // Send an explicit HAND_UPDATED message indicating the stand action
+    this.sendToClient({
+      type: MessageType.HAND_UPDATED,
+      data: {
+        action: 'stand',
+        dealerHand: this.mapHand(this.game.getDealerCards()),
+        playerHand: this.mapHand(this.game.getPlayerCards()),
+        splitHand: this.game.hasSplit() ? this.mapHand(this.game.getSplitCards() || []) : null,
+        activeSplitHand: this.getActiveSplitHand(),
+        playerBalance: this.playerBalance,
+        currentBet: this.game.getCurrentBet(),
+        insuranceBet: this.game.getInsuranceBet(),
+        gamePhase: this.game.getGamePhase(),
+        allowedActions: [],
+        message: `Player stands${hand ? ' on ' + hand + ' hand' : ''}`
+      }
+    });
     
     // Handle split hands if applicable
     if (this.game.hasSplit()) {
@@ -1101,8 +1268,24 @@ export class GameSession {
     const returnAmount = this.game.surrender();
     this.playerBalance += returnAmount;
     console.log(`Surrender: returning ${returnAmount} to player, new balance: ${this.playerBalance}`);
+
+    // Send HAND_UPDATED message with empty allowed actions
+    this.sendToClient({
+      type: MessageType.HAND_UPDATED,
+      data: {
+        playerHand: this.game.getGameState().playerHand,
+        dealerHand: this.game.getGameState().dealerHand,
+        splitHand: null,
+        activeSplitHand: null,
+        playerBalance: this.playerBalance,
+        currentBet: this.game.getCurrentBet(),
+        insuranceBet: this.game.getInsuranceBet(),
+        gamePhase: 'complete',
+        allowedActions: []
+      }
+    });
     
-    // End the game
+    // End the game with surrender outcome
     this.endGame();
   }
   
@@ -1123,56 +1306,46 @@ export class GameSession {
     }
     
     if (takeInsurance) {
-      // Calculate insurance amount (half the original bet)
       const insuranceAmount = this.game.getCurrentBet() / 2;
       
-      // Check if player has enough balance
       if (this.playerBalance < insuranceAmount) {
         throw new Error('Insufficient balance for insurance');
       }
       
-      // Deduct insurance amount from balance
       this.playerBalance -= insuranceAmount;
-      console.log(`Insurance bet placed: ${insuranceAmount}, new balance: ${this.playerBalance}`);
-      
-      // Set insurance bet on the game by using takeInsurance
       const insuranceResult = this.game.takeInsurance(insuranceAmount);
       
-      // Send updated balance to client
+      const gameState = this.game.getGameState();
+      const stateMessage = {
+        playerHand: gameState.playerHand,
+        dealerHand: gameState.dealerHand,
+        splitHand: gameState.splitHand,
+        activeSplitHand: gameState.activeSplitHand,
+        playerBalance: this.playerBalance,
+        currentBet: this.game.getCurrentBet(),
+        insuranceBet: insuranceAmount,
+        gamePhase: gameState.gamePhase,
+        allowedActions: this.determineAllowedActions(),
+        dealerHasBlackjack: this.isDealerBlackjack(),
+        insurancePayout: this.isDealerBlackjack() ? insuranceAmount * 2 : 0
+      };
+      
       this.sendToClient({
-        type: MessageType.PLAYER_BALANCE_UPDATE,
-        data: { balance: this.playerBalance }
+        type: MessageType.HAND_UPDATED,
+        data: stateMessage
       });
     }
     
-    // Check if dealer has blackjack
     const dealerHasBlackjack = this.isDealerBlackjack();
-    console.log(`Dealer has blackjack: ${dealerHasBlackjack}`);
-    
-    // Send insurance result to client
-    this.sendToClient({
-      type: MessageType.INSURANCE_RESULT,
-      data: {
-        dealerHasBlackjack: dealerHasBlackjack,
-        payout: dealerHasBlackjack ? this.game.getInsuranceBet() * 2 : 0
-      }
-    });
-    
-    // If dealer has blackjack, add insurance payout and end game
     if (dealerHasBlackjack) {
       if (takeInsurance) {
-        // Insurance pays 2:1
         const insurancePayout = this.game.getInsuranceBet() * 2;
         this.playerBalance += insurancePayout;
-        console.log(`Insurance won! Payout: ${insurancePayout}, new balance: ${this.playerBalance}`);
       }
-      
-      // Reveal dealer card and end game
       this.game.revealDealerCard();
       this.endGame();
     } else {
-      // Continue game with normal gameplay buttons
-      this.sendAllowedActions();
+      this.sendGameState();
     }
   }
   
@@ -1275,5 +1448,14 @@ export class GameSession {
         allowedActions: allowedActions
       }
     });
+  }
+
+  /**
+   * Check if surrender is allowed
+   * Only allowed in initial phase with exactly 2 cards
+   */
+  private canSurrender(): boolean {
+    const playerCards = this.game.getPlayerCards();
+    return playerCards.length === 2 && !this.game.hasSplit();
   }
 } 

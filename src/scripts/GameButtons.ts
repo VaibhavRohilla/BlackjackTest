@@ -10,13 +10,33 @@ export enum GameButtonType {
     HIT = 'hit',
     STAND = 'stand',
     CLEAR = 'clear',
-    PLAYON = 'playon',
+    PLAYON = 'place_bet',
     DOUBLE = 'double',
     SPLIT = 'split',
     SURRENDER = 'surrender',
     INSURANCE = 'insurance',
     PLAY = 'play',
     REBET = 'rebet'
+}
+
+export function getButtonType(action: string[]): GameButtonType[] {
+    const buttonTypes = action.map(action => {
+        switch(action) {
+            case 'hit': return GameButtonType.HIT;
+            case 'stand': return GameButtonType.STAND;
+            case 'double_down': return GameButtonType.DOUBLE;
+            case 'surrender': return GameButtonType.SURRENDER;
+            case 'split': return GameButtonType.SPLIT;
+            case 'insurance': return GameButtonType.INSURANCE;
+            case 'place_bet': return GameButtonType.PLAYON;
+            case 'rebet': return GameButtonType.REBET;
+            default: 
+                console.warn(`Unknown action type: ${action}`);
+                return null;
+        }
+    }).filter(type => type !== null) as GameButtonType[];
+
+    return buttonTypes;
 }
 
 // Button position constants
@@ -69,6 +89,7 @@ export class GameButtonContainer extends Container {
     private buttonStateVersion: number = 0;
     private currentOperationId: number = 0;
     private animationTimeout: any = null;
+    public toShowButtons: GameButtonType[] = [];
     
     constructor() {
         super();
@@ -1049,6 +1070,106 @@ export class GameButtonContainer extends Container {
      */
     public getButton(type: GameButtonType): GameButton | undefined {
         return this.buttons.get(type);
+    }
+
+    /**
+     * Shows specific buttons based on provided button names
+     * @param buttonNames Array of button names to show
+     * @param immediate Whether to show buttons immediately without animation
+     * @returns boolean indicating if all buttons were shown successfully
+     */
+    public showSpecificButtons(buttonNames: GameButtonType[], immediate: boolean = false): boolean {
+        console.log(`Showing specific buttons:`, buttonNames);
+
+        // Hide all current buttons first
+        this.hideAllButtons(immediate, () => {
+            // Mark as animating
+            this.isAnimating = true;
+            this.pendingAnimations = 0;
+            this.buttonStateVersion++;
+            
+            // Pre-position all buttons first so calculations are correct
+            const buttonsToShow: GameButton[] = [];
+            buttonNames.forEach(buttonType => {
+                const button = this.buttons.get(buttonType);
+                if (button) {
+                    buttonsToShow.push(button);
+                    // Make button active for correct positioning
+                    button.visible = true;
+                    button.alpha = 0;
+                    if (!this.currentActiveButtons.includes(button)) {
+                        this.currentActiveButtons.push(button);
+                    }
+                } else {
+                    console.warn(`Button ${buttonType} not found`);
+                }
+            });
+            
+            // If no valid buttons found, return early
+            if (buttonsToShow.length === 0) {
+                this.isAnimating = false;
+                return;
+            }
+
+            // Now position all buttons
+            buttonsToShow.forEach(button => {
+                this.positionButton(button);
+            });
+
+            // If immediate mode, show all buttons instantly
+            if (immediate) {
+                buttonsToShow.forEach(button => {
+                    button.visible = true;
+                    button.alpha = 1;
+                    button.setActive(true);
+                });
+                this.isAnimating = false;
+                return;
+            }
+
+            // Animate each button with staggered timing
+            buttonsToShow.forEach((button, index) => {
+                // Store final position
+                const finalPosition = {
+                    x: button.position.x,
+                    y: button.position.y
+                };
+                
+                // Move button off-screen based on its position
+                const offscreenX = button.options.position === ButtonPosition.LEFT 
+                    ? finalPosition.x - this.OFFSCREEN_OFFSET 
+                    : finalPosition.x + this.OFFSCREEN_OFFSET;
+                
+                button.position.set(offscreenX, finalPosition.y);
+                
+                // Calculate delay for staggered animation
+                const delay = index * this.STAGGER_DELAY;
+                this.pendingAnimations++;
+                
+                // Animate button into position
+                new Tween(button.position, Globals.sceneManager?.tweenGroup)
+                    .to({ x: finalPosition.x }, this.ANIMATION_DURATION)
+                    .easing(Easing.Cubic.Out)
+                    .delay(delay)
+                    .start();
+                
+                // Fade in
+                new Tween(button, Globals.sceneManager?.tweenGroup)
+                    .to({ alpha: 1 }, this.ANIMATION_DURATION)
+                    .easing(Easing.Quadratic.Out)
+                    .delay(delay)
+                    .onComplete(() => {
+                        button.setActive(true);
+                        this.pendingAnimations--;
+                        if (this.pendingAnimations <= 0) {
+                            this.isAnimating = false;
+                        }
+                    })
+                    .start();
+            });
+        });
+
+        return true;
     }
 }
 

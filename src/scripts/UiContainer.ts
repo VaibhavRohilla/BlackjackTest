@@ -595,11 +595,16 @@ export class UiContainer extends Container {
     /**
      * Update the balance display
      */
-    public updateBalance(newBalance?: number): void {
+    public updateBalance(addBalance: number): void {
         // Update balance text with the current balance
         // If newBalance is provided, use it; otherwise use the global balance
-        const balance = newBalance !== undefined ? newBalance : Globals.balance;
-        this.currentBalanceTxt.updateLabelText(`${formatNumber(balance)} Chips`);
+        Globals.balance += addBalance;
+        this.currentBalanceTxt.updateLabelText(`${formatNumber(Globals.balance)} Chips`);
+    }
+
+    public updateBalancefromBackend(addBalance: number): void {
+        Globals.balance = addBalance;
+        this.currentBalanceTxt.updateLabelText(`${formatNumber(Globals.balance)} Chips`);
     }
 
     /**

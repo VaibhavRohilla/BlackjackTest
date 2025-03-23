@@ -99,15 +99,15 @@ export class Loader extends PIXI.Container {
         
         // Draw updated progress
         const value = progress / 100;
-        this.progressBar.beginFill(0xFFFFFF, 0.8);
-        this.progressBar.drawRoundedRect(
+        this.progressBar.clear();
+        this.progressBar.roundRect(
             boxData.x - boxData.width / 2, 
             boxData.y, 
             Math.max(0, boxData.width * value), 
             boxData.height, 
             2
         );
-        this.progressBar.endFill();
+        this.progressBar.fill({color: 0xFFFFFF, alpha: 0.8});
     };
 
     preload() {

@@ -1,7 +1,8 @@
 import { Container, Graphics, Sprite, Texture } from "pixi.js";
-import { Globals } from "./globals";
+import { formatNumber, Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
 import { GameOutcome } from "./result";
+import { TextLabel } from "./textlabel";
 
 // Z-index constants for proper layering
 export const Z_INDEX = {
@@ -82,7 +83,7 @@ export class PopupManager extends Container {
      * Show a popup based on game outcome
      * @param outcome - The game outcome
      */
-    showOutcomePopup(outcome: GameOutcome): void {
+    showOutcomePopup(outcome: GameOutcome, payout: number): void {
         console.log(`Showing outcome popup for: ${outcome}`);
         
         let popupTexture;
@@ -143,8 +144,19 @@ export class PopupManager extends Container {
         
         // Show the popup with the default white tint
         this.showPopup(popupTexture, tint);
+        if(outcome === GameOutcome.PLAYER_WIN || outcome === GameOutcome.DEALER_BUST || outcome === GameOutcome.PLAYER_BLACKJACK) {
+            this.addPayoutText(payout);
+        }
     }
     
+    addPayoutText(payout: number): void {
+        const payoutText = new TextLabel(0, 0, 0.5, `+${formatNumber(payout)} Chips`, 50, 0xFFFFFF);
+        payoutText.zIndex = 100;
+        if(this.activePopup) {
+            payoutText.position.set(this.activePopup.width / 2, this.activePopup.height / 2);
+            this.activePopup?.addChild(payoutText);
+        }
+    }
     /**
      * Show an insurance outcome popup
      * @param insuranceWon Whether the insurance bet was won or lost
@@ -410,6 +422,7 @@ export class PopupManager extends Container {
         if (this.pulseAnimation) {
             this.pulseAnimation.stop();
             this.pulseAnimation = null;
+            this.activePopup?.removeChildren();
         }
         
         // Animation duration for hiding

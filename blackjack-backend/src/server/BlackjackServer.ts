@@ -1,8 +1,8 @@
 import WebSocket from 'ws';
 import { v4 as uuidv4 } from 'uuid';
-import { MessageType, ServerMessage, ClientMessage, createErrorMessage } from '../models/Message';
-import { GameSession } from '../game/GameSession';
-import { MessageHandler } from './MessageHandler';
+import { MessageType, ServerMessage, ClientMessage, createErrorMessage } from '../models/message';
+import { GameSession } from '../game/gamesession';
+import { MessageHandler } from './messagehandler';
 
 /**
  * Main Blackjack server class that manages WebSocket connections
@@ -114,13 +114,6 @@ export class BlackjackServer {
       type: MessageType.GAME_READY,
       data: { message: "Game is ready to play" }
     });
-    
-    // Immediately send the initial game state so UI can update
-    setTimeout(() => {
-      if (game) {
-        game.sendGameState(clientId);
-      }
-    }, 100);
   }
 
   /**

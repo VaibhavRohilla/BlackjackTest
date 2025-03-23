@@ -1,5 +1,5 @@
-import { Card, Deck } from './Deck';
-import { GameStateMessage, HandMessage, MessageType } from '../models/Message';
+import { GameStateMessage, HandMessage, MessageType } from '../models/message';
+import { Card, Deck } from './deck';
 
 /**
  * Represents a hand of cards in blackjack
@@ -158,8 +158,9 @@ export class BlackjackGame {
     // Deal second card to player face up
     this.playerHand.cards.push(this.deck.dealCard(true));
     
-    // Deal second card to dealer face down
     this.dealerHand.cards.push(this.deck.dealCard(false));
+
+    
     
     // Calculate hand values
     this.calculateHandValues();

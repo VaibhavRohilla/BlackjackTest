@@ -88,8 +88,6 @@ export class App {
 			// Update scene
 			SceneManager.instance!.update(dt.deltaTime);
 			
-			// Update TWEEN animations
-			TWEEN.update();
 		});
 
 		// Initialize loader
@@ -113,13 +111,11 @@ export class App {
 					// If connection fails, show error but continue loading
 					this.showStatusMessage("Failed to connect to server. Running in limited mode.", true);
 					console.error("WebSocket connection failed. Continuing without backend functionality.");
-					Globals.isOnline = false;
 					
 					// Use default balance when offline
 					Globals.balance = 1000;
 				} else {
 					this.showStatusMessage("Connected to server", 2000, true);
-					Globals.isOnline = true;
 					
 					// Wait for player balance to be retrieved
 					console.log("Waiting for player balance...");
@@ -206,13 +202,13 @@ export class App {
 			if (document.visibilityState === 'visible') {
 				console.log('Document became visible - checking connection');
 				
-				// Check if we need to reconnect
-				if (!this.backendService.isConnectedToBackend()) {
-					this.reconnectToBackend();
-				} else {
-					// Just get current game state to refresh UI
-					this.backendService.getGameState();
-				}
+				// // Check if we need to reconnect
+				// if (!this.backendService.isConnectedToBackend()) {
+				// 	this.reconnectToBackend();
+				// } else {
+				// 	// Just get current game state to refresh UI
+				// 	this.backendService.getGameState();
+				// }
 			}
 		});
 	}
@@ -227,19 +223,16 @@ export class App {
 			if (connected) {
 				console.log('Successfully reconnected to backend');
 				this.showStatusMessage("Reconnected to server", 2000, true);
-				Globals.isOnline = true;
 				
 				// Get current game state
 				this.backendService.getGameState();
 			} else {
 				console.error('Failed to reconnect to backend');
 				this.showStatusMessage("Failed to reconnect to server", true);
-				Globals.isOnline = false;
 			}
 		} catch (error) {
 			console.error('Error reconnecting to backend:', error);
 			this.showStatusMessage("Error reconnecting to server", true);
-			Globals.isOnline = false;
 		}
 	}
 }

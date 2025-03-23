@@ -2,7 +2,7 @@ import express from 'express';
 import http from 'http';
 import WebSocket from 'ws';
 import cors from 'cors';
-import { BlackjackServer } from './server/BlackjackServer';
+import { BlackjackServer } from './server/blackjackserver';
 
 // Server version
 const SERVER_VERSION = '1.1.0';

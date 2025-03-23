@@ -4,6 +4,7 @@ import { config } from "./appconfig";
 import { getSuitPrefix, Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
 import { log } from "node:console";
+import { promises } from "node:dns";
 
 export class Hand extends Container {
 
@@ -17,7 +18,7 @@ export class Hand extends Container {
      points : number = 0;
      
     /** Animation speed for dealing cards (ms) */
-    dealAnimationSpeed: number = 2000;
+    dealAnimationSpeed: number = 1200;
 
      cards: Card[] = [];
 
@@ -48,7 +49,7 @@ export class Hand extends Container {
      * Reveal dealer's hole card
      * @param holeCardValue Optional explicit value for the hole card
      */
-revealDealerCard(holeCardData?: any): void {
+async revealDealerCard(newTexture: Texture): Promise<void> {
     // Check if dealer has at least 2 cards
     if (this.type != 'dealer' || !this.cards || this.cards.length < 2) {
         console.error("Cannot reveal dealer card: dealer doesn't have enough cards");
@@ -56,23 +57,17 @@ revealDealerCard(holeCardData?: any): void {
     }
     
     // Use the new revealCardAtIndex method to reveal the hole card (index 1)
-    this.revealCardAtIndex(1, holeCardData);
+    this.revealCardAtIndex(1, newTexture);
     
-    // Let the GameManager know the reveal is complete if callback is set
-    if (this.onCardRevealComplete) {
-        setTimeout(() => {
-            if (this.onCardRevealComplete) {
-                this.onCardRevealComplete();
-            }
-        }, 300); // After flip animation
-    }
+   
 }
      /**
      * Animate a card flipping over
      * @param sprite - The card sprite to flip
      * @param newTexture - The texture to show after flipping
      */
-     animateCardFlip(sprite: Sprite, newTexture: Texture): void {
+     animateCardFlip(sprite: Sprite, newTexture: Texture): Promise<void> {
+        return new Promise((resolve) => {
         // Store original position and scale
         const originalScale = { x: sprite.scale.x, y: sprite.scale.y };
         const originalPosition = { x: sprite.position.x, y: sprite.position.y };
@@ -148,7 +143,7 @@ revealDealerCard(holeCardData?: any): void {
                     .onComplete(() => {
                         // Ensure points display is updated after all animations complete
                         this.updatePointsDisplay(true);
-                        
+                        resolve();
                         // Call the completion callback if provided
                         if (this.onCardRevealComplete) {
                             this.onCardRevealComplete();
@@ -157,39 +152,49 @@ revealDealerCard(holeCardData?: any): void {
                     .start();
                 })
             .start();
+        });
     }
-    /**
-     * Add a card to the hand
-     * @param card - The card to add
-     */
-    public addCard(card: Card): void {
-        this.cards.push(card);
-    }
+   
    
     /**
      * Deal a card with error handling
      * @param faceUp - Whether the card should be face up
      * @returns A promise that resolves with the dealt card
      */
-    dealCardWithErrorHandling(faceUp: boolean): Promise<Card | null> {
+    dealCards(CardData : Card): Promise<Card | null> {
         return new Promise((resolve) => {
             try {
-                // Create a placeholder card - actual card data will come from backend
-                // This is only for visual representation until backend data arrives
-                const placeholderCard: Card = {
-                    rank: '2' as Card['rank'],  // Placeholder value, will be updated with actual card from backend
-                    suit: 'hearts',             // Placeholder value, will be updated with actual card from backend
-                    value: 0,                   // Placeholder value, will be updated with actual card from backend
-                    faceUp: faceUp,
-                    sprite: undefined,
-                    spriteKey: faceUp ? '2H' : 'cardBack'  // Use cardBack for face down cards
-                };
+                this.setContainerPosition();
+                let placeholderCard: Card;
+                if(CardData && CardData.suit != '0'  && CardData.rank != '0')
+                {
+                    placeholderCard = {
+                        rank:  CardData.rank,  // Placeholder value, will be updated with actual card from backend
+                        suit: CardData.suit,             // Placeholder value, will be updated with actual card from backend
+                        value: CardData.value,                   // Placeholder value, will be updated with actual card from backend
+                        faceUp: CardData.faceUp,
+                        sprite: undefined,
+                        spriteKey: `${getSuitPrefix(CardData.suit)}${CardData.rank}`  // Use cardBack for face down cards
+                    };
+                }
+                else
+                {
+                    placeholderCard = {
+                        rank:  '0',  // Placeholder value, will be updated with actual card from backend
+                        suit: '0',             // Placeholder value, will be updated with actual card from backend
+                        value: 0,                   // Placeholder value, will be updated with actual card from backend
+                        faceUp: false,
+                        sprite: undefined,
+                        spriteKey: 'cardBack'  // Use cardBack for face down cards
+                    };
+                }
+                console.log("Dealing card", placeholderCard);
                 
+                
+                this.cards.push(placeholderCard);
                 // Create sprite for the card
                 this.createCardSprite(placeholderCard);
                 
-                // Add card to hand
-                this.addCard(placeholderCard);
                 
                 // Add sprite to hand container
                 if (placeholderCard.sprite) {
@@ -199,16 +204,13 @@ revealDealerCard(holeCardData?: any): void {
                     this.positionCardsInHand(this);
                     
                     // Animate the card with the enhanced animation
-                    this.animateCardToHand(placeholderCard, this);
+                    this.animateCardToHand(placeholderCard, this)
                     
                     // Add a longer delay to ensure animation completes including rotation and bounce
                     setTimeout(() => {
-                        // Update points display
-                        this.updatePointsDisplay(true);
-                        
                         // Resolve with the card
                         resolve(placeholderCard);
-                    }, this.dealAnimationSpeed + 150); // Increased delay for enhanced animation
+                    }, this.dealAnimationSpeed); // Increased delay for enhanced animation
                 } else {
                     resolve(placeholderCard);
                 }
@@ -224,32 +226,22 @@ revealDealerCard(holeCardData?: any): void {
      * @param includeHidden - Whether to include face-down cards in calculation (default: false)
      * @returns The calculated value from backend or local cache
      */
-    public calculateValue(includeHidden: boolean = false): number {
+    public calculateValue(): number {
         // Instead of calculating locally, we should use the value provided by the backend
         // This method is kept for compatibility but should just return the stored value
         
-        // If we received a value from the backend, use it
-        if (this.value > 0) {
-            return this.value;
-        }
-        
+    
         // Simple fallback for when backend hasn't yet provided a value
         // Only does basic calculation for display purposes
         let sum = 0;
         
         // Sum visible cards only (for dealer display before hole card is revealed)
-        if (!includeHidden) {
-            this.cards.forEach(card => {
-                if (card.faceUp) {
-                    sum += card.value;
-                }
-            });
-        } else {
+      
             // Sum all cards
             this.cards.forEach(card => {
                 sum += card.value;
             });
-        }
+        
         
         // Store the calculated value
         this.value = sum;
@@ -257,22 +249,8 @@ revealDealerCard(holeCardData?: any): void {
         return sum;
     }
     
-    /**
-     * Get the total value of the hand including face-down cards
-     * @returns The total value of all cards in the hand
-     */
-    public getTotalValue(): number {
-        return this.calculateValue(true);
-    }
-    
-    /**
-     * Get the visible value of the hand (only face-up cards)
-     * @returns The visible value of the hand
-     */
-    getVisibleValue(): number {
-        return this.calculateValue(false);
-    }
-
+  
+ 
       /**
      * Create a card sprite
      * @param card - The card to create a sprite for
@@ -340,6 +318,7 @@ revealDealerCard(holeCardData?: any): void {
     }
 
     resize() {
+        this.setContainerPosition();
         this.positionCardsInHand(this);
         // const playerY = screenHeight * 0.35; // Player hand at 25% from bottom
         // const dealerY = -screenHeight * 0.25; // Dealer hand at 25% from top
@@ -374,6 +353,18 @@ revealDealerCard(holeCardData?: any): void {
         return maxCards;
     }
     
+
+    setContainerPosition() {
+    
+        const playerY = window.innerHeight * 0.40; // Player hand at 40% from top
+        const dealerY = -window.innerHeight * 0.25; // Dealer hand at 25% from top
+
+        if(this.type === 'player') {
+            this.position.set(0, playerY);
+        } else if(this.type === 'dealer') {
+            this.position.set(0, dealerY);
+        }
+    }
     /**
      * Calculate card positions for a hand
      * This is a helper method to ensure consistent positioning across all methods
@@ -596,18 +587,17 @@ revealDealerCard(holeCardData?: any): void {
         // Just call calculateValue for consistency
         hand.calculateValue();
     }
+
+    
     updatePointsDisplay(animate: boolean = true): void {
         // Make sure points display is visible
         
         // Update points text to show hand value
         let points = 0;
         
-        // If the game is in progress and the second card is face down, only show the value of the first card
-        if (this.cards.length > 1 && !this.cards[1].faceUp) {
-            points = this.cards[0].value;
-        } else {
-            points = this.calculateValue();
-        }
+     
+        points = this.calculateValue();
+        
         
         this.points = points;
         this.pointsText.updateLabelText(points.toString());
@@ -695,46 +685,13 @@ revealDealerCard(holeCardData?: any): void {
         this.points = 0;
     }
 
-    /**
-     * Update the hand with a card from the backend
-     * @param card - The card data received from the backend
-     * @param index - Optional index where the card should be placed (for reordering or replacing)
-     * @returns The updated card
-     */
-    public updateCardFromBackend(cardData: Card): Card {
-        
-        // Convert the backend card data to our frontend card format
-        const card: Card = {
-            suit: cardData.suit,
-            rank: cardData.rank,
-            value: cardData.value,
-            faceUp: cardData.faceUp,
-            spriteKey: cardData.faceUp ? `${getSuitPrefix(cardData.suit)}${cardData.rank}` : 'cardBack'
-        };
-        console.log("Updating card from backend",this.type ,  cardData.spriteKey);
-        
-        this.cards.push(card);
-        // Create a sprite for the card
-        this.createCardSprite(card);
-        
-        // Add the sprite to the container if it exists
-        if (card.sprite) {
-            this.addChild(card.sprite);
-        }
-        
-        // Position all cards in the hand
-        this.positionCardsInHand(this);
-        this.animateCardToHand(card, this);
-        
-        return card;
-    }
-    
+   
     /**
      * Reveal a specific card in the hand
      * @param index - The index of the card to reveal
      * @param cardData - Optional updated card data from the backend
      */
-    public revealCardAtIndex(index: number, cardData?: any): void {
+    public revealCardAtIndex(index: number, cardData?: Card): void {
         if (index < 0 || index >= this.cards.length) {
             console.error("Cannot reveal card: invalid index");
             return;
@@ -747,19 +704,20 @@ revealDealerCard(holeCardData?: any): void {
             card.rank = cardData.rank;
             card.suit = cardData.suit;
             card.value = cardData.value;
+            
         }
         
         // Only flip if the card is face down
-        if (!card.faceUp && card.sprite) {
+        if (!card.faceUp && card.sprite && cardData) {
             // Mark as face up
             card.faceUp = true;
-            
+            console.log("cardData", cardData);
             // Update sprite key for the face-up card
-            card.spriteKey = `${card.rank}${card.suit[0].toUpperCase()}`;
+            card.spriteKey = `${getSuitPrefix(cardData.suit as "hearts" | "diamonds" | "clubs" | "spades")}${cardData.rank}`;
             
             // Get the face-up texture
             const faceUpTexture = Globals.resources[card.spriteKey];
-            
+            console.log("faceUpTexture", faceUpTexture);
             // Animate card flip
             this.animateCardFlip(card.sprite, faceUpTexture);
             
@@ -826,10 +784,7 @@ export interface Hand {
      */
     updatePointsDisplay(animate?: boolean): void;
     
-    /**
-     * Reveal the dealer's hole card (for dealer hand only)
-     */
-    revealDealerCard(): void;
+  
     
     /**
      * Update the hand with a card from the backend
@@ -837,31 +792,20 @@ export interface Hand {
      * @param index - Optional index where the card should be placed
      * @returns The updated card
      */
-    updateCardFromBackend(cardData: any, index?: number): Card;
-    
-    /**
-     * Reveal a specific card in the hand
-     * @param index - The index of the card to reveal
-     * @param cardData - Optional updated card data from the backend
-     */
+  
     revealCardAtIndex(index: number, cardData?: any): void;
     
-    /**
-     * Initialize/sync the entire hand from backend state
-     * @param cards - Array of card data from the backend
-     * @param animate - Whether to animate card appearance
-     */
-    initFromBackendState(cards: Card): void;
+   
 }
 /**
  * Represents a playing card with suit, rank, and value
  */
 export interface Card {
     /** Card's suit (hearts, diamonds, clubs, spades) */
-    suit: 'hearts' | 'diamonds' | 'clubs' | 'spades';
+    suit: 'hearts' | 'diamonds' | 'clubs' | 'spades' | '0';
     
     /** Card's rank (A, 2-10, J, Q, K) */
-    rank: 'A' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K';
+    rank: 'A' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | '10' | 'J' | 'Q' | 'K' | '0';
     
     /** Card's value in blackjack (1-11 for A, 10 for face cards, rank value for others) */
     value: number;

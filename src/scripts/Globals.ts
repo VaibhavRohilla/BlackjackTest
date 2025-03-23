@@ -1,4 +1,3 @@
-import { Deck } from "./deck";
 import { App } from "./app";
 import { MyEmitter } from "./myemitter";
 import { SceneManager } from "./scenemanager";
@@ -6,6 +5,7 @@ import * as PIXI from 'pixi.js'
 import { Howl } from 'howler';
 import { isMobile } from 'pixi.js';
 import { BackendService } from "./services/backendservice";
+import { GameManager } from "./gamemanager";
 
 type globalDataType = {
   resources: { [key: string]: PIXI.Texture }; 
@@ -20,11 +20,8 @@ type globalDataType = {
   isVisible: boolean;
   balance : number;
   currentBet : number;
-  deck : Deck | undefined;
-  gameStarted?: boolean;
-  popupManager?: any;
-  isOnline: boolean;
-  lastAction: string | null;
+  Manager : GameManager | undefined;
+  gameState:"betting" | "dealing" | "player_turn" | "dealer_turn" | "complete" | undefined;
 };
 
 export const Globals: globalDataType = {
@@ -42,11 +39,8 @@ export const Globals: globalDataType = {
   isVisible: true,
   balance : 200000,
   currentBet : 0,
-  deck : undefined,
-  gameStarted: false,
-  popupManager: undefined,
-  isOnline: true,
-  lastAction: null
+  gameState: "betting",
+  Manager : undefined
 };
 
 export const formatNumber = (num: number): string => {

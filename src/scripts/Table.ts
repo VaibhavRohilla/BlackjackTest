@@ -880,6 +880,38 @@ export class Chips extends Sprite {
         this.on('pointerup', this.onRelease.bind(this));
     }
     
+
+    animateChipToBettingArea(SetPosition : {x: number, y: number},MoveToPosition : {x: number, y: number}) {
+         // Set initial position and scale
+    this.position.copyFrom(SetPosition);
+    
+    const chipScale = 0.3;
+    this.scale.set(chipScale * config.scaleFactor);
+    this.updateOriginalScale();
+    
+    // Add slight random offset for natural movement
+    const randomOffset = {
+      x: (Math.random() - 0.5) * 20,
+      y: (Math.random() - 0.5) * 20
+    };
+    
+    // Create position tween with smoother animation
+    new Tween(this.position, Globals.sceneManager?.tweenGroup)
+      .to({
+        x: MoveToPosition.x + randomOffset.x,
+        y: MoveToPosition.y + randomOffset.y
+      }, 800) // Increased duration for smoother movement
+      .easing(Easing.Cubic.Out) // Changed to Cubic for smoother deceleration
+      .start();
+      
+    // Add a slight rotation during movement
+    const targetRotation = (Math.random() - 0.5) * Math.PI * 0.5; // Random rotation between -π/4 and π/4
+    new Tween(this, Globals.sceneManager?.tweenGroup)
+      .to({ rotation: targetRotation }, 800)
+      .easing(Easing.Cubic.Out)
+      .start();
+  }
+   
     /**
      * Handle pointer over event
      */
@@ -965,7 +997,7 @@ export class Chips extends Sprite {
             
             return;
         } else {
-            Globals.balance -= this.value;
+            
             
             // Create scale animation
             this.activeTween = new Tween(this.scale, Globals.sceneManager?.tweenGroup)

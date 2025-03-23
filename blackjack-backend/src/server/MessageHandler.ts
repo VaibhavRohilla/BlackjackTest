@@ -1,5 +1,5 @@
-import { BlackjackServer } from './BlackjackServer';
-import { ClientMessage, MessageType, createErrorMessage, ServerMessage } from '../models/Message';
+import { BlackjackServer } from './blackjackserver';
+import { ClientMessage, MessageType, createErrorMessage, ServerMessage } from '../models/message';
 
 /**
  * Tracks client message rate for rate limiting
@@ -56,6 +56,11 @@ export class MessageHandler {
           this.handleGetGameState(clientId);
           break;
           
+        case MessageType.GET_PLAYER_DATA:
+        case MessageType.GET_GAME_STATE:
+          this.handleGetGameState(clientId);
+          break;
+          
         case MessageType.PLACE_BET:
         case MessageType.DEAL_CARDS:
         case MessageType.HIT:
@@ -68,6 +73,10 @@ export class MessageHandler {
         case MessageType.CLEAR_BET:
         case MessageType.RETURN_TO_BETTING:
           this.handleGameAction(clientId, message);
+          break;
+          
+        case MessageType.START_GAME:
+          this.handleStartGame(clientId, message.data.amount);
           break;
           
         default:
@@ -228,6 +237,20 @@ export class MessageHandler {
       } catch (stateError) {
         console.error(`Failed to send game state after error:`, stateError);
       }
+    }
+  }
+
+  private handleStartGame(clientId: string, betAmount: number): void {
+    const game = this.server.getGameForClient(clientId);
+    if (!game) {
+      this.server.sendToClient(clientId, createErrorMessage('No active game found.'));
+      return;
+    }
+
+    try {
+      game.startGame(betAmount);
+    } catch (error: unknown) {
+      this.server.sendToClient(clientId, createErrorMessage(error instanceof Error ? error.message : 'Unknown error'));
     }
   }
 } 

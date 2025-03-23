@@ -21,7 +21,7 @@ export class MainScene extends Scene
 
 
   recievedMessage(msgType: string, msgParams: any): void {
-    this.gameManager.recievedMessage(msgType, msgParams);
+    this.gameManager.recieveMessages(msgType, msgParams);
   }
 
   addToSceneCallBack(object : any) {

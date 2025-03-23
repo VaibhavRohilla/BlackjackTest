@@ -11,6 +11,8 @@ export enum MessageType {
   SESSION_CREATED = 'session_created',
   JOIN_SESSION = 'join_session',
   GAME_READY = 'game_ready',
+  GET_PLAYER_DATA = 'get_player_data',
+  GET_GAME_STATE = 'get_game_state',
   
   // Game initialization
   PLACE_BET = 'place_bet',
@@ -54,7 +56,8 @@ export enum MessageType {
   
   // Additional actions
   REBET = 'rebet',
-  CLEAR_BET = 'clear_bet'
+  CLEAR_BET = 'clear_bet',
+  START_GAME = 'start_game'
 }
 
 /**

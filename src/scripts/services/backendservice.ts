@@ -1,4 +1,3 @@
-import { EventEmitter } from 'events';
 import { Globals } from "../globals";
 import { MessageType } from "./messagetypes";
 
@@ -9,7 +8,6 @@ export class BackendService {
   private static instance: BackendService;
   
   private socket: WebSocket | null = null;
-  private eventEmitter: EventEmitter;
   private serverUrl: string;
   private reconnectAttempts: number = 0;
   private maxReconnectAttempts: number = 5;
@@ -32,14 +30,19 @@ export class BackendService {
   private currentUrlIndex: number = 0;
   private connectionAttempts: number = 0;
   private maxConnectionAttempts: number = 3;
+
+  // Callback handlers
+  private onConnectionStatusChanged: ((status: { connected: boolean }) => void) | null = null;
+  private onPlayerDataUpdated: ((data: any) => void) | null = null;
+  private onGameStateUpdated: ((state: any) => void) | null = null;
+  private onActionResult: ((result: any) => void) | null = null;
+  private onServerError: ((error: { message: string, code: string }) => void) | null = null;
+  private onReconnected: (() => void) | null = null;
   
   private constructor() {
-    this.eventEmitter = new EventEmitter();
     // Try to get the server URL from environment or use default
     // this.serverUrl = process.env.BACKEND_WS_URL || 'ws://localhost:3000';
     this.serverUrl = 'ws://localhost:3001';
-    // Increase max listeners to prevent memory leak warnings
-    this.eventEmitter.setMaxListeners(20);
   }
   
   /**
@@ -145,10 +148,6 @@ export class BackendService {
     console.log("WebSocket connection established");
     this._isConnected = true;
     this.reconnectAttempts = 0;
-    
-    // Notify listeners of connection
-    this.eventEmitter.emit('connection_status_changed', {connected: true});
-    
     // Request player ID - using the expected format
     this.sendMessage({
       type: 'REQUEST_PLAYER_ID'
@@ -174,7 +173,8 @@ export class BackendService {
   private handleSocketMessage(event: MessageEvent): void {
     try {
         const message = JSON.parse(event.data);
-        console.log("Received WebSocket message:", message);
+        console.log("Recived " + message.type + " message with data: " + JSON.stringify(message.data));
+
         
         // Handle error messages first - error format seems to be different
         if (message.type === "error") {
@@ -196,12 +196,27 @@ export class BackendService {
                 this.handlePlayerDataMessage(message);
                 break;
                 
-            case 'GAME_STATE':
-                this.handleGameStateMessage(message);
+            case MessageType.START_GAME:
+                Globals.Manager?.HandleStartGame(message.data);
                 break;
-                
-            case 'ACTION_RESULT':
-                this.handleActionResultMessage(message);
+
+            case MessageType.CARD_DEALT:
+                Globals.Manager?.recveiveBackendMessages(message.type, message.data);
+                break;
+
+            case MessageType.HAND_UPDATED:
+                // Handle card dealt message
+                if (message.data && Globals.Manager) {
+                    const cardData = message.data;
+                    Globals.Manager.recveiveBackendMessages(message.type, cardData);
+                }
+                break;
+            case MessageType.GAME_OUTCOME:
+              Globals.Manager?.recveiveBackendMessages(message.type, message.data);
+                break;
+
+            case MessageType.DOUBLE_DOWN:
+                Globals.Manager?.recveiveBackendMessages(message.type, message.data);
                 break;
                 
             case 'ERROR':
@@ -209,13 +224,9 @@ export class BackendService {
                 break;
                 
             default:
-                // Check if message has a data property
-                if (message.data) {
-                    // Forward all other messages to listeners with their data
-                    this.eventEmitter.emit(message.type.toLowerCase(), message.data);
-                } else {
-                    // Forward entire message if no data property
-                    this.eventEmitter.emit(message.type.toLowerCase(), message);
+                // Forward message data to appropriate callback if exists
+                if (message.data && this.onGameStateUpdated) {
+                    this.onGameStateUpdated(message.data);
                 }
                 break;
         }
@@ -223,17 +234,11 @@ export class BackendService {
       } catch (error) {
         console.error("Error parsing WebSocket message:", error, event.data);
         
-        // Try to determine if it's a string and emit as an error
-        try {
-            const rawMessage = event.data;
-            if (typeof rawMessage === 'string') {
-                this.eventEmitter.emit('server_error', {
-                    message: `Invalid message format: ${rawMessage.substring(0, 100)}...`,
-                    code: "PARSE_ERROR"
-                });
-            }
-        } catch (innerError) {
-            console.error("Error handling unparseable message:", innerError);
+        if (this.onServerError) {
+            this.onServerError({
+                message: `Invalid message format: ${typeof event.data === 'string' ? event.data.substring(0, 100) : 'Unknown'}...`,
+                code: "PARSE_ERROR"
+            });
         }
     }
   }
@@ -255,8 +260,7 @@ export class BackendService {
       
       // Request player data after getting player ID
       this.sendMessage({
-        type: 'GET_PLAYER_DATA',
-        playerId: message.playerId
+        type: MessageType.GET_PLAYER_DATA
       });
     }
   }
@@ -266,7 +270,6 @@ export class BackendService {
    */
   private handlePlayerDataMessage(message: any): void {
     if (message.data) {
-      console.log("Received player data:", message.data);
       
       // Resolve the player data promise
       if (this._playerDataPromiseResolve) {
@@ -276,31 +279,26 @@ export class BackendService {
       }
       
       // Emit player data event
-      this.eventEmitter.emit('player_data_updated', message.data);
+      if (this.onPlayerDataUpdated) {
+        this.onPlayerDataUpdated(message.data);
+      }
     }
   }
-  
-  /**
-   * Handle game state message
-   */
-  private handleGameStateMessage(message: any): void {
-    if (message.state) {
-      // Emit game state event
-      this.eventEmitter.emit('game_state_updated', message.state);
-    }
-  }
+ 
   
   /**
    * Handle action result message
    */
   private handleActionResultMessage(message: any): void {
     // Emit action result event
-    this.eventEmitter.emit('action_result', {
-      action: this.lastSentAction,
-      success: message.success,
-      message: message.message,
-      data: message.data
-    });
+    if (this.onActionResult) {
+      this.onActionResult({
+        action: this.lastSentAction,
+        success: message.success,
+        message: message.message,
+        data: message.data
+      });
+    }
   }
   
   /**
@@ -318,10 +316,12 @@ export class BackendService {
     console.error(`Server error (${errorCode}):`, errorMessage);
     
     // Emit error event
-    this.eventEmitter.emit('server_error', {
+    if (this.onServerError) {
+      this.onServerError({
         message: errorMessage,
         code: errorCode
-    });
+      });
+    }
   }
 
   /**
@@ -332,7 +332,9 @@ export class BackendService {
     console.log(`WebSocket connection closed: ${event.code} ${event.reason}`);
     
     // Notify listeners of disconnection
-    this.eventEmitter.emit('connection_status_changed', {connected: false});
+    if (this.onConnectionStatusChanged) {
+      this.onConnectionStatusChanged({ connected: false });
+    }
     
     // Attempt to reconnect if not deliberately closed
     if (!this.isReconnecting && event.code !== 1000) {
@@ -370,8 +372,8 @@ export class BackendService {
         this.isReconnecting = false;
         this.connect().then(result => {
           // Notify of successful reconnection
-          if (result.connected) {
-            this.eventEmitter.emit('reconnected');
+          if (result.connected && this.onReconnected) {
+            this.onReconnected();
           }
         });
       }, this.reconnectDelay * this.reconnectAttempts);
@@ -390,21 +392,57 @@ export class BackendService {
   }
 
   /**
-   * Add event listener
-   * @param event Event name
-   * @param listener Listener function
+   * Setter methods for callbacks
    */
-  public addEventListener(event: string, listener: (...args: any[]) => void): void {
-    this.eventEmitter.on(event, listener);
+  public setConnectionStatusCallback(callback: (status: { connected: boolean }) => void): void {
+    this.onConnectionStatusChanged = callback;
+  }
+
+  public setPlayerDataCallback(callback: (data: any) => void): void {
+    this.onPlayerDataUpdated = callback;
+  }
+
+  public setGameStateCallback(callback: (state: any) => void): void {
+    this.onGameStateUpdated = callback;
+  }
+
+  public setActionResultCallback(callback: (result: any) => void): void {
+    this.onActionResult = callback;
+  }
+
+  public setServerErrorCallback(callback: (error: { message: string, code: string }) => void): void {
+    this.onServerError = callback;
+  }
+
+  public setReconnectedCallback(callback: () => void): void {
+    this.onReconnected = callback;
   }
 
   /**
-   * Remove event listener
-   * @param event Event name
-   * @param listener Listener function
+   * Remove callback methods
    */
-  public removeEventListener(event: string, listener: (...args: any[]) => void): void {
-    this.eventEmitter.off(event, listener);
+  public removeConnectionStatusCallback(): void {
+    this.onConnectionStatusChanged = null;
+  }
+
+  public removePlayerDataCallback(): void {
+    this.onPlayerDataUpdated = null;
+  }
+
+  public removeGameStateCallback(): void {
+    this.onGameStateUpdated = null;
+  }
+
+  public removeActionResultCallback(): void {
+    this.onActionResult = null;
+  }
+
+  public removeServerErrorCallback(): void {
+    this.onServerError = null;
+  }
+
+  public removeReconnectedCallback(): void {
+    this.onReconnected = null;
   }
 
   /**
@@ -459,8 +497,7 @@ export class BackendService {
    */
   public getGameState(): void {
     this.sendMessage({
-        type: 'GET_GAME_STATE',
-        playerId: this.playerId || 'default'
+        type: MessageType.GET_GAME_STATE
     });
   }
   
@@ -583,5 +620,53 @@ export class BackendService {
     this.sendMessage({
         type: MessageType.RETURN_TO_BETTING
     });
+  }
+
+  /**
+   * Start the game with a bet amount
+   * @param betAmount The amount to bet
+   */
+  public startGame(betAmount: number): void {
+    if (!this.isConnectedToBackend()) {
+      console.error("Not connected to backend");
+      return;
+    }
+
+    this.sendMessage({
+      type: MessageType.START_GAME,
+      data: { amount: betAmount }
+    });
+  }
+
+  /**
+   * Handle player actions
+   * @param action The action to perform (hit, stand, etc.)
+   * @param hand Optional hand identifier for split hands ('first' or 'second')
+   */
+  public handlePlayerAction(action: 'hit' | 'stand' | 'double_down' | 'split' | 'surrender', hand?: 'first' | 'second'): void {
+    if (!this.isConnectedToBackend()) {
+      console.error("Not connected to backend");
+      return;
+    }
+
+    switch (action) {
+      case 'hit':
+        this.hit(hand);
+        break;
+      case 'stand':
+        this.stand(hand);
+        break;
+      case 'double_down':
+        this.doubleDown();
+        break;
+      case 'split':
+        this.split();
+        break;
+      case 'surrender':
+        this.surrender();
+        break;
+      default:
+        console.error("Invalid action");
+    }
   }
 } 
