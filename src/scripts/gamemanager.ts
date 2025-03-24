@@ -180,7 +180,10 @@ export class GameManager extends Container {
     resetGame() {
         this.blackjackDealer.resetHands();
         Globals.gameState = 'betting';
-        this.gameButtonsContainer.hideAllButtons();
+        this.popupManager.hidePopup(() => {
+            this.gameButtonsContainer.hideAllButtons();
+        });
+        
     }
 
     moveToBetting() {
@@ -225,76 +228,16 @@ export class GameManager extends Container {
                 this.giveCards(data);
                 break;
             case MessageType.HAND_UPDATED:
-                if(data.action === "double_down") {
-                    this.chipsZone.investedChips.forEach(element => {
-                        this.addChip(element, true);
-                    });
-                }else
-                this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
-                
-                if(data.action === "stand") {
-                    console.log("Stand action detected, revealing dealer cards:", data);
-                    this.blackjackDealer.isCardDealInProgress = true;
-                    
-                    // First reveal the hidden dealer card
-                    if(this.blackjackDealer.dealerHand.cards[1] && this.blackjackDealer.dealerHand.cards[1].sprite) {
-                        this.blackjackDealer.dealerHand.revealDealerCard(data.dealerHand.cards[1]).then(() => {
-                            // Create a promise chain to deal additional dealer cards one by one
-                            let dealPromise = Promise.resolve();
-                            
-                            // Start from the 3rd card (index 2) since first two cards are already dealt
-                            for(let i = 2; i < data.dealerHand.cards.length; i++) {
-                                dealPromise = dealPromise.then(() => {
-                                    return this.blackjackDealer.dealerHand.dealCards(data.dealerHand.cards[i]).then(() => {
-                                        // Return void to maintain Promise<void> chain
-                                        return;
-                                    });
-                                });
-                            }
-                            
-                            // After all cards are dealt, mark dealing as complete
-                            dealPromise.then(() => {
-                                console.log("All dealer cards revealed after stand action");
-                                this.blackjackDealer.isCardDealInProgress = false;
-                                this.gameButtonsContainer.showSpecificButtons(this.gameButtonsContainer.toShowButtons);
-                                this.checkPendingOutcome();
-                            });
-                        });
-                    } else {
-                        console.log("No dealer card to reveal, proceeding");
-                        this.blackjackDealer.isCardDealInProgress = false;
-                        this.checkPendingOutcome();
-                    }
-                } else if(data.action === "blackjack") {
-                    console.log("Blackjack detected! Revealing dealer's hidden card");
-                    this.blackjackDealer.isCardDealInProgress = true;
-                    
-                    // Reveal the dealer's hidden card
-                    if(this.blackjackDealer.dealerHand.cards[1] && this.blackjackDealer.dealerHand.cards[1].sprite) {
-                        this.blackjackDealer.dealerHand.revealDealerCard(data.dealerHand.cards[1]).then(() => {
-                            console.log("Dealer card revealed after blackjack");
-                            this.blackjackDealer.isCardDealInProgress = false;
-                            // Show the outcome popup after dealer card is revealed
-                            this.checkPendingOutcome();
-                        });
-                    } else {
-                        console.log("No dealer card to reveal for blackjack");
-                        this.blackjackDealer.isCardDealInProgress = false;
-                        this.checkPendingOutcome();
-                    }
-                } else {
-                    // For other actions, use the existing card dealing logic
-                    this.blackjackDealer.isCardDealInProgress = true;
-                    this.giveCards(data);
-                }
+               this.HandleGameInProgress(data)
                 break;
                 
             case MessageType.GAME_OUTCOME:
+                Globals.gameState = data.gamePhase;
                 this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
                 this.uiContainer.updateBalancefromBackend(data.newBalance);
                 if(!this.blackjackDealer.isCardDealInProgress) {
                     // Show outcome immediately if no cards are being dealt
-                    this.gameButtonsContainer.showButtonGroup('gameEnd', false);
+                    // this.gameButtonsContainer.showButtonGroup('gameEnd', false);
                     this.blackjackDealer.payout = data.payout;
                     this.popupManager.showOutcomePopup(data.outcome,this.blackjackDealer.payout);
                 } else {
@@ -351,6 +294,79 @@ export class GameManager extends Container {
         }
     }
 
+    HandleGameInProgress(data: any) {
+
+        if(data.splitHand) {
+            this.blackjackDealer.splitHand = new Hand('split');
+            data.splitHand.cards.forEach((element: any) => {
+                if(this.blackjackDealer.splitHand) {
+                this.blackjackDealer.splitHand.dealCards(element);
+                }
+            });
+        }
+        if(data.action === "double_down") {
+            this.chipsZone.investedChips.forEach(element => {
+                this.addChip(element, true);
+            });
+        }else
+        this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
+        
+        if(data.action === "stand") {
+            console.log("Stand action detected, revealing dealer cards:", data);
+            this.blackjackDealer.isCardDealInProgress = true;
+            
+            // First reveal the hidden dealer card
+            if(this.blackjackDealer.dealerHand.cards[1] && this.blackjackDealer.dealerHand.cards[1].sprite) {
+                this.blackjackDealer.dealerHand.revealDealerCard(data.dealerHand.cards[1]).then(() => {
+                    // Create a promise chain to deal additional dealer cards one by one
+                    let dealPromise = Promise.resolve();
+                    
+                    // Start from the 3rd card (index 2) since first two cards are already dealt
+                    for(let i = 2; i < data.dealerHand.cards.length; i++) {
+                        dealPromise = dealPromise.then(() => {
+                            return this.blackjackDealer.dealerHand.dealCards(data.dealerHand.cards[i]).then(() => {
+                                // Return void to maintain Promise<void> chain
+                                return;
+                            });
+                        });
+                    }
+                    
+                    // After all cards are dealt, mark dealing as complete
+                    dealPromise.then(() => {
+                        console.log("All dealer cards revealed after stand action");
+                        this.blackjackDealer.isCardDealInProgress = false;
+                        this.gameButtonsContainer.showSpecificButtons(this.gameButtonsContainer.toShowButtons);
+                        this.checkPendingOutcome();
+                    });
+                });
+            } else {
+                console.log("No dealer card to reveal, proceeding");
+                this.blackjackDealer.isCardDealInProgress = false;
+                this.checkPendingOutcome();
+            }
+        } else if(data.action === "blackjack") {
+            console.log("Blackjack detected! Revealing dealer's hidden card");
+            this.blackjackDealer.isCardDealInProgress = true;
+            
+            // Reveal the dealer's hidden card
+            if(this.blackjackDealer.dealerHand.cards[1] && this.blackjackDealer.dealerHand.cards[1].sprite) {
+                this.blackjackDealer.dealerHand.revealDealerCard(data.dealerHand.cards[1]).then(() => {
+                    console.log("Dealer card revealed after blackjack");
+                    this.blackjackDealer.isCardDealInProgress = false;
+                    // Show the outcome popup after dealer card is revealed
+                    this.checkPendingOutcome();
+                });
+            } else {
+                console.log("No dealer card to reveal for blackjack");
+                this.blackjackDealer.isCardDealInProgress = false;
+                this.checkPendingOutcome();
+            }
+        } else {
+            // For other actions, use the existing card dealing logic
+            this.blackjackDealer.isCardDealInProgress = true;
+            this.giveCards(data);
+        }}
+
     recieveMessages(msgType: string, data: any) {
         console.log('Recieved message', msgType, data);
 
@@ -395,13 +411,11 @@ export class GameManager extends Container {
     onHitClicked() {
         if(Globals.gameState === 'player_turn' ) {
             Globals.backendService?.hit();
-            this.gameButtonsContainer.hideAllButtons();
         }
     }
     onStandClicked() {
         if(Globals.gameState === 'player_turn' ) {
             Globals.backendService?.stand();
-            this.gameButtonsContainer.hideAllButtons();
         }
     }
     onClearClicked() {
@@ -450,6 +464,34 @@ export class GameManager extends Container {
     onPlayOnClicked() {
         if(Globals.gameState === 'complete' ) {
             this.resetGame();
+
+            const returnChips = [...this.chipsZone.investedChips];
+              // First save current chips as "remove chips" to animate them
+        this.chipsZone.removeChips = [...this.chipsZone.investedChips];
+
+        // Hide betting buttons during animation
+        this.gameButtonsContainer.hideAllButtons();
+
+        // Animate the chips flying out and fade out bet holder
+        this.chipsZone.tweenChipsOut(() => {
+
+            // Reset display after animation completes
+            this.chipsZone.clearChips();
+
+            // Update UI - bet text already cleared
+            this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText("0 Chips");
+
+
+            // Make sure bet holder is hidden
+            this.chipsZone.betHolder.isVisible(false);
+
+                // Re-enable chip buttons after a short delay
+                setTimeout(() => {
+                    this.table.makeButtonsActive(true);
+                }, 200);
+
+        }, true); // true to hide bet holder after animation
+        
         }
     }
   
@@ -463,25 +505,21 @@ export class GameManager extends Container {
     onSurrenderClicked() {
         if(Globals.gameState === 'player_turn' ) {
             Globals.backendService?.surrender();
-            this.gameButtonsContainer.hideAllButtons();
         }
     }
     onDoubleClicked() {
         if(Globals.gameState === 'player_turn' ) {
             Globals.backendService?.doubleDown();
-            this.gameButtonsContainer.hideAllButtons();
         }
     }
     onSplitClicked() {
         if(Globals.gameState === 'player_turn' ) {
             Globals.backendService?.split();
-            this.gameButtonsContainer.hideAllButtons();
         }
     }
     onInsuranceClicked() {
         if(Globals.gameState === 'player_turn' && this.blackjackDealer.isInsuranceAvailable ) {
             Globals.backendService?.insurance(true);
-            this.gameButtonsContainer.hideAllButtons();
         }
     }
     onRebetClicked() {
@@ -489,10 +527,46 @@ export class GameManager extends Container {
             
                 if(Globals.currentBet > 0) {
                 console.log("------REBETING------",Globals.currentBet);
-                    
-                Globals.backendService?.startGame(Globals.currentBet);
-            }
+                this.resetGame();
+                const bet = Globals.currentBet;
+
+            const returnChips = this.chipsZone.investedChips;
+            // First save current chips as "remove chips" to animate them
+      this.chipsZone.removeChips = [...this.chipsZone.investedChips];
+
+      // Hide betting buttons during animation
+      this.gameButtonsContainer.hideAllButtons();
+
+      // Animate the chips flying out and fade out bet holder
+      this.chipsZone.tweenChipsOut(() => {
+
+          // Reset display after animation completes
+          this.chipsZone.clearChips();
+
+          // Update UI - bet text already cleared
+          this.chipsZone.betHolder.middleChipsCountTxt.updateLabelText("0 Chips");
+        
+                Globals.currentBet = 0;
+             
+            });
+            this.chipsZone.investedChips.forEach(Element => {
+                const chip = new Chips(Element.texture, Element.value);
+                chip.interactive = false;
+                // Animate the chip from the table to the betting area
+                this.animateChipToBettingArea(chip);
+
+                // Add the chip to the scene
+                this.chipsZone.addChip(chip);
+                chip.zIndex = Z_INDEX.CHIPS;
+                this.addChild(chip);
+
+                // Update UI with the chip value - use forRebet flag to prevent double counting
+                this.updateUIAfterAddingChip(chip.value, false);
+            });
+            Globals.backendService?.startGame(bet);
+        
         }
+    }
     }
 
     addChip(chipData: Chips, addDouble: boolean = false, forRebet: boolean = false) {

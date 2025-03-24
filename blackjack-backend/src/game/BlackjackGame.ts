@@ -323,7 +323,7 @@ export class BlackjackGame {
     }
     
     if (!this.canSplit()) {
-      throw new Error('Cannot split - cards must be of the same rank');
+      throw new Error('Cannot split - cards must be of the same value');
     }
     
     // Create split hand if it doesn't exist
@@ -568,6 +568,10 @@ export class BlackjackGame {
     // Ensure game is complete
     if (this.gamePhase !== 'complete' && this.gamePhase !== 'dealer_turn') {
       console.warn('Game is not complete, outcome may not be final');
+      
+      // Set game phase to complete if we're determining outcome
+      // This fixes issues where we might be determining outcome but game phase hasn't been updated
+      this.gamePhase = 'complete';
     }
     
     // Handle surrender
@@ -692,12 +696,12 @@ export class BlackjackGame {
       }
       
       // Allow split if possible
-      if (this.canSplit()) {
+      if (this.canSplit() && this.playerHand.cards.length === 2) {
         allowedActions.push(MessageType.SPLIT);
       }
       
       // Allow insurance if available
-      if (this.isInsuranceAvailable()) {
+      if (this.isInsuranceAvailable() && this.playerHand.cards.length === 2) {
         allowedActions.push(MessageType.INSURANCE);
       }
     }
@@ -993,7 +997,7 @@ export class BlackjackGame {
     
     // Cards must be of the same rank
     const [card1, card2] = this.playerHand.cards;
-    return card1.rank === card2.rank;
+    return card1.value === card2.value;
   }
 
   /**

@@ -227,26 +227,33 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
      * @returns The calculated value from backend or local cache
      */
     public calculateValue(): number {
-        // Instead of calculating locally, we should use the value provided by the backend
-        // This method is kept for compatibility but should just return the stored value
+        let value = 0;
+        let aces = 0;
+        // Sum up the values of all cards
+        for (const card of this.cards) {
+          
+          
+          // Count aces separately
+          if (card.rank === 'A') {
+            aces++;
+          } else {
+            value += card.value;
+          }
+        }
         
-    
-        // Simple fallback for when backend hasn't yet provided a value
-        // Only does basic calculation for display purposes
-        let sum = 0;
-        
-        // Sum visible cards only (for dealer display before hole card is revealed)
-      
-            // Sum all cards
-            this.cards.forEach(card => {
-                sum += card.value;
-            });
-        
+        // Add aces with optimal values
+        for (let i = 0; i < aces; i++) {
+          if (value + 11 <= 21) {
+            value += 11;
+          } else {
+            value += 1;
+          }
+        }
         
         // Store the calculated value
-        this.value = sum;
+        this.value = value;
         
-        return sum;
+        return value;
     }
     
   

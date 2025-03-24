@@ -455,7 +455,7 @@ export class GameSession {
   private processDealerTurn(): void {
     console.log(`Processing dealer turn in session ${this.clientId}`);
     
-    // Set game phase to dealer turn
+    // Set game phase to dealer_turn
     this.game.setGamePhase('dealer_turn');
     
     // Notify client that dealer turn is starting
@@ -487,13 +487,27 @@ export class GameSession {
       }
     });
     
+    // Check if player has busted
+    const playerHand = this.mapHand(this.game.getPlayerCards());
+    const splitHand = this.game.hasSplit() ? this.mapHand(this.game.getSplitCards() || []) : null;
+    const allHandsBusted = playerHand.busted && (!splitHand || splitHand.busted);
+    
     // Wait 1 second before continuing (for client animations)
     setTimeout(() => {
+      // If all player hands busted, skip dealer drawing cards
+      if (allHandsBusted) {
+        console.log('All player hands busted, skipping dealer turn and ending game');
+        this.game.setGamePhase('complete');
+        this.endGame();
+        return;
+      }
+      
       // Execute dealer's turn (draw cards until 17 or higher)
       const dealerCards = this.executeDealerTurn();
       console.log(`Dealer's turn complete. Final hand value: ${this.game.getDealerValue()}`);
       
       // End the game with final outcome
+      this.game.setGamePhase('complete');
       this.endGame();
     }, 1000);
   }
@@ -1049,6 +1063,7 @@ export class GameSession {
           });
           console.log('Second hand busted, proceeding to dealer turn');
           // If split hand is bust, player turn is over
+          this.game.setGamePhase('dealer_turn');
           this.processDealerTurn();
         }
         else if (splitHand.value === 21) {
@@ -1087,7 +1102,8 @@ export class GameSession {
           }
         });
         console.log('Player busted, ending game');
-        // If player busts, dealer's turn is skipped
+        // If player busts, dealer's turn is skipped, directly set game phase to complete
+        this.game.setGamePhase('complete');
         this.endGame();
       }
       else if (playerHand.value === 21) {

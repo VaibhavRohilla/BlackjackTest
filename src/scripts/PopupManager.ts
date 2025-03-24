@@ -3,6 +3,7 @@ import { formatNumber, Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
 import { GameOutcome } from "./result";
 import { TextLabel } from "./textlabel";
+import { log } from "node:console";
 
 // Z-index constants for proper layering
 export const Z_INDEX = {
@@ -46,6 +47,8 @@ export class PopupManager extends Container {
     
     /** Whether the current popup is a game end popup (should persist) */
     private isGameEndPopup: boolean = false;
+
+    private payoutText:  Container | null = null;
     
     /**
      * Create a new popup manager
@@ -144,18 +147,44 @@ export class PopupManager extends Container {
         
         // Show the popup with the default white tint
         this.showPopup(popupTexture, tint);
-        if(outcome === GameOutcome.PLAYER_WIN || outcome === GameOutcome.DEALER_BUST || outcome === GameOutcome.PLAYER_BLACKJACK) {
+        if(outcome === GameOutcome.PLAYER_WIN || outcome === GameOutcome.DEALER_BUST ) {
             this.addPayoutText(payout);
         }
     }
     
     addPayoutText(payout: number): void {
-        const payoutText = new TextLabel(0, 0, 0.5, `+${formatNumber(payout)} Chips`, 50, 0xFFFFFF);
-        payoutText.zIndex = 100;
+        console.log("Adding payout text", payout);
+        
+        // Create a container to hold both text elements
+        const payoutContainer = new Container();
+        payoutContainer.zIndex = 100;
+        
+        // Create separate text labels for amount and "Chips"
+        const amountText = new TextLabel(0, 0, 0, formatNumber(payout), 80, 0xFFFFFF);
+        const chipsText = new TextLabel(0, 0, 0, "Chips", 80, 0xFFFFFF);
+        
+        // Style both text elements
+        amountText.style.fontWeight = "bold";
+        chipsText.style.fontWeight = "bold";
+        
+        // Position the text elements side by side with a small gap
+        payoutContainer.addChild(amountText);
+        payoutContainer.addChild(chipsText);
+        
+        // Calculate positions after adding to container to get proper dimensions
+        chipsText.position.set(amountText.width + 15, 0); // 15px gap between texts
+        
         if(this.activePopup) {
-            payoutText.position.set(this.activePopup.width / 2, this.activePopup.height / 2);
-            this.activePopup?.addChild(payoutText);
+            // Center the container in the popup
+            payoutContainer.position.set(
+                this.activePopup.width / 2 - payoutContainer.width ,
+                this.activePopup.height - payoutContainer.height*2
+            );
+            this.activePopup.addChild(payoutContainer);
         }
+        
+        // Store reference to delete later
+        this.payoutText = payoutContainer;
     }
     /**
      * Show an insurance outcome popup
@@ -252,6 +281,7 @@ export class PopupManager extends Container {
         
         // Make visible
         this.visible = true;
+        this.overlay.visible = true;
         this.isShowing = true;
         console.log("Popup now visible and showing");
         
@@ -306,6 +336,11 @@ export class PopupManager extends Container {
             // Scale in the popup with a slight overshoot
             new Tween(this.activePopup.scale, Globals.sceneManager?.tweenGroup)
                 .to({ x: baseScale, y: baseScale }, scaleInDuration)
+                .onUpdate(() => {
+                    if(this.payoutText && this.activePopup) {
+                        this.payoutText.position.set(this.activePopup.width *0.1 - this.payoutText.width *0.5, this.activePopup.height - this.payoutText.height*0.7);
+                    }
+                })
                 .easing(Easing.Back.Out) // Smoother entrance with slight overshoot
                 .onComplete(() => {
                     // Start pulsing animation immediately after the entrance animation
@@ -515,28 +550,51 @@ export class PopupManager extends Container {
      * @param callback - Optional callback to execute after cleanup
      */
     private cleanupPopup(callback?: () => void): void {
-        // Clean up popup
-        if (this.activePopup) {
-            console.log("Removing popup from container");
-            this.popupContainer.removeChild(this.activePopup);
-            this.activePopup = null;
-        }
-        
-        // Clean up shadow
+        // Remove popup shadow if it exists
         if (this.popupShadow) {
             this.popupContainer.removeChild(this.popupShadow);
+            this.popupShadow.destroy({children: true});
             this.popupShadow = null;
         }
         
-        // Reset state
-        this.visible = false;
-        this.isShowing = false;
-        this.targetPopupScale = null;
-        console.log("Popup hidden completely");
+        // Remove active popup if it exists
+        if (this.activePopup) {
+            // Remove payout text first if it exists
+            if (this.payoutText) {
+                if (this.payoutText instanceof Container) {
+                    // If it's a container, remove all its children properly
+                    while (this.payoutText.children.length > 0) {
+                        const child = this.payoutText.children[0];
+                        this.payoutText.removeChild(child);
+                        if (child instanceof TextLabel) {
+                            child.destroy();
+                        }
+                    }
+                }
+                
+                // Now remove the payoutText from its parent
+                if (this.payoutText.parent) {
+                    this.payoutText.parent.removeChild(this.payoutText);
+                }
+                
+                this.payoutText.destroy({children: true});
+                this.payoutText = null;
+            }
+            
+            this.popupContainer.removeChild(this.activePopup);
+            this.activePopup.destroy({children: true});
+            this.activePopup = null;
+        }
         
-        // Call callback if provided
+        // Hide the overlay
+        this.overlay.visible = false;
+        
+        // Reset state
+        this.isShowing = false;
+        this.isGameEndPopup = false;
+        
+        // Execute callback if provided
         if (callback) {
-            console.log("Calling hidePopup callback");
             callback();
         }
     }
