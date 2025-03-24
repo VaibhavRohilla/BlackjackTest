@@ -166,7 +166,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
             try {
                 this.setContainerPosition();
                 let placeholderCard: Card;
-                if(CardData && CardData.suit != '0'  && CardData.rank != '0')
+                if(CardData)
                 {
                     placeholderCard = {
                         rank:  CardData.rank,  // Placeholder value, will be updated with actual card from backend
@@ -263,8 +263,30 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
      * @param card - The card to create a sprite for
      */
       createCardSprite(card: Card): void {
+        // Log detailed card information for debugging
+        console.log(`Creating card sprite for ${card.rank} of ${card.suit} (faceUp: ${card.faceUp})`);
+        
         // Determine which texture to use based on whether the card is face up
-        const textureKey = card.faceUp ? card.spriteKey : 'cardBack';
+        let textureKey = card.faceUp ? card.spriteKey : 'cardBack';
+        
+        // Verify the texture exists
+        if (!Globals.resources[textureKey]) {
+            console.warn(`Texture ${textureKey} not found, attempting to correct it`);
+            
+            if (card.faceUp) {
+                // Try to construct the texture key correctly
+                textureKey = `${getSuitPrefix(card.suit as "hearts" | "diamonds" | "clubs" | "spades")}${card.rank}`;
+                console.log(`Attempted to correct texture key to: ${textureKey}`);
+                
+                // If still not found, fall back to card back
+                if (!Globals.resources[textureKey]) {
+                    console.error(`Texture ${textureKey} still not found, falling back to card back`);
+                    textureKey = 'cardBack';
+                }
+            } else {
+                textureKey = 'cardBack';
+            }
+        }
         
         // Create sprite
         const sprite = new Sprite(Globals.resources[textureKey]);
@@ -286,9 +308,18 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         sprite.alpha = 0; // Start invisible
         
         // Fade in quickly
-        new Tween(sprite, Globals.sceneManager?.tweenGroup)
-            .to({ alpha: 1 }, 100)
-            .start();
+        try {
+            new Tween(sprite)
+                .to({ alpha: 1 }, 100)
+                .start();
+        } catch (error) {
+            console.error("Error animating card fade-in:", error);
+            // Set alpha directly as fallback
+            sprite.alpha = 1;
+        }
+        
+        // Log success
+        console.log(`Card sprite created successfully for ${card.rank} of ${card.suit}`);
     }
 
     
@@ -324,8 +355,8 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         return Math.max(cardScale * config.scaleFactor, minScale);
     }
 
-    resize() {
-        this.setContainerPosition();
+    resize(hasSplit : boolean ) {
+        this.setContainerPosition(hasSplit);
         this.positionCardsInHand(this);
         // const playerY = screenHeight * 0.35; // Player hand at 25% from bottom
         // const dealerY = -screenHeight * 0.25; // Dealer hand at 25% from top
@@ -336,8 +367,35 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
      * @returns The overlap factor to use for card positioning
      */
     getCardOverlapFactor(): number {
-        // Increase overlap factor for a tighter, more professional look
-        return 0.4; // 50% overlap for all devices (changed from 0.7 which is 70% overlap)
+        // Get screen dimensions
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
+        const isPortrait = screenHeight > screenWidth;
+        
+        // Base overlap factor
+        let baseOverlap = 0.7; // 70% overlap for standard view
+        
+        // Adjust overlap based on screen size and orientation
+        if (isPortrait) {
+            // For portrait mode (mobile), use slightly less overlap
+            baseOverlap = 0.65;
+        } else {
+            // For landscape mode, use slightly more overlap
+            baseOverlap = 0.75;
+        }
+        
+        // Adjust for very small screens
+        if (screenWidth < 600) {
+            baseOverlap = 0.6; // Less overlap on very small screens
+        }
+        
+        // Adjust for very large screens
+        if (screenWidth > 1920) {
+            baseOverlap = 0.8; // More overlap on very large screens
+        }
+        
+        // Ensure overlap stays within reasonable bounds
+        return Math.max(0.5, Math.min(0.85, baseOverlap));
     }
     
     /**
@@ -347,7 +405,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
      * @param overlapFactor - The overlap factor to use
      * @returns The maximum number of cards that can fit
      */
-     calculateMaxVisibleCards(availableWidth: number, cardWidth: number, overlapFactor: number): number {
+    calculateMaxVisibleCards(availableWidth: number, cardWidth: number, overlapFactor: number): number {
         // Calculate the effective width of each card after overlap
         const effectiveCardWidth = cardWidth * (1 - overlapFactor);
         
@@ -355,21 +413,37 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         // We need at least one full card visible plus partial cards
         const maxCards = Math.max(3, Math.floor((availableWidth - cardWidth) / effectiveCardWidth) + 1);
         
-        console.log(`Max visible cards: ${maxCards} (availableWidth: ${availableWidth}, cardWidth: ${cardWidth}, effectiveWidth: ${effectiveCardWidth})`);
+        // Log the calculation details for debugging
+        console.log(`Card overlap calculation:
+            Screen width: ${window.innerWidth}
+            Available width: ${availableWidth}
+            Card width: ${cardWidth}
+            Overlap factor: ${overlapFactor}
+            Effective card width: ${effectiveCardWidth}
+            Max visible cards: ${maxCards}`);
         
         return maxCards;
     }
     
 
-    setContainerPosition() {
+    setContainerPosition(hasSplit: boolean = false) {
     
         const playerY = window.innerHeight * 0.40; // Player hand at 40% from top
         const dealerY = -window.innerHeight * 0.25; // Dealer hand at 25% from top
 
         if(this.type === 'player') {
-            this.position.set(0, playerY);
+            if(hasSplit) {
+                this.position.set(window.innerWidth *0.2, playerY);
+            }
+            else {
+                this.position.set(0, playerY);
+            }
         } else if(this.type === 'dealer') {
             this.position.set(0, dealerY);
+        }
+        else if(this.type === 'split') {
+            
+            this.position.set(-window.innerWidth *0.2, playerY);
         }
     }
     /**
@@ -425,6 +499,50 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
 
 
     /**
+     * Position the points display relative to the cards
+     */
+    private positionPointsDisplay(): void {
+        if (this.cards.length === 0) return;
+        
+        // Calculate the center position of all cards
+        let totalX = 0;
+        let cardCount = 0;
+        this.cards.forEach(card => {
+            if (card.sprite) {
+                totalX += card.sprite.position.x;
+                cardCount++;
+            }
+        });
+        
+        if (cardCount === 0) return;
+        
+        // Find the center of the cards on the X axis
+        const centerX = totalX / cardCount;
+        
+        // Get the first and last card for Y positioning reference
+        const firstCard = this.cards[0].sprite;
+        const lastCard = this.cards[this.cards.length - 1].sprite;
+        
+        if (!firstCard || !lastCard) return;
+        
+        if (this.type === 'dealer') {
+            // Position points display below the cards for dealer
+            this.pointsDisplay.position.set(
+                centerX, // Center on X axis
+                lastCard.position.y + lastCard.height * 0.5 + this.pointsDisplay.height * 0.6 // Below cards
+            );
+        } else {
+            // Position points display above the cards for player and split
+            this.pointsDisplay.position.set(
+                centerX, // Center on X axis
+                firstCard.position.y - firstCard.height * 0.5 - this.pointsDisplay.height * 0.6 // Above cards
+            );
+        }
+        
+        console.log(`Positioned points display at (${this.pointsDisplay.position.x}, ${this.pointsDisplay.position.y}) for ${this.type} hand`);
+    }
+
+    /**
      * Position cards in a hand
      * @param hand - The hand to position cards in
      */
@@ -434,6 +552,9 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         
         // Use the consistent card scale calculation
         const cardScale = this.calculateCardScale();
+        
+        // Get the overlap factor
+        const overlapFactor = this.getCardOverlapFactor();
         
         // Calculate positions using the shared helper method
         const { positions, cardWidth, cardHeight } = this.calculateCardPositions(hand, cardScale);
@@ -454,15 +575,75 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                     index: index
                 };
                 
+                // Immediately set the position for proper layout
+                card.sprite.position.set(x, y);
+                
                 // Set z-index based on card position
                 card.sprite.zIndex = index;
+                
+                // Apply a slight rotation for a more natural look
+                if (cardCount > 1) {
+                    const rotationOffset = (index - (cardCount - 1) / 2) * 0.5;
+                    card.sprite.rotation = rotationOffset * (Math.PI / 180);
+                }
             }
         });
         
         // Position the points display after cards are positioned
         this.positionPointsDisplay();
+        
+        // After positioning the points display, adjust card positions to ensure
+        // the points display is centered relative to the cards
+        this.adjustCardsForCenteredPointsDisplay(cardWidth);
     }
     
+    /**
+     * Adjust cards to ensure the points display is centered
+     * @param cardWidth - Width of a card
+     */
+    private adjustCardsForCenteredPointsDisplay(cardWidth: number): void {
+        if (this.cards.length === 0 || !this.pointsDisplay.visible) return;
+        
+        // Get the center point of our points display
+        const pointsCenter = this.pointsDisplay.position.x;
+        
+        // Calculate the current center of the cards
+        let minX = Number.MAX_VALUE;
+        let maxX = -Number.MAX_VALUE;
+        
+        this.cards.forEach(card => {
+            if (card.sprite) {
+                const leftEdge = card.sprite.position.x - (cardWidth * 0.5);
+                const rightEdge = card.sprite.position.x + (cardWidth * 0.5);
+                
+                minX = Math.min(minX, leftEdge);
+                maxX = Math.max(maxX, rightEdge);
+            }
+        });
+        
+        const cardsCenter = (minX + maxX) / 2;
+        
+        // Calculate how much to shift cards so the points display is centered
+        const shiftAmount = pointsCenter - cardsCenter;
+        
+        // Only apply adjustment if it's significant
+        if (Math.abs(shiftAmount) > 2) {
+            console.log(`Adjusting cards by ${shiftAmount}px to center points display`);
+            
+            // Shift all cards
+            this.cards.forEach(card => {
+                if (card.sprite) {
+                    card.sprite.position.x += shiftAmount;
+                    
+                    // Update the target position for reference
+                    if (card.targetPosition) {
+                        card.targetPosition.x += shiftAmount;
+                    }
+                }
+            });
+        }
+    }
+
     /**
      * Animate a card from the deck position to its position in the hand
      * @param card - The card to animate
@@ -652,29 +833,6 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
     }
 
     /**
-     * Position the points display relative to the cards
-     */
-    private positionPointsDisplay(): void {
-        if (this.cards.length === 0) return;
-        
-        // Get the last card's position
-        const lastCard = this.cards[this.cards.length - 1];
-        if (!lastCard.sprite) return;
-        
-        this.pointsDisplay.position.set(this.pointsDisplay.width/2,
-            lastCard.sprite.position.y - lastCard.sprite.height/2  - this.pointsDisplay.height/2// Adjust this value as needed
-        );
-
-        if(this.type === 'dealer'){
-        // Position points display above the last card
-        this.pointsDisplay.position.set(
-            this.pointsDisplay.width/2,
-            lastCard.sprite.position.y + lastCard.sprite.height/2 + this.pointsDisplay.height/2 // Adjust this value as needed
-        );
-    }
-}
-
-    /**
      * Clear all sprites and reset the hand display
      */
     public clearSprites(): void {
@@ -734,6 +892,83 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                 this.updatePointsDisplay(true);
             }, 300); // After flip animation
         }
+    }
+
+    /**
+     * Apply a visual highlight effect to show this hand is active
+     * @param isActive Whether this hand is active
+     */
+    public highlightActive(isActive: boolean): void {
+        // Calculate hand value to check for bust
+        const cards = this.cards;
+        let value = 0;
+        let aces = 0;
+        
+        // Calculate hand value
+        for (const card of cards) {
+            if (card.rank === 'A') {
+                aces++;
+            } else {
+                value += card.value;
+            }
+        }
+        
+        // Add aces optimally
+        for (let i = 0; i < aces; i++) {
+            if (value + 11 <= 21) {
+                value += 11;
+            } else {
+                value += 1;
+            }
+        }
+        
+        const isBusted = value > 21;
+        
+        // Apply a different tint and brightness to show which hand is active
+        if (isActive) {
+            // Bright white for active hand
+            if (this.pointsDisplay) {
+                this.pointsDisplay.alpha = 1.0;
+                // Use red tint for busted hands
+                this.pointsDisplay.tint = isBusted ? 0xFF0000 : 0xFFFFFF;
+                
+                // Make the text larger for the active hand
+                this.pointsDisplay.scale.set(1.2);
+            }
+            
+            // Make cards brighter
+            this.cards.forEach(card => {
+                if (card.sprite) {
+                    card.sprite.alpha = 1.0;
+                    // If busted, apply a subtle red tint to cards
+                    if (isBusted) {
+                        card.sprite.tint = 0xFFDDDD;
+                    } else {
+                        card.sprite.tint = 0xFFFFFF;
+                    }
+                }
+            });
+        } else {
+            // Dimmed for inactive hand
+            if (this.pointsDisplay) {
+                this.pointsDisplay.alpha = 0.7;
+                // Dim gray for inactive hand
+                this.pointsDisplay.tint = 0xBBBBBB;
+                // Reset scale for inactive hand
+                this.pointsDisplay.scale.set(1.0);
+            }
+            
+            // Dim the cards too
+            this.cards.forEach(card => {
+                if (card.sprite) {
+                    card.sprite.alpha = 0.6;
+                    card.sprite.tint = 0xDDDDDD;
+                }
+            });
+        }
+        
+        // Force update of the points display
+        this.updatePointsDisplay(true);
     }
 }
 /**

@@ -355,7 +355,9 @@ export class UiContainer extends Container {
         
         this.menuPopup.setButtonCallback('Info', () => {
             // Show game info/rules
-            // You can implement showing game rules here
+            console.log("Info button clicked - showing game info overlay");
+            // The showInfoOverlay method is already called directly in the MenuPopup class
+            // when the Info button is clicked, so we don't need to call it again here
         });
         
         this.menuPopup.setButtonCallback('Music', () => {

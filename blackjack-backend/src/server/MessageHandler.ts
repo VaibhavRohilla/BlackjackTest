@@ -46,19 +46,18 @@ export class MessageHandler {
       
       // Route the message based on type
       switch (message.type) {
-        case MessageType.CREATE_SESSION:
-          // Legacy support - just create/reset the game for this client
-          this.handleNewGame(clientId);
-          break;
-          
-        case MessageType.JOIN_SESSION:
-          // Legacy support - treat as getting current game state
-          this.handleGetGameState(clientId);
-          break;
-          
         case MessageType.GET_PLAYER_DATA:
         case MessageType.GET_GAME_STATE:
           this.handleGetGameState(clientId);
+          break;
+          
+        case MessageType.START_GAME:
+          // Handle starting a new game with bet
+          if (message.data && message.data.amount) {
+            this.handleStartGame(clientId, message.data.amount);
+          } else {
+            this.server.sendToClient(clientId, createErrorMessage('Bet amount required'));
+          }
           break;
           
         case MessageType.PLACE_BET:
@@ -70,13 +69,8 @@ export class MessageHandler {
         case MessageType.SURRENDER:
         case MessageType.INSURANCE:
         case MessageType.REBET:
-        case MessageType.CLEAR_BET:
-        case MessageType.RETURN_TO_BETTING:
+          // Handle all game actions
           this.handleGameAction(clientId, message);
-          break;
-          
-        case MessageType.START_GAME:
-          this.handleStartGame(clientId, message.data.amount);
           break;
           
         default:

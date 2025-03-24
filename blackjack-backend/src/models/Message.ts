@@ -4,60 +4,50 @@
 export enum MessageType {
   // Connection related
   CONNECTED = 'connected',
+  DISCONNECTED = 'disconnected',
   ERROR = 'error',
   
-  // Game session related
-  CREATE_SESSION = 'create_session',
-  SESSION_CREATED = 'session_created',
-  JOIN_SESSION = 'join_session',
-  GAME_READY = 'game_ready',
-  GET_PLAYER_DATA = 'get_player_data',
-  GET_GAME_STATE = 'get_game_state',
-  
-  // Game initialization
-  PLACE_BET = 'place_bet',
-  BET_PLACED = 'bet_placed',
+  // Core game flow
+  START_GAME = 'start_game',
   DEAL_CARDS = 'deal_cards',
-  CARDS_DEALT = 'cards_dealt',
-  INITIAL_STATE = 'initial_state',
+  GAME_STATE = 'game_state',
+  BALANCE_UPDATE = 'balance_update',
+  GAME_OUTCOME = 'game_outcome',
+  GAME_END = 'game_end',
   
-  // Game actions
+  // Player actions
+  PLACE_BET = 'place_bet',
   HIT = 'hit',
   STAND = 'stand',
   DOUBLE_DOWN = 'double_down',
   SPLIT = 'split',
   SURRENDER = 'surrender',
   INSURANCE = 'insurance',
+  REBET = 'rebet',
+  CLEAR_BET = 'clear_bet',
   
-  // Game events
+  // Special conditions
+  SPECIAL_CASE = 'special_case',
+  
+  // Legacy/compatibility types
+  PHASE_CHANGE = 'phase_change',
+  HAND_UPDATED = 'hand_updated',
+  BET_PLACED = 'bet_placed',
+  ACTION_RESULT = 'action_result',
   PLAYER_TURN = 'player_turn',
   DEALER_TURN = 'dealer_turn',
   CARD_DEALT = 'card_dealt',
-  DEALER_CARD_REVEALED = 'dealer_card_revealed',
-  HAND_UPDATED = 'hand_updated',
-  
-  // Special conditions
-  OFFER_INSURANCE = 'offer_insurance',
-  INSURANCE_RESULT = 'insurance_result',
-  OFFER_SPLIT = 'offer_split',
   SPLIT_RESULT = 'split_result',
-  SPLIT_HAND_SWITCH = 'split_hand_switch',
-  
-  // Game outcome
-  GAME_OUTCOME = 'game_outcome',
-  PLAYER_BALANCE_UPDATE = 'player_balance_update',
-  
-  // Phase transitions
-  PHASE_CHANGE = 'phase_change',
+  CREATE_SESSION = 'create_session',
   RETURN_TO_BETTING = 'return_to_betting',
+  GAME_READY = 'game_ready',
   
-  // Action results
-  ACTION_RESULT = 'action_result',
+  // Utility
+  GET_PLAYER_DATA = 'get_player_data',
+  GET_GAME_STATE = 'get_game_state',
   
-  // Additional actions
-  REBET = 'rebet',
-  CLEAR_BET = 'clear_bet',
-  START_GAME = 'start_game'
+  // Authentication
+  AUTHENTICATE = 'authenticate'
 }
 
 /**
@@ -72,7 +62,7 @@ interface BaseMessage {
  * Messages sent from client to server
  */
 export interface ClientMessage extends BaseMessage {
-  // No sessionId property needed anymore
+  // No additional properties needed
 }
 
 /**
@@ -131,6 +121,27 @@ export interface GameOutcomeMessage {
   playerHandValue: number;
   dealerHandValue: number;
   playerBalance: number;
+}
+
+/**
+ * Special case message for insurance and split
+ */
+export interface SpecialCaseMessage {
+  type: 'insurance' | 'split';
+  // Making specific data fields optional as frontend only uses the type
+  dealerCard?: any;
+  insuranceAmount?: number;
+  cards?: any[];
+}
+
+/**
+ * Card dealt message - simplified format for card dealing
+ */
+export interface CardDealtMessage {
+  card: CardMessage;     // The card being dealt
+  target: 'player' | 'dealer' | 'split';  // Where the card should be placed
+  isHoleCard?: boolean;  // Indicates this is the dealer's hidden hole card being revealed
+  isAdditionalCard?: boolean; // Indicates this is an additional card after the hole card is revealed
 }
 
 /**

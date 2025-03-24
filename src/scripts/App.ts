@@ -82,6 +82,15 @@ export class App {
 		Globals.app = this; // Store reference to App in Globals
 		Globals.backendService = this.backendService; // Store reference to BackendService in Globals
 
+		// Register centralized message handler to forward all messages to GameManager
+		this.backendService.setMessageHandler((type, data) => {
+			if (Globals.Manager) {
+				Globals.Manager.handleBackendMessage(type, data);
+			} else {
+				console.warn("Received backend message but GameManager not initialized:", type, data);
+			}
+		});
+
 		// Setup stage
 		this.app.stage.addChild(SceneManager.instance.container);
 		this.app.ticker.add((dt) => {
@@ -117,45 +126,62 @@ export class App {
 				} else {
 					this.showStatusMessage("Connected to server", 2000, true);
 					
-					// Wait for player balance to be retrieved
-					console.log("Waiting for player balance...");
-					this.showStatusMessage("Retrieving player data...");
+					// Wait for authentication to complete
+					console.log("Waiting for authentication...");
+					this.showStatusMessage("Authenticating...");
 					
 					try {
-						// Request player data including balance
-						const playerData = await this.backendService.getPlayerData();
+						// Wait for authentication response
+						const authResult = await this.backendService.waitForAuthentication();
 						
-						if (playerData && playerData.balance !== undefined) {
-							console.log(`Player balance received: ${playerData.balance}`);
-							Globals.balance = playerData.balance;
+						if (!authResult.success) {
+							console.error("Authentication failed:", authResult.error);
+							this.showStatusMessage("Authentication failed. Running in limited mode.", true);
+							Globals.balance = authResult.data?.playerBalance || 1000;
 						} else {
-							console.warn("Player balance not received, using default value");
-							Globals.balance = 1000;
+							this.showStatusMessage("Authentication successful", 1000, true);
+							
+							// Set the player balance from auth response
+							console.log(`Player balance received: ${authResult.data?.playerBalance}`);
+							Globals.balance = authResult.data?.playerBalance || 1000;
 						}
 						
-						this.showStatusMessage("Player data retrieved", 1000, true);
+						// Show loading message
+						this.showStatusMessage("Loading assets...");
+						
+						// Load assets
+						await loader.preload();
+						await new Promise<void>((resolve) => {
+							loader.preloadSounds(() => {
+								console.log("Asset preload complete");
+								resolve();
+							});
+						});
+						
+						// Start the main scene
+						SceneManager.instance!.start(new MainScene());
+						window.dispatchEvent(new Event('resize'));
+						
 					} catch (error) {
-						console.error("Error retrieving player data:", error);
-						this.showStatusMessage("Error retrieving player data, using default values", true);
+						console.error("Error during authentication:", error);
+						this.showStatusMessage("Authentication error. Running in limited mode.", true);
 						Globals.balance = 1000;
+						
+						// Still load assets and start game in offline mode
+						this.showStatusMessage("Loading assets...");
+						await loader.preload();
+						await new Promise<void>((resolve) => {
+							loader.preloadSounds(() => {
+								console.log("Asset preload complete");
+								resolve();
+							});
+						});
+						
+						// Start the main scene
+						SceneManager.instance!.start(new MainScene());
+						window.dispatchEvent(new Event('resize'));
 					}
 				}
-				
-				// Show loading message
-				this.showStatusMessage("Loading assets...");
-				
-				// Load assets
-				await loader.preload();
-				await new Promise<void>((resolve) => {
-					loader.preloadSounds(() => {
-						console.log("Asset preload complete");
-						resolve();
-					});
-				});
-				
-				// Start the main scene
-				SceneManager.instance!.start(new MainScene());
-				window.dispatchEvent(new Event('resize'));
 				
 			} catch (error) {
 				console.error("Error during game initialization:", error);

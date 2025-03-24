@@ -1,8 +1,8 @@
-import { Globals } from "../globals";
+import { Globals, loginData } from "../globals";
 import { MessageType } from "./messagetypes";
 
 /**
- * Handles communication with the backend WebSocket server
+ * Handles communication with the backend WebSocket server with simplified event handling
  */
 export class BackendService {
   private static instance: BackendService;
@@ -13,35 +13,29 @@ export class BackendService {
   private maxReconnectAttempts: number = 5;
   private reconnectDelay: number = 2000;
   private isReconnecting: boolean = false;
-  private lastSentAction: string = '';
   private playerId: string | null = null;
   
   // Connection states
   private _isConnected: boolean = false;
   private _connectionPromiseResolve: ((value: {connected: boolean, playerId?: string}) => void) | null = null;
   private _playerDataPromiseResolve: ((value: any) => void) | null = null;
+  private _authPromiseResolve: ((value: {success: boolean, error?: string, data?: {playerBalance: number}}) => void) | null = null;
   
-  // Backend server URLs to try
+  // Server URLs to try
   private serverUrls: string[] = [
     "ws://localhost:3001",
     "ws://127.0.0.1:3001"
   ];
   
   private currentUrlIndex: number = 0;
-  private connectionAttempts: number = 0;
-  private maxConnectionAttempts: number = 3;
-
-  // Callback handlers
-  private onConnectionStatusChanged: ((status: { connected: boolean }) => void) | null = null;
-  private onPlayerDataUpdated: ((data: any) => void) | null = null;
-  private onGameStateUpdated: ((state: any) => void) | null = null;
-  private onActionResult: ((result: any) => void) | null = null;
-  private onServerError: ((error: { message: string, code: string }) => void) | null = null;
-  private onReconnected: (() => void) | null = null;
+  
+  // Single message handler callback - simplified approach
+  private messageHandler: ((type: string, data: any) => void) | null = null;
+  
+  // Array of additional message listeners that can be added and removed dynamically
+  private messageListeners: ((type: string, data: any) => void)[] = [];
   
   private constructor() {
-    // Try to get the server URL from environment or use default
-    // this.serverUrl = process.env.BACKEND_WS_URL || 'ws://localhost:3000';
     this.serverUrl = 'ws://localhost:3001';
   }
   
@@ -56,28 +50,19 @@ export class BackendService {
   }
   
   /**
-   * Get the current server URL
-   */
-  public getServerUrl(): string {
-    return this.serverUrls[this.currentUrlIndex];
-  }
-  
-  /**
    * Connect to the WebSocket server
-   * @returns Promise that resolves with connection status and player ID
    */
   public async connect(): Promise<{connected: boolean, playerId?: string}> {
     return new Promise((resolve) => {
-      // Store the promise resolve function to call when connection completes
       this._connectionPromiseResolve = resolve;
       
       console.log(`Connecting to WebSocket server at ${this.serverUrl}`);
       
       // Close existing connection if any
-        if (this.socket) {
-          this.socket.close();
-          this.socket = null;
-        }
+      if (this.socket) {
+        this.socket.close();
+        this.socket = null;
+      }
         
       try {
         // Create new WebSocket connection
@@ -110,35 +95,10 @@ export class BackendService {
   }
   
   /**
-   * Get player data including balance
-   * @returns Promise that resolves with player data
+   * Register a message handler that receives all messages from backend
    */
-  public async getPlayerData(): Promise<any> {
-    return new Promise((resolve, reject) => {
-      if (!this.isConnectedToBackend()) {
-        reject(new Error("Not connected to backend"));
-        return;
-      }
-      
-      this._playerDataPromiseResolve = resolve;
-      
-      // Request player data from server
-      this.sendMessage({
-        type: 'GET_PLAYER_DATA',
-        playerId: this.playerId || 'default'
-      });
-      
-      // Set timeout for player data request
-      setTimeout(() => {
-        if (this._playerDataPromiseResolve) {
-          console.error("Player data request timed out");
-          const resolveFunc = this._playerDataPromiseResolve;
-          this._playerDataPromiseResolve = null;
-          // Resolve with default data on timeout
-          resolveFunc({balance: 1000});
-        }
-      }, 5000);
-    });
+  public setMessageHandler(handler: (type: string, data: any) => void): void {
+    this.messageHandler = handler;
   }
   
   /**
@@ -148,179 +108,100 @@ export class BackendService {
     console.log("WebSocket connection established");
     this._isConnected = true;
     this.reconnectAttempts = 0;
-    // Request player ID - using the expected format
+
+    // Send authentication with correct format
+    this.sendMessage({
+      type: 'authenticate',
+      data: {
+        loginData: loginData,
+        clientId: this.playerId || 'default'
+      }
+    });
+    
+    // Request player ID
     this.sendMessage({
       type: 'REQUEST_PLAYER_ID'
     });
     
-    // If we already have a connection promise waiting, resolve it with basic success
-    // The full player ID will come later in the handlePlayerIdMessage
-    if (this._connectionPromiseResolve) {
-            setTimeout(() => {
-        if (this._connectionPromiseResolve) {
-          console.log("Resolving connection promise with basic success");
-          const resolveFunc = this._connectionPromiseResolve;
-          this._connectionPromiseResolve = null;
-          resolveFunc({connected: true});
-        }
-      }, 500);
-    }
+    // Resolve connection promise after a small delay
+    setTimeout(() => {
+      if (this._connectionPromiseResolve) {
+        console.log("Resolving connection promise with basic success");
+        const resolveFunc = this._connectionPromiseResolve;
+        this._connectionPromiseResolve = null;
+        resolveFunc({connected: true});
+      }
+    }, 500);
   }
   
   /**
-   * Handle WebSocket message event
+   * Handle WebSocket message event with simplified processing
    */
   private handleSocketMessage(event: MessageEvent): void {
     try {
-        const message = JSON.parse(event.data);
-        console.log("Recived " + message.type + " message with data: " + JSON.stringify(message.data));
-
-        
-        // Handle error messages first - error format seems to be different
-        if (message.type === "error") {
-            // This handles the specific format from the error: {"type":"error","data":{"message":"Invalid message format"},"error":"Invalid message format"}
-            this.handleErrorMessage({
-                error: message.error || (message.data && message.data.message) || "Unknown error",
-                code: message.code || (message.data && message.data.code) || "ERROR"
-            });
-            return;
-        }
-        
-        // Handle different message types
-        switch (message.type) {
-            case 'PLAYER_ID':
-                this.handlePlayerIdMessage(message);
-                break;
-                
-            case 'PLAYER_DATA':
-                this.handlePlayerDataMessage(message);
-                break;
-                
-            case MessageType.START_GAME:
-                Globals.Manager?.HandleStartGame(message.data);
-                break;
-
-            case MessageType.CARD_DEALT:
-                Globals.Manager?.recveiveBackendMessages(message.type, message.data);
-                break;
-
-            case MessageType.HAND_UPDATED:
-                // Handle card dealt message
-                if (message.data && Globals.Manager) {
-                    const cardData = message.data;
-                    Globals.Manager.recveiveBackendMessages(message.type, cardData);
-                }
-                break;
-            case MessageType.GAME_OUTCOME:
-              Globals.Manager?.recveiveBackendMessages(message.type, message.data);
-                break;
-
-            case MessageType.DOUBLE_DOWN:
-                Globals.Manager?.recveiveBackendMessages(message.type, message.data);
-                break;
-                
-            case 'ERROR':
-                this.handleErrorMessage(message);
-                break;
-                
-            default:
-                // Forward message data to appropriate callback if exists
-                if (message.data && this.onGameStateUpdated) {
-                    this.onGameStateUpdated(message.data);
-                }
-                break;
-        }
-        
-      } catch (error) {
-        console.error("Error parsing WebSocket message:", error, event.data);
-        
-        if (this.onServerError) {
-            this.onServerError({
-                message: `Invalid message format: ${typeof event.data === 'string' ? event.data.substring(0, 100) : 'Unknown'}...`,
-                code: "PARSE_ERROR"
-            });
-        }
-    }
-  }
-  
-  /**
-   * Handle player ID message
-   */
-  private handlePlayerIdMessage(message: any): void {
-    if (message.playerId) {
-      console.log(`Received player ID: ${message.playerId}`);
-      this.playerId = message.playerId;
+      const message = JSON.parse(event.data);
+      console.log(`Received ${message.type} message with data:`, JSON.stringify(message.data));
       
-      // Resolve the connection promise with connected status and player ID
-      if (this._connectionPromiseResolve) {
-        const resolveFunc = this._connectionPromiseResolve;
-        this._connectionPromiseResolve = null;
-        resolveFunc({connected: true, playerId: message.playerId});
+      // Handle authentication messages (case insensitive)
+      const messageType = message.type.toLowerCase();
+      if (messageType === 'auth_success' || messageType === 'auth_success') {
+        if (this._authPromiseResolve) {
+          const resolveFunc = this._authPromiseResolve;
+          this._authPromiseResolve = null;
+          resolveFunc({
+            success: true, 
+            data: {
+              playerBalance: message.data?.balance || 1000
+            }
+          });
+        }
+      } else if (messageType === 'auth_error' || messageType === 'auth_error') {
+        if (this._authPromiseResolve) {
+          const resolveFunc = this._authPromiseResolve;
+          this._authPromiseResolve = null;
+          resolveFunc({
+            success: false, 
+            error: message.data?.message || "Authentication failed",
+            data: {
+              playerBalance: message.data?.balance || 1000
+            }
+          });
+        }
       }
       
-      // Request player data after getting player ID
-      this.sendMessage({
-        type: MessageType.GET_PLAYER_DATA
-      });
-    }
-  }
-  
-  /**
-   * Handle player data message
-   */
-  private handlePlayerDataMessage(message: any): void {
-    if (message.data) {
-      
-      // Resolve the player data promise
-      if (this._playerDataPromiseResolve) {
-        const resolveFunc = this._playerDataPromiseResolve;
-        this._playerDataPromiseResolve = null;
-        resolveFunc(message.data);
+      // Special handling for player ID
+      if (message.type === 'PLAYER_ID' && message.playerId) {
+        this.playerId = message.playerId;
+        console.log(`Received player ID: ${message.playerId}`);
+        
+        // Request player data after getting player ID
+        this.sendMessage({
+          type: MessageType.GET_PLAYER_DATA
+        });
       }
       
-      // Emit player data event
-      if (this.onPlayerDataUpdated) {
-        this.onPlayerDataUpdated(message.data);
+      // Special handling for connection errors
+      if (message.type === 'error' || message.type === 'ERROR') {
+        console.error(`Server error: ${message.error || (message.data && message.data.message) || "Unknown error"}`);
       }
-    }
-  }
- 
-  
-  /**
-   * Handle action result message
-   */
-  private handleActionResultMessage(message: any): void {
-    // Emit action result event
-    if (this.onActionResult) {
-      this.onActionResult({
-        action: this.lastSentAction,
-        success: message.success,
-        message: message.message,
-        data: message.data
-      });
-    }
-  }
-  
-  /**
-   * Handle error message
-   */
-  private handleErrorMessage(message: any): void {
-    const errorMessage = message.error || 
-                         (message.data && message.data.message) || 
-                         "Unknown server error";
-    
-    const errorCode = message.code || 
-                     (message.data && message.data.code) || 
-                     "ERROR";
-    
-    console.error(`Server error (${errorCode}):`, errorMessage);
-    
-    // Emit error event
-    if (this.onServerError) {
-      this.onServerError({
-        message: errorMessage,
-        code: errorCode
-      });
+      
+      // Forward all messages to the central handler if registered
+      if (this.messageHandler) {
+        this.messageHandler(message.type, message.data);
+      }
+      
+      // Call all registered message listeners
+      if (this.messageListeners.length > 0) {
+        this.messageListeners.forEach(listener => {
+          try {
+            listener(message.type, message.data);
+          } catch (listenerError) {
+            console.error("Error in message listener:", listenerError);
+          }
+        });
+      }
+    } catch (error) {
+      console.error("Error parsing WebSocket message:", error, event.data);
     }
   }
 
@@ -330,11 +211,6 @@ export class BackendService {
   private handleSocketClose(event: CloseEvent): void {
     this._isConnected = false;
     console.log(`WebSocket connection closed: ${event.code} ${event.reason}`);
-    
-    // Notify listeners of disconnection
-    if (this.onConnectionStatusChanged) {
-      this.onConnectionStatusChanged({ connected: false });
-    }
     
     // Attempt to reconnect if not deliberately closed
     if (!this.isReconnecting && event.code !== 1000) {
@@ -370,12 +246,7 @@ export class BackendService {
       
       setTimeout(() => {
         this.isReconnecting = false;
-        this.connect().then(result => {
-          // Notify of successful reconnection
-          if (result.connected && this.onReconnected) {
-            this.onReconnected();
-          }
-        });
+        this.connect();
       }, this.reconnectDelay * this.reconnectAttempts);
     } else {
       console.error("Maximum reconnection attempts reached");
@@ -385,166 +256,89 @@ export class BackendService {
 
   /**
    * Check if connected to the backend
-   * @returns Whether connected to the backend
    */
   public isConnectedToBackend(): boolean {
     return this._isConnected && this.socket !== null && this.socket.readyState === WebSocket.OPEN;
   }
 
   /**
-   * Setter methods for callbacks
-   */
-  public setConnectionStatusCallback(callback: (status: { connected: boolean }) => void): void {
-    this.onConnectionStatusChanged = callback;
-  }
-
-  public setPlayerDataCallback(callback: (data: any) => void): void {
-    this.onPlayerDataUpdated = callback;
-  }
-
-  public setGameStateCallback(callback: (state: any) => void): void {
-    this.onGameStateUpdated = callback;
-  }
-
-  public setActionResultCallback(callback: (result: any) => void): void {
-    this.onActionResult = callback;
-  }
-
-  public setServerErrorCallback(callback: (error: { message: string, code: string }) => void): void {
-    this.onServerError = callback;
-  }
-
-  public setReconnectedCallback(callback: () => void): void {
-    this.onReconnected = callback;
-  }
-
-  /**
-   * Remove callback methods
-   */
-  public removeConnectionStatusCallback(): void {
-    this.onConnectionStatusChanged = null;
-  }
-
-  public removePlayerDataCallback(): void {
-    this.onPlayerDataUpdated = null;
-  }
-
-  public removeGameStateCallback(): void {
-    this.onGameStateUpdated = null;
-  }
-
-  public removeActionResultCallback(): void {
-    this.onActionResult = null;
-  }
-
-  public removeServerErrorCallback(): void {
-    this.onServerError = null;
-  }
-
-  public removeReconnectedCallback(): void {
-    this.onReconnected = null;
-  }
-
-  /**
-   * Send message to the WebSocket server
-   * @param message Message to send
+   * Send message to the WebSocket server with simplified format
    */
   private sendMessage(message: any): void {
     if (this.socket && this.socket.readyState === WebSocket.OPEN) {
-        // Format the message to match backend expectations from GameSession.ts
-        const formattedMessage = {
-            type: message.type,
-            // Make sure we always include a data object with the format expected by GameSession.handleAction
-            data: {
-                playerId: this.playerId || 'default',
-                ...(message.action ? { action: message.action } : {}),
-                // Extract all other properties except type and explicitly handled ones
-                ...Object.keys(message)
-                    .filter(key => key !== 'type' && key !== 'playerId' && key !== 'data')
-                    .reduce((acc, key) => ({ ...acc, [key]: message[key] }), {}),
-                // If there's a nested data object, spread it as well
-                ...(message.data || {})
-            }
-        };
-        
-        const messageStr = JSON.stringify(formattedMessage);
-        console.log("Sending message:", formattedMessage);
-        this.socket.send(messageStr);
-        
-        // Track last sent action for action_result event handling
-        if (message.action) {
-            this.lastSentAction = message.action;
-        } else if (message.type) {
-            this.lastSentAction = message.type.toString();
+      // Format the message to match backend expectations
+      const formattedMessage = {
+        type: message.type,
+        data: {
+          playerId: this.playerId || 'default',
+          ...(message.type === 'authenticate' ? { loginData: loginData } : {}),
+          ...(message.data || {})
         }
+      };
+      
+      const messageStr = JSON.stringify(formattedMessage);
+      console.log("Sending message:", formattedMessage);
+      this.socket.send(messageStr);
     } else {
-        console.error("Cannot send message, WebSocket is not open");
+      console.error("Cannot send message, WebSocket is not open");
     }
   }
   
-  /**
-   * Get new game from server
-   */
-  public getNewGame(): void {
-    console.log('Getting new game from server');
-    this.sendMessage({
-      type: MessageType.CREATE_SESSION // Kept for backward compatibility
-    });
-  }
-  
-  /**
-   * Get the current game state
-   */
-  public getGameState(): void {
-    this.sendMessage({
-        type: MessageType.GET_GAME_STATE
-    });
-  }
+  // --- GAME ACTION METHODS ---
   
   /**
    * Place a bet
-   * @param amount Bet amount
    */
   public placeBet(amount: number): void {
     this.sendMessage({
-        type: MessageType.PLACE_BET,
-        data: { 
-            amount: amount 
-        }
+      type: MessageType.PLACE_BET,
+      data: { amount }
     });
   }
   
   /**
-   * Deal cards to start the game
+   * Start the game with a bet amount
    */
-  public dealCards(): void {
-    console.log('Backend service: dealing cards');
+  public startGame(betAmount: number): void {
+    if (!this.isConnectedToBackend()) {
+      console.error("Not connected to backend");
+      return;
+    }
+    
+    if (typeof betAmount !== 'number' || betAmount <= 0) {
+      console.error("Invalid bet amount:", betAmount);
+      return;
+    }
+
+    console.log(`Starting game with bet amount: ${betAmount}`);
     this.sendMessage({
-        type: MessageType.DEAL_CARDS
+      type: MessageType.START_GAME,
+      data: {
+        amount: betAmount,
+        betAmount: betAmount  // Include both formats for compatibility
+      }
     });
   }
   
   /**
    * Hit (take another card)
-   * @param hand Optional hand identifier for split hands ('first' or 'second')
    */
   public hit(hand?: 'first' | 'second'): void {
-    console.log(`Backend service: requesting hit${hand ? ' for ' + hand + ' hand' : ''}`);
+    console.log(`Requesting hit${hand ? ' for ' + hand + ' hand' : ''}`);
     this.sendMessage({
-        type: MessageType.HIT,
-        data: hand ? { hand } : undefined
+      type: MessageType.HIT,
+      data: hand ? { hand } : undefined
     });
   }
   
   /**
    * Stand (end turn)
-   * @param hand Optional hand identifier for split hands ('first' or 'second')
    */
   public stand(hand?: 'first' | 'second'): void {
-    console.log(`Backend service: requesting stand${hand ? ' for ' + hand + ' hand' : ''}`);
+    console.log(`Requesting stand${hand ? ' for ' + hand + ' hand' : ''}`);
     this.sendMessage({
-        type: MessageType.STAND,
-        data: hand ? { hand } : undefined
+      type: MessageType.STAND,
+      data: hand ? { hand } : undefined
     });
   }
   
@@ -552,9 +346,9 @@ export class BackendService {
    * Double down
    */
   public doubleDown(): void {
-    console.log('Backend service: requesting double down');
+    console.log('Requesting double down');
     this.sendMessage({
-        type: MessageType.DOUBLE_DOWN
+      type: MessageType.DOUBLE_DOWN
     });
   }
   
@@ -562,23 +356,20 @@ export class BackendService {
    * Split a pair
    */
   public split(): void {
-    console.log('Backend service: requesting split');
+    console.log('Requesting split');
     this.sendMessage({
-        type: MessageType.SPLIT
+      type: MessageType.SPLIT
     });
   }
   
   /**
    * Take or decline insurance
-   * @param takeInsurance Whether to take insurance
    */
   public insurance(takeInsurance: boolean): void {
-    console.log(`Backend service: ${takeInsurance ? 'accepting' : 'declining'} insurance`);
+    console.log(`${takeInsurance ? 'Accepting' : 'Declining'} insurance`);
     this.sendMessage({
-        type: MessageType.INSURANCE,
-        data: { 
-            takeInsurance: takeInsurance 
-        }
+      type: MessageType.INSURANCE,
+      data: { takeInsurance }
     });
   }
   
@@ -586,9 +377,9 @@ export class BackendService {
    * Surrender
    */
   public surrender(): void {
-    console.log('Backend service: requesting surrender');
+    console.log('Requesting surrender');
     this.sendMessage({
-        type: MessageType.SURRENDER
+      type: MessageType.SURRENDER
     });
   }
   
@@ -596,77 +387,105 @@ export class BackendService {
    * Rebet (use same bet as last hand)
    */
   public rebet(): void {
-    console.log('Backend service: requesting rebet');
+    console.log('Requesting rebet');
     this.sendMessage({
-        type: MessageType.REBET
+      type: MessageType.REBET
     });
+  }
+
+  /**
+   * Get player data including balance
+   * @returns Promise that resolves with player data
+   */
+  public async getPlayerData(): Promise<any> {
+    return new Promise((resolve, reject) => {
+      if (!this.isConnectedToBackend()) {
+        reject(new Error("Not connected to backend"));
+        return;
+      }
+      
+      this._playerDataPromiseResolve = resolve;
+      
+      // Request player data from server
+      this.sendMessage({
+        type: MessageType.GET_PLAYER_DATA
+      });
+      
+      // Set timeout for player data request
+      setTimeout(() => {
+        if (this._playerDataPromiseResolve) {
+          console.error("Player data request timed out");
+          const resolveFunc = this._playerDataPromiseResolve;
+          this._playerDataPromiseResolve = null;
+          // Resolve with default data on timeout
+          resolveFunc({balance: 1000});
+        }
+      }, 5000);
+    });
+  }
+
+  /**
+   * Get the current game state
+   */
+  public getGameState(): void {
+    this.sendMessage({
+      type: MessageType.GET_GAME_STATE
+    });
+  }
+
+  /**
+   * Add a message listener that will receive all messages from the backend
+   * @param listener The listener function to add
+   */
+  public addMessageListener(listener: (type: string, data: any) => void): void {
+    if (typeof listener !== 'function') {
+      console.error("addMessageListener: listener must be a function");
+      return;
+    }
+    // Only add if not already in the list
+    if (!this.messageListeners.includes(listener)) {
+      this.messageListeners.push(listener);
+      console.log(`Added message listener, total listeners: ${this.messageListeners.length}`);
+    }
   }
   
   /**
-   * Clear bet
+   * Remove a previously added message listener
+   * @param listener The listener function to remove
+   * @returns True if the listener was found and removed, false otherwise
    */
-  public clearBet(): void {
-    console.log('Backend service: clearing bet');
-    this.sendMessage({
-        type: MessageType.CLEAR_BET
-    });
-  }
-  
-  /**
-   * Return to betting phase
-   */
-  public returnToBettingPhase(): void {
-    console.log('Backend service: returning to betting phase');
-    this.sendMessage({
-        type: MessageType.RETURN_TO_BETTING
-    });
+  public removeMessageListener(listener: (type: string, data: any) => void): boolean {
+    const index = this.messageListeners.indexOf(listener);
+    if (index !== -1) {
+      this.messageListeners.splice(index, 1);
+      console.log(`Removed message listener, remaining listeners: ${this.messageListeners.length}`);
+      return true;
+    }
+    return false;
   }
 
   /**
-   * Start the game with a bet amount
-   * @param betAmount The amount to bet
+   * Wait for authentication to complete
+   * @returns Promise that resolves with authentication result
    */
-  public startGame(betAmount: number): void {
-    if (!this.isConnectedToBackend()) {
-      console.error("Not connected to backend");
-      return;
-    }
-
-    this.sendMessage({
-      type: MessageType.START_GAME,
-      data: { amount: betAmount }
+  public async waitForAuthentication(): Promise<{success: boolean, error?: string, data?: {playerBalance: number}}> {
+    return new Promise((resolve) => {
+      if (!this.isConnectedToBackend()) {
+        resolve({success: false, error: "Not connected to backend", data: {playerBalance: 1000}});
+        return;
+      }
+      
+      this._authPromiseResolve = resolve;
+      
+      // Set timeout for authentication
+      setTimeout(() => {
+        if (this._authPromiseResolve) {
+          console.error("Authentication timed out");
+          const resolveFunc = this._authPromiseResolve;
+          this._authPromiseResolve = null;
+          resolveFunc({success: false, error: "Authentication timed out", data: {playerBalance: 1000}});
+        }
+      }, 10000); // 10 second timeout
     });
-  }
-
-  /**
-   * Handle player actions
-   * @param action The action to perform (hit, stand, etc.)
-   * @param hand Optional hand identifier for split hands ('first' or 'second')
-   */
-  public handlePlayerAction(action: 'hit' | 'stand' | 'double_down' | 'split' | 'surrender', hand?: 'first' | 'second'): void {
-    if (!this.isConnectedToBackend()) {
-      console.error("Not connected to backend");
-      return;
-    }
-
-    switch (action) {
-      case 'hit':
-        this.hit(hand);
-        break;
-      case 'stand':
-        this.stand(hand);
-        break;
-      case 'double_down':
-        this.doubleDown();
-        break;
-      case 'split':
-        this.split();
-        break;
-      case 'surrender':
-        this.surrender();
-        break;
-      default:
-        console.error("Invalid action");
-    }
   }
 } 

@@ -311,7 +311,7 @@ export class Table extends Sprite {
                 continue;
             }
             
-            const chip = new Chips(chipInfo.texture, chipInfo.value);
+            const chip = new Chips(chipInfo.texture, chipInfo.value,false);
             
             // Set initial visibility based on showingAllChips
             if (i >= chipsToShow) {
@@ -443,7 +443,7 @@ export class Table extends Sprite {
                 const targetX = Math.cos(finalAngle) * baseRadius;
                 const targetY = Math.sin(finalAngle) * baseRadius * 0.6; // Flatten the arc vertically
                 
-                console.log(`Positioning chip ${i} to arc pos x:${targetX}, y:${targetY}`);
+                // console.log(`Positioning chip ${i} to arc pos x:${targetX}, y:${targetY}`);
                 
                 if (immediate) {
                     // Immediate positioning
@@ -615,7 +615,7 @@ export class Table extends Sprite {
         }
 
         // Create new chip with same texture and value
-        const newChip = new Chips(matchingChip.texture, value);
+        const newChip = new Chips(matchingChip.texture, value,false);
         
         // Position the new chip initially at center
         newChip.position.set(
@@ -845,13 +845,15 @@ export class Chips extends Sprite {
     /** Active animation tween */
     private activeTween?: Tween<any>;
     
+    public isDouble: boolean = false;
     /**
      * Create a new chip
      * @param texture - The texture for the chip
      * @param value - The value of the chip
      */
-    constructor(texture: Texture, value: number) {
+    constructor(texture: Texture, value: number,isDouble: boolean) {
         super(texture);
+        this.isDouble = isDouble;
         this.value = value;
         this.anchor.set(0.5);
         
@@ -1011,7 +1013,7 @@ export class Chips extends Sprite {
             Globals.emitter?.Call('CallChip', this);
         }
         
-        console.log('Chip clicked');
+        // console.log('Chip clicked');
     }
     
     /**

@@ -4,6 +4,7 @@ import { Easing, Tween } from "@tweenjs/tween.js";
 import { GameOutcome } from "./result";
 import { TextLabel } from "./textlabel";
 import { log } from "node:console";
+import { Button } from "./button";
 
 // Z-index constants for proper layering
 export const Z_INDEX = {
@@ -50,6 +51,9 @@ export class PopupManager extends Container {
 
     private payoutText:  Container | null = null;
     
+    /** Add a new property to track current outcome */
+    private currentOutcome: GameOutcome | null = null;
+    
     /**
      * Create a new popup manager
      */
@@ -85,13 +89,22 @@ export class PopupManager extends Container {
     /**
      * Show a popup based on game outcome
      * @param outcome - The game outcome
+     * @param payout - The payout amount
      */
     showOutcomePopup(outcome: GameOutcome, payout: number): void {
-        console.log(`Showing outcome popup for: ${outcome}`);
+        console.log(`Showing outcome popup for: ${outcome} with payout: ${payout}`);
+        
+        // Check if we're already showing this exact outcome - avoid flashing
+        if (this.isShowing && this.currentOutcome === outcome) {
+            console.log(`Already showing ${outcome} popup - skipping duplicate display`);
+            return;
+        }
+        
+        // Store current outcome
+        this.currentOutcome = outcome;
         
         let popupTexture;
         let tint = 0xFFFFFF; // Default white (no tint)
-        console.log("outcome", outcome);
         
         // Mark as game end popup (should persist until user action)
         this.isGameEndPopup = true;
@@ -117,7 +130,7 @@ export class PopupManager extends Container {
                 break;
             case GameOutcome.DEALER_WIN:
                 popupTexture = Globals.resources.loosePopup;
-                console.log("Selected lost popup");
+                console.log("Selected lost popup, texture exists:", !!Globals.resources.loosePopup);
                 break;
             case GameOutcome.SURRENDER:
                 popupTexture = Globals.resources.surrenderPopup;
@@ -126,29 +139,65 @@ export class PopupManager extends Container {
             case GameOutcome.INSURANCE_WON:
                 popupTexture = Globals.resources.insuranceWonPopup;
                 console.log("Selected insurance won popup");
-                // Insurance popups aren't end game popups, they're informational
-                this.isGameEndPopup = false;
+                // Insurance won popups are game-ending popups
+                this.isGameEndPopup = true;
                 break;
             case GameOutcome.INSURANCE_LOST:
                 popupTexture = Globals.resources.insuranceLostPopup;
                 console.log("Selected insurance lost popup");
-                // Insurance popups aren't end game popups, they're informational
+                // Insurance lost popups aren't end game popups, they're informational
                 this.isGameEndPopup = false;
                 break;
             default:
                 console.log(`No popup defined for outcome: ${outcome}`);
+                this.currentOutcome = null; // Reset outcome tracking
                 return;
         }
         
         if (!popupTexture) {
-            console.error(`Failed to load texture for outcome: ${outcome}`);
-            return;
+            console.error(`Failed to load texture for outcome: ${outcome}, checking for fallbacks`);
+            
+            // Try to use a fallback texture
+            if (outcome === GameOutcome.DEALER_WIN && Globals.resources.wonPopup) {
+                console.log("Using won popup as fallback for dealer_win with red tint");
+                popupTexture = Globals.resources.wonPopup;
+                tint = 0xFF9090; // Apply light red tint to indicate loss
+            } else if (outcome === GameOutcome.SURRENDER && Globals.resources.pushPopup) {
+                console.log("Using push popup as fallback for surrender with yellow tint");
+                popupTexture = Globals.resources.pushPopup;
+                tint = 0xFFFF90; // Apply light yellow tint for surrender
+            } else if (Globals.resources.wonPopup) {
+                // Last resort fallback - use won popup with appropriate tint
+                console.log("Using won popup as generic fallback with custom tint");
+                popupTexture = Globals.resources.wonPopup;
+                
+                // Use different tints based on whether it's a win or loss
+                if (outcome === GameOutcome.PLAYER_WIN || 
+                    outcome === GameOutcome.DEALER_BUST || 
+                    outcome === GameOutcome.PLAYER_BLACKJACK) {
+                    tint = 0xFFFFFF; // White for wins
+                } else if (outcome === GameOutcome.PUSH) {
+                    tint = 0xFFFFA0; // Light yellow for push
+                } else {
+                    tint = 0xFF9090; // Light red for losses
+                }
+            } else {
+                this.currentOutcome = null; // Reset outcome tracking
+                return;
+            }
         }
         
-        // Show the popup with the default white tint
+        // Show the popup with the selected tint
         this.showPopup(popupTexture, tint);
-        if(outcome === GameOutcome.PLAYER_WIN || outcome === GameOutcome.DEALER_BUST ) {
-            this.addPayoutText(payout);
+        
+        // Add payout text for winning outcomes
+        if (outcome === GameOutcome.PLAYER_WIN || 
+            outcome === GameOutcome.DEALER_BUST || 
+            outcome === GameOutcome.PLAYER_BLACKJACK) {
+            // Only add payout text for positive payouts
+            if (payout > 0) {
+                this.addPayoutText(payout);
+            }
         }
     }
     
@@ -193,6 +242,29 @@ export class PopupManager extends Container {
     public showInsuranceResult(insuranceWon: boolean): void {
         // Call the general showInsurancePopup method with a boolean parameter
         this.showInsurancePopup(insuranceWon);
+        
+        // For insurance won popup, auto-hide after 3 seconds because the game ends
+        // For insurance lost popup, auto-hide after exactly 2 seconds, then continue game
+        if (insuranceWon) {
+            // Auto-hide insurance won popup after 3 seconds
+            console.log("Insurance won popup will auto-hide after 3 seconds");
+            this.scheduleHideAfterDelay(3000);
+        } else {
+            // For insurance lost popup, cancel any previous timeouts first
+            if (this.hideTimeoutId !== null) {
+                clearTimeout(this.hideTimeoutId);
+                this.hideTimeoutId = null;
+            }
+            
+            // For insurance lost popup, don't use scheduleHideAfterDelay
+            // which has additional checks that could interfere
+            console.log("Insurance lost popup will auto-hide after exactly 2 seconds");
+            this.hideTimeoutId = window.setTimeout(() => {
+                console.log("Insurance lost popup timeout reached, hiding now");
+                this.hideTimeoutId = null;
+                this.hidePopup();
+            }, 2000);
+        }
     }
     
     /**
@@ -205,6 +277,15 @@ export class PopupManager extends Container {
         
         if (!texture) {
             console.error("Cannot show popup: texture is undefined");
+            return;
+        }
+        
+        // Check for same texture to avoid flashing
+        const isSameTexture = this.isShowing && this.activePopup && 
+                              this.activePopup.texture === texture;
+        
+        if (isSameTexture) {
+            console.log("Already showing the same popup texture - maintaining current state");
             return;
         }
         
@@ -253,6 +334,27 @@ export class PopupManager extends Container {
             return;
         }
         
+        // Remove any existing popup elements
+        if (this.activePopup) {
+            this.popupContainer.removeChild(this.activePopup);
+            this.activePopup.destroy();
+            this.activePopup = null;
+        }
+        
+        if (this.popupShadow) {
+            this.popupContainer.removeChild(this.popupShadow);
+            this.popupShadow.destroy();
+            this.popupShadow = null;
+        }
+        
+        if (this.payoutText) {
+            if (this.payoutText.parent) {
+                this.payoutText.parent.removeChild(this.payoutText);
+            }
+            this.payoutText.destroy();
+            this.payoutText = null;
+        }
+        
         // Calculate base scale based on screen size - lower value for better appearance
         const baseScale = Math.min(window.innerWidth, window.innerHeight) * 0.00035;
         
@@ -264,7 +366,7 @@ export class PopupManager extends Container {
         this.popupShadow = new Sprite(texture);
         this.popupShadow.anchor.set(0.5);
         this.popupShadow.tint = 0x000000; // Black shadow
-        this.popupShadow.alpha = 0; // Start invisible for fade-in
+        this.popupShadow.alpha = 0.4; // Start with final alpha for immediate visibility
         this.popupShadow.scale.set(0); // Start at 0 for animation
         this.popupShadow.position.set(shadowOffsetX, shadowOffsetY); // Offset for shadow effect
         this.popupShadow.zIndex = 0; // Behind the popup
@@ -273,85 +375,73 @@ export class PopupManager extends Container {
         // Create popup sprite
         this.activePopup = new Sprite(texture);
         this.activePopup.anchor.set(0.5);
-        this.activePopup.tint = 0xFFFFFF; // Always use white (no tint)
-        this.activePopup.alpha = 0; // Start invisible for fade-in
+        this.activePopup.tint = tint; // Use the provided tint
+        this.activePopup.alpha = 1; // Start fully visible for immediate display
         this.activePopup.scale.set(0); // Start at 0 for animation
         this.activePopup.zIndex = 1; // In front of shadow
         this.popupContainer.addChild(this.activePopup);
         
-        // Make visible
+        // Make visible immediately
         this.visible = true;
         this.overlay.visible = true;
+        this.overlay.alpha = 0.7; // Set immediately to full value
         this.isShowing = true;
-        console.log("Popup now visible and showing");
         
         // Store the target scale for later use in animations
         this.targetPopupScale = baseScale;
         
-        // Animation durations
-        const fadeInDuration = 400;
-        const scaleInDuration = 550;
+        // Use simpler and faster animations
+        const scaleInDuration = 350; // Even faster scale-in animation
         
-        // Add click handler to overlay 
-        this.overlay.interactive = true;
-        this.overlay.removeAllListeners();
-        
-        // For game end popups, don't allow overlay clicks to dismiss
-        if (!this.isGameEndPopup) {
-            this.overlay.on('pointerdown', () => {
-                console.log("Overlay clicked, hiding popup");
-                this.hidePopup();
-            });
-        }
-        
-        // Animate overlay fade in smoothly
-        new Tween(this.overlay, Globals.sceneManager?.tweenGroup)
-            .to({ alpha: 0.7 }, fadeInDuration)
-            .easing(Easing.Cubic.Out) // Smoother fade in
-            .start();
-        
-        // Animate the shadow with a slight delay
+        // Animate the shadow - scale only since alpha is already set
         if (this.popupShadow) {
-            // Fade in the shadow
-            new Tween(this.popupShadow, Globals.sceneManager?.tweenGroup)
-                .to({ alpha: 0.4 }, fadeInDuration)
-                .easing(Easing.Cubic.Out)
-                .start();
-            
-            // Scale in the shadow
-            new Tween(this.popupShadow.scale, Globals.sceneManager?.tweenGroup)
+            new Tween(this.popupShadow.scale)
                 .to({ x: baseScale * 1.03, y: baseScale * 1.03 }, scaleInDuration)
-                .easing(Easing.Back.Out) // Smoother entrance with slight overshoot
+                .easing(Easing.Back.Out)
                 .start();
         }
         
-        // Animate the popup with a smooth entrance
+        // Animate the popup with a cleaner, simpler animation - just scale
         if (this.activePopup) {
-            // Fade in the popup
-            new Tween(this.activePopup, Globals.sceneManager?.tweenGroup)
-                .to({ alpha: 1 }, fadeInDuration)
-                .easing(Easing.Cubic.Out)
-                .start();
-            
-            // Scale in the popup with a slight overshoot
-            new Tween(this.activePopup.scale, Globals.sceneManager?.tweenGroup)
+            new Tween(this.activePopup.scale)
                 .to({ x: baseScale, y: baseScale }, scaleInDuration)
-                .onUpdate(() => {
-                    if(this.payoutText && this.activePopup) {
-                        this.payoutText.position.set(this.activePopup.width *0.1 - this.payoutText.width *0.5, this.activePopup.height - this.payoutText.height*0.7);
-                    }
-                })
-                .easing(Easing.Back.Out) // Smoother entrance with slight overshoot
+                .easing(Easing.Back.Out)
                 .onComplete(() => {
-                    // Start pulsing animation immediately after the entrance animation
-                    this.animatePopupPulse();
+                    console.log("Popup now visible and showing");
                     
-                    // For non-end game popups, schedule automatic hide after delay
-                    if (!this.isGameEndPopup) {
+                    // Position payout text if it exists
+                    this.positionPayoutText();
+                    
+                    // Only start pulse for game-end popups
+                    if (this.isGameEndPopup) {
+                        this.animatePopupPulse();
+                    } else {
+                        // For non-end game popups, auto-hide after delay
                         this.scheduleHideAfterDelay(3000);
                     }
                 })
                 .start();
+        }
+    }
+    
+    /**
+     * Position the payout text correctly within the popup
+     */
+    private positionPayoutText(): void {
+        if (!this.payoutText || !this.activePopup) return;
+        
+        const isPortrait = window.innerWidth < window.innerHeight;
+        
+        if (isPortrait) {
+            this.payoutText.position.set(
+                this.activePopup.width * 0.1 - this.payoutText.width * 0.5,
+                this.activePopup.height * 1.5
+            );
+        } else {
+            this.payoutText.position.set(
+                this.activePopup.width * 0.1 - this.payoutText.width * 0.6,
+                this.activePopup.height * 0.65
+            );
         }
     }
     
@@ -445,104 +535,62 @@ export class PopupManager extends Container {
     hidePopup(callback?: () => void): void {
         console.log("hidePopup called, isShowing:", this.isShowing, "activePopup:", this.activePopup ? "exists" : "null");
         
+        // Clear the current outcome tracking
+        this.currentOutcome = null;
+        
+        // Cancel any pending hide operations
+        if (this.hideTimeoutId !== null) {
+            clearTimeout(this.hideTimeoutId);
+            this.hideTimeoutId = null;
+        }
+        
+        // If not showing, just call the callback
         if (!this.isShowing || !this.activePopup) {
-            console.log("No popup to hide, calling callback directly");
+            console.log("No popup to hide");
             if (callback) callback();
             return;
         }
         
         console.log("Hiding popup with animation");
         
-        // Stop pulse animation if running
+        // Set flag to prevent multiple hide operations
+        this.isShowing = false;
+        
+        // Stop any active pulse animation
         if (this.pulseAnimation) {
             this.pulseAnimation.stop();
             this.pulseAnimation = null;
-            this.activePopup?.removeChildren();
         }
         
-        // Animation duration for hiding
-        const fadeOutDuration = 350;
-        const scaleOutDuration = 400;
+        // Use a faster, simpler hide animation
+        const hideDuration = 250; // Faster hide
         
-        // First, slightly scale up the popup for a smoother transition
-        if (this.activePopup) {
-            // Get current scale
-            const currentScale = this.activePopup.scale.x;
-            
-            // First slightly scale up
-            new Tween(this.activePopup.scale, Globals.sceneManager?.tweenGroup)
-                .to({ x: currentScale * 1.05, y: currentScale * 1.05 }, 120)
-                .easing(Easing.Quadratic.Out)
-                .onComplete(() => {
-                    // Then scale down to zero
-                    new Tween(this.activePopup!.scale, Globals.sceneManager?.tweenGroup)
-                        .to({ x: 0, y: 0 }, scaleOutDuration)
-                        .easing(Easing.Quadratic.In) // Smoother scale down
-                        .start();
-                    
-                    // Add a slight fade out as well
-                    new Tween(this.activePopup!, Globals.sceneManager?.tweenGroup)
-                        .to({ alpha: 0 }, scaleOutDuration)
-                        .easing(Easing.Quadratic.In)
-                        .start();
-                    
-                    // Add a very subtle rotation
-                    new Tween(this.activePopup!, Globals.sceneManager?.tweenGroup)
-                        .to({ rotation: Math.PI * 0.1 }, scaleOutDuration) // Just a slight rotation
-                        .easing(Easing.Quadratic.In)
-                        .start();
-                })
-                .start();
-        }
-        
-        // Animate overlay fade out
-        new Tween(this.overlay, Globals.sceneManager?.tweenGroup)
-            .to({ alpha: 0 }, fadeOutDuration)
-            .easing(Easing.Quadratic.Out) // Smoother fade out
+        // Quick fade out overlay
+        new Tween(this.overlay)
+            .to({ alpha: 0 }, hideDuration)
             .start();
         
-        // Also animate the shadow with the same pattern
-        if (this.popupShadow) {
-            // Get current scale
-            const currentShadowScale = this.popupShadow.scale.x;
-            
-            // First slightly scale up
-            new Tween(this.popupShadow.scale, Globals.sceneManager?.tweenGroup)
-                .to({ x: currentShadowScale * 1.05, y: currentShadowScale * 1.05 }, 120)
-                .easing(Easing.Quadratic.Out)
-                .onComplete(() => {
-                    // Then scale down to zero
-                    new Tween(this.popupShadow!.scale, Globals.sceneManager?.tweenGroup)
-                        .to({ x: 0, y: 0 }, scaleOutDuration)
-                        .easing(Easing.Quadratic.In)
-                        .start();
-                    
-                    // Add a slight fade out as well
-                    new Tween(this.popupShadow!, Globals.sceneManager?.tweenGroup)
-                        .to({ alpha: 0 }, scaleOutDuration)
-                        .easing(Easing.Quadratic.In)
-                        .onComplete(() => {
-                            // Clean up after all animations complete
-                            setTimeout(() => {
-                                this.cleanupPopup(callback);
-                            }, 50); // Small delay to ensure animations are complete
-                        })
-                        .start();
-                })
-                .start();
-        } else if (this.activePopup) {
-            // If no shadow, complete on the popup animation
-            new Tween(this.activePopup, Globals.sceneManager?.tweenGroup)
-                .to({ alpha: 0 }, scaleOutDuration)
-                .easing(Easing.Quadratic.In)
-                .onComplete(() => {
-                    // Clean up after all animations complete
-                    setTimeout(() => {
-                        this.cleanupPopup(callback);
-                    }, 50); // Small delay to ensure animations are complete
-                })
+        // Quick scale down for popup
+        if (this.activePopup) {
+            new Tween(this.activePopup.scale)
+                .to({ x: 0, y: 0 }, hideDuration)
+                .easing(Easing.Back.In)
                 .start();
         }
+        
+        // Quick scale down for shadow
+        if (this.popupShadow) {
+            new Tween(this.popupShadow.scale)
+                .to({ x: 0, y: 0 }, hideDuration)
+                .easing(Easing.Back.In)
+                .start();
+        }
+        
+        // Clean up after animation completes
+        setTimeout(() => {
+            this.visible = false;
+            this.cleanupPopup(callback);
+        }, hideDuration + 50); // Small extra buffer to ensure animation completes
     }
     
     /**
@@ -742,16 +790,7 @@ export class PopupManager extends Container {
         
         // Show the popup
         this.showPopup(texture);
-        
-        // Add yes/no buttons
-        if (onYesCallback || onNoCallback) {
-            // Add buttons with callbacks after a short delay
-            setTimeout(() => {
-                // Implementation would add yes/no buttons with the callbacks
-                if (onYesCallback) onYesCallback();
-                if (onNoCallback) onNoCallback();
-            }, 200);
-        }
+ 
     }
 
     /**

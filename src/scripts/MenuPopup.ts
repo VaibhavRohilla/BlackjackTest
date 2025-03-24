@@ -267,6 +267,21 @@ export class MenuPopup extends Container {
     /** Callback for when the menu is closed */
     private onCloseCallback: (() => void) | null = null;
     
+    /** Info overlay container */
+    private infoOverlay: Container;
+    
+    /** Info overlay background */
+    private infoOverlayBg: Graphics;
+    
+    /** Info text */
+    private infoText: TextLabel;
+    
+    /** Whether the info overlay is currently open */
+    private isInfoOpen: boolean = false;
+    
+    /** Background capture overlay for the info popup */
+    private infoCapture: Graphics;
+    
     /**
      * Create a new menu popup
      */
@@ -293,6 +308,38 @@ export class MenuPopup extends Container {
         // Create semi-transparent background with rounded corners
         this.bgOverlay = new Graphics();
         this.background.addChild(this.bgOverlay);
+        
+        // Create info capture overlay (fullscreen overlay to capture clicks for info popup)
+        this.infoCapture = new Graphics();
+        this.infoCapture.rect(0, 0, window.innerWidth * 3, window.innerHeight * 3);
+        this.infoCapture.fill({ color: 0x000000, alpha: 0.5 }); // Semi-transparent black
+        this.infoCapture.eventMode = 'static';
+        this.infoCapture.cursor = 'pointer';
+        this.infoCapture.visible = false;
+        this.infoCapture.zIndex = Z_INDEX.POPUPS + 15; // Just below the info overlay
+        
+        // Initialize info overlay
+        this.infoOverlay = new Container();
+        this.infoOverlay.visible = false;
+        this.infoOverlay.eventMode = 'static';
+        this.infoOverlay.cursor = 'pointer';
+        // We'll add the event listener dynamically when showing
+        this.infoOverlay.zIndex = Z_INDEX.POPUPS + 20; // Ensure it's above everything else
+        this.addChild(this.infoOverlay);
+        this.addChild(this.infoCapture);
+        
+        // Create info overlay background
+        this.infoOverlayBg = new Graphics();
+        this.infoOverlay.addChild(this.infoOverlayBg);
+        
+        // Create info text
+        const fontSize = Math.max(18, Math.min(24, window.innerWidth * 0.03));
+        this.infoText = new TextLabel(0, 0, 0.5, "", fontSize, 0xFFFFFF);
+        this.infoText.style.wordWrap = true;
+        this.infoText.style.wordWrapWidth = window.innerWidth * 0.8;
+        this.infoText.style.align = 'center';
+        this.infoText.anchor.set(0.5);
+        this.infoOverlay.addChild(this.infoText);
         
         // Initially hide the popup
         this.visible = false;
@@ -573,13 +620,11 @@ export class MenuPopup extends Container {
     private onButtonClicked(buttonName: string): void {
         // Toggle selection state
         if (this.selectedButton === buttonName) {
-            // Deselect if already selected
-            this.selectedButton = null;
-            this.updateButtonSelection();
-        } else {
-            // Select the new button
-            this.selectedButton = buttonName;
-            this.updateButtonSelection();
+        } 
+        
+        // Handle info button specially
+        if (buttonName === "Info") {
+            this.showInfoOverlay();
         }
         
         // Call the appropriate callback
@@ -801,6 +846,12 @@ export class MenuPopup extends Container {
         
         // Resize the click capture overlay
         this.resizeClickCaptureOverlay();
+        
+        // Update info overlay if it's open
+        if (this.isInfoOpen) {
+            this.updateInfoOverlaySize();
+            this.infoOverlay.position.set(screenWidth / 2, screenHeight / 2);
+        }
     }
     
     /**
@@ -832,6 +883,141 @@ export class MenuPopup extends Container {
     }
     
     /**
+     * Show the info overlay with game instructions
+     */
+    public showInfoOverlay(): void {
+        if (this.isInfoOpen) return;
+        
+        console.log("Showing info overlay");
+        
+        // Set info overlay text content
+        this.infoText.text = "Welcome to Blackjack!\n\n" +
+            "Goal: Get closer to 21 than the dealer without going over.\n\n" +
+            "Card Values:\n" +
+            "• Number cards (2-10): Face value\n" +
+            "• Face cards (J, Q, K): 10 points\n" +
+            "• Ace: 1 or 11 points\n\n" +
+            "Actions:\n" +
+            "• Hit: Take another card\n" +
+            "• Stand: End your turn\n" +
+            "• Double Down: Double your bet and take one more card\n" +
+            "• Split: With matching cards, split into two hands\n" +
+            "• Insurance: When dealer shows Ace\n\n" +
+            "Tap anywhere to close";
+        
+        // Update info overlay background size
+        this.updateInfoOverlaySize();
+        
+        // Position info overlay in center of screen
+        this.infoOverlay.position.set(window.innerWidth / 2, window.innerHeight / 2);
+        
+        // Close the menu popup to prevent conflicts
+        this.close();
+        
+        // Create a delay to prevent immediate closure
+        setTimeout(() => {
+            // Make sure we're still in a good state
+            if (this.isInfoOpen) return;
+            
+            // Show the info capture overlay first
+            this.infoCapture.position.set(-window.innerWidth, -window.innerHeight);
+            this.infoCapture.visible = true;
+            this.infoCapture.removeAllListeners();
+            this.infoCapture.on('pointerdown', (event) => {
+                event.stopPropagation();
+                this.closeInfoOverlay();
+            });
+            
+            // Make sure we're at the top of the display list
+            if (this.parent) {
+                this.parent.addChild(this);
+            }
+            
+            // Prepare for animation
+            this.infoOverlay.visible = true;
+            this.infoOverlay.alpha = 0;
+            this.infoOverlay.scale.set(0.5);
+            
+            // Make sure the info overlay has the highest z-index
+            this.infoOverlay.removeAllListeners();
+            this.infoOverlay.on('pointerdown', (event) => {
+                event.stopPropagation();
+                this.closeInfoOverlay();
+            });
+            
+            // Animate in
+            new Tween(this.infoOverlay)
+                .to({ alpha: 1, scale: { x: 1, y: 1 } }, 300)
+                .easing(Easing.Back.Out)
+                .start();
+            
+            this.isInfoOpen = true;
+            console.log("Info overlay now visible and showing");
+            
+        }, 100); // Small delay to ensure menu closes first
+    }
+    
+    /**
+     * Close the info overlay
+     */
+    public closeInfoOverlay(): void {
+        if (!this.isInfoOpen) {
+            console.log("Info overlay not open, nothing to close");
+            return;
+        }
+        
+        console.log("Closing info overlay");
+        
+        // Set flag first to prevent race conditions
+        this.isInfoOpen = false;
+        
+        // Remove all listeners to prevent memory leaks
+        this.infoOverlay.removeAllListeners();
+        this.infoCapture.removeAllListeners();
+        
+        // Hide the capture overlay
+        this.infoCapture.visible = false;
+        
+        // Animate out
+        new Tween(this.infoOverlay)
+            .to({ alpha: 0, scale: { x: 0.5, y: 0.5 } }, 200)
+            .easing(Easing.Back.In)
+            .onComplete(() => {
+                this.infoOverlay.visible = false;
+                console.log("Info overlay closed and hidden");
+            })
+            .start();
+    }
+    
+    /**
+     * Update the info overlay size based on content
+     */
+    private updateInfoOverlaySize(): void {
+        // Calculate info overlay dimensions
+        const margin = 40 * config.scaleFactor;
+        const textWidth = Math.min(window.innerWidth * 0.8, 600);
+        this.infoText.style.wordWrapWidth = textWidth;
+        
+        // Position text in center
+        this.infoText.position.set(0, 0);
+        
+        // Size background with padding around text
+        const bgWidth = textWidth + margin * 2;
+        const bgHeight = this.infoText.height + margin * 2;
+        
+        // Draw background with semi-transparent dark color and rounded corners
+        this.infoOverlayBg.clear();
+        this.infoOverlayBg.roundRect(-bgWidth / 2, -bgHeight / 2, bgWidth, bgHeight, 15);
+        this.infoOverlayBg.fill({ color: 0x000000, alpha: 0.9 });
+        
+        // Resize the info capture overlay
+        this.infoCapture.clear();
+        this.infoCapture.rect(0, 0, window.innerWidth * 3, window.innerHeight * 3);
+        this.infoCapture.fill({ color: 0x000000, alpha: 0.5 });
+        this.infoCapture.position.set(-window.innerWidth, -window.innerHeight);
+    }
+    
+    /**
      * Clean up resources when popup is destroyed
      */
     public destroy(options?: any): void {
@@ -840,6 +1026,8 @@ export class MenuPopup extends Container {
         
         // Remove event listeners
         this.clickCaptureOverlay.off('pointerdown');
+        this.infoOverlay.off('pointerdown');
+        this.infoCapture.off('pointerdown');
         
         // Remove the click capture overlay from its parent
         if (this.clickCaptureOverlay.parent) {

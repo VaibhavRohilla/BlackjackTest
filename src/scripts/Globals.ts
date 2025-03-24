@@ -7,7 +7,7 @@ import { isMobile } from 'pixi.js';
 import { BackendService } from "./services/backendservice";
 import { GameManager } from "./gamemanager";
 
-type globalDataType = {
+export interface globalDataType {
   resources: { [key: string]: PIXI.Texture }; 
   emitter: MyEmitter | undefined;
   isMobile: boolean;
@@ -22,7 +22,9 @@ type globalDataType = {
   currentBet : number;
   Manager : GameManager | undefined;
   gameState:"betting" | "dealing" | "player_turn" | "dealer_turn" | "complete" | undefined;
-};
+  lastWin: number;
+  activeHand: 'first' | 'second' | null;
+}
 
 export const Globals: globalDataType = {
   resources: {},
@@ -40,7 +42,9 @@ export const Globals: globalDataType = {
   balance : 200000,
   currentBet : 0,
   gameState: "betting",
-  Manager : undefined
+  Manager : undefined,
+  lastWin: 0,
+  activeHand: null
 };
 
 export const formatNumber = (num: number): string => {
@@ -58,11 +62,15 @@ export const formatNumber = (num: number): string => {
     return amount.toString();
   }
 
-  export const getSuitPrefix = (suit: 'hearts' | 'diamonds' | 'clubs' | 'spades'): string => {
+  export const getSuitPrefix = (suit: 'hearts' | 'diamonds' | 'clubs' | 'spades' | '0'): string => {
         switch (suit) {
             case 'hearts': return 'h';
             case 'diamonds': return 'd';
             case 'clubs': return 'c';
             case 'spades': return 's';
+            case '0': return '0';
         }
     }
+
+
+    export const loginData = {"loginMethod":"guest","timestamp":1742810436021,"jwt":"eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJodHRwczovL2Jsb2Nrc3BpbmdhbWluZy5jb20iLCJhdWQiOiJodHRwczovL2Jsb2Nrc3BpbmdhbWluZy5jb20iLCJleHAiOjE3NTA1ODY0MzYuMDIxLCJkYXRhIjp7InVzZXJJZCI6IjY3ZTEyZDQ0ZDIzYmExYmY5MjhlOTFhOCIsImxvZ2luTWV0aG9kIjoiZ3Vlc3QiLCJ0aW1lc3RhbXAiOjE3NDI4MTA0MzYwMjF9fQ.c6Xbx_FpBeCrBGsYVES0m9-VkvJ4QULypnbY6l-Jypd-17NKLLnIntqtdHHvwovGcZ0pb7uJIH9RtC5u2rsbBw","userId":"67e12d44d23ba1bf928e91a8"};

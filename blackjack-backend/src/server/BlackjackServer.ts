@@ -1,155 +1,122 @@
-import WebSocket from 'ws';
-import { v4 as uuidv4 } from 'uuid';
-import { MessageType, ServerMessage, ClientMessage, createErrorMessage } from '../models/message';
+import { WebSocket, WebSocketServer } from 'ws';
 import { GameSession } from '../game/gamesession';
 import { MessageHandler } from './messagehandler';
+import { ClientMessage, ServerMessage, MessageType } from '../models/message';
 
 /**
- * Main Blackjack server class that manages WebSocket connections
- * and message routing
+ * Extended WebSocket interface with custom properties
+ */
+interface CustomWebSocket extends WebSocket {
+  clientId?: string;
+}
+
+/**
+ * Manages WebSocket connections and message routing
  */
 export class BlackjackServer {
-  private wss: WebSocket.Server;
-  private clients: Map<string, WebSocket> = new Map();
-  private clientGames: Map<string, GameSession> = new Map();
+  private gameSessions: Map<string, GameSession> = new Map();
   private messageHandler: MessageHandler;
-  
-  constructor(wss: WebSocket.Server) {
-    this.wss = wss;
+
+  constructor(private wss: WebSocketServer) {
     this.messageHandler = new MessageHandler(this);
-    this.initialize();
+    this.setupWebSocketServer();
   }
 
-  private initialize(): void {
-    this.wss.on('connection', (ws: WebSocket) => {
-      // Assign a unique ID to each client
-      const clientId = uuidv4();
-      this.clients.set(clientId, ws);
+  /**
+   * Set up the WebSocket server with connection handling
+   */
+  private setupWebSocketServer(): void {
+    this.wss.on('connection', (ws: CustomWebSocket) => {
+      const clientId = this.generateClientId();
+      ws.clientId = clientId; // Store client ID on the WebSocket instance
+      console.log(`New client connected: ${clientId}`);
 
-      console.log(`Client connected: ${clientId}`);
-      
-      // Create a game session immediately for this client
-      this.createGameForClient(clientId);
-      
-      // Send welcome message
-      this.sendToClient(clientId, {
-        type: MessageType.CONNECTED,
-        data: { clientId }
-      });
+      // Create a new game session for this client
+      const gameSession = new GameSession(clientId, '', this);
+      this.gameSessions.set(clientId, gameSession);
 
-      // Handle client messages
+      // Set up message handling for this connection
       ws.on('message', (message: string) => {
         try {
-          const parsedMessage = JSON.parse(message) as ClientMessage;
-          
-          // Log incoming message (excluding sensitive data)
-          console.log(`Received from ${clientId}: ${parsedMessage.type}`);
-          
-          // Process the message
-          this.messageHandler.handleMessage(clientId, parsedMessage);
+          const clientMessage: ClientMessage = JSON.parse(message);
+          this.messageHandler.handleMessage(clientId, clientMessage);
         } catch (error) {
-          console.error(`Error processing message from ${clientId}:`, error);
-          this.sendToClient(clientId, createErrorMessage('Invalid message format'));
+          console.error(`Error processing message from client ${clientId}:`, error);
+          this.sendToClient(clientId, {
+            type: MessageType.ERROR,
+            data: {
+              message: 'Invalid message format',
+              error: error instanceof Error ? error.message : 'Unknown error'
+            }
+          });
         }
       });
 
       // Handle client disconnection
       ws.on('close', () => {
         console.log(`Client disconnected: ${clientId}`);
-        
-        // Clean up the client's game
-        this.clientGames.delete(clientId);
-        
-        // Remove client from the map
-        this.clients.delete(clientId);
+        this.gameSessions.delete(clientId);
       });
 
-      // Handle errors
-      ws.on('error', (error) => {
-        console.error(`WebSocket error for client ${clientId}:`, error);
+      // Send initial connection message
+      this.sendToClient(clientId, {
+        type: MessageType.CONNECTED,
+        data: {
+          clientId: clientId,
+          message: 'Connected to blackjack server'
+        }
       });
     });
+  }
+
+  /**
+   * Generate a unique client ID
+   */
+  private generateClientId(): string {
+    return Math.random().toString(36).substring(2, 15);
   }
 
   /**
    * Send a message to a specific client
    */
   public sendToClient(clientId: string, message: ServerMessage): void {
-    const client = this.clients.get(clientId);
-    if (client && client.readyState === WebSocket.OPEN) {
-      try {
-        client.send(JSON.stringify(message));
-      } catch (error) {
-        console.error(`Error sending message to client ${clientId}:`, error);
-      }
+    const ws = this.getClientWebSocket(clientId);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(message));
     } else {
-      console.warn(`Cannot send message to client ${clientId}: client not found or connection not open`);
+      console.warn(`Cannot send message to client ${clientId} - connection not open`);
     }
   }
 
   /**
-   * Create a new game for a client
+   * Get the WebSocket connection for a client
    */
-  public createGameForClient(clientId: string): void {
-    // Verify client exists
-    if (!this.clients.has(clientId)) {
-      throw new Error(`Cannot create game: client ${clientId} not found`);
+  private getClientWebSocket(clientId: string): CustomWebSocket | undefined {
+    // Find the WebSocket connection for this client
+    for (const client of this.wss.clients) {
+      const customClient = client as CustomWebSocket;
+      if (customClient.clientId === clientId) {
+        return customClient;
+      }
     }
-    
-    // Remove any existing game for this client
-    if (this.clientGames.has(clientId)) {
-      this.clientGames.delete(clientId);
-    }
-    
-    // Create a new game session with direct client ID (no session ID needed)
-    const game = new GameSession(clientId, clientId, this);
-    
-    // Store the game associated with this client
-    this.clientGames.set(clientId, game);
-    
-    console.log(`Created new game for client ${clientId}`);
-    
-    // Send a notification that game is ready
-    this.sendToClient(clientId, {
-      type: MessageType.GAME_READY,
-      data: { message: "Game is ready to play" }
-    });
+    return undefined;
   }
 
   /**
-   * Get the game associated with a client
+   * Get a game session for a client
    */
   public getGameForClient(clientId: string): GameSession | undefined {
-    return this.clientGames.get(clientId);
+    return this.gameSessions.get(clientId);
   }
 
   /**
-   * Reset a client's game (create a new one)
+   * Handle client disconnection
    */
-  public resetClientGame(clientId: string): void {
-    this.createGameForClient(clientId);
-  }
-
-  /**
-   * Shutdown the server and cleanup resources
-   */
-  public shutdown(): void {
-    // Close all client connections
-    for (const [clientId, ws] of this.clients.entries()) {
-      try {
-        ws.close();
-      } catch (error) {
-        console.error(`Error closing connection for client ${clientId}:`, error);
-      }
+  public handleClientDisconnect(clientId: string): void {
+    const gameSession = this.gameSessions.get(clientId);
+    if (gameSession) {
+      gameSession.cleanup();
+      this.gameSessions.delete(clientId);
     }
-    
-    // Clear all maps
-    this.clients.clear();
-    this.clientGames.clear();
-    
-    // Close the WebSocket server
-    this.wss.close();
-    
-    console.log('Blackjack server shutdown complete');
   }
 } 
