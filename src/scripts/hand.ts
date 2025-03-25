@@ -190,14 +190,20 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                 }
                 console.log("Dealing card", placeholderCard);
                 
+                // Ensure texture is available by adding a fallback method
+                this.ensureTextureAvailable(placeholderCard);
                 
                 this.cards.push(placeholderCard);
                 // Create sprite for the card
                 this.createCardSprite(placeholderCard);
                 
+                console.log("Card sprite created successfully for ", placeholderCard.sprite?._texture);
                 
                 // Add sprite to hand container
                 if (placeholderCard.sprite) {
+                    // Force the sprite to be visible before adding
+                    placeholderCard.sprite.visible = true;
+
                     this.addChild(placeholderCard.sprite);
                     
                     // Position the card
@@ -212,6 +218,25 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                         resolve(placeholderCard);
                     }, this.dealAnimationSpeed); // Increased delay for enhanced animation
                 } else {
+                    // If sprite creation failed, try a direct approach as fallback
+                    console.log("Fallback sprite creation for card:", placeholderCard);
+                    
+                    // Create a basic card using cardBack texture
+                    const fallbackSprite = new Sprite(Globals.resources.cardBack);
+                    fallbackSprite.anchor.set(0.5);
+                    fallbackSprite.scale.set(this.calculateCardScale());
+                    fallbackSprite.visible = true;
+                    fallbackSprite.alpha = 1;
+                    
+                    // Store the fallback sprite
+                    placeholderCard.sprite = fallbackSprite;
+                    
+                    // Add to the container
+                    this.addChild(fallbackSprite);
+                    
+                    // Position cards immediately
+                    this.positionCardsInHand(this);
+                    
                     resolve(placeholderCard);
                 }
             } catch (error) {
@@ -220,106 +245,122 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
             }
         });
     }
-    /**
-     * Calculate the value of the hand
-     * This should now sync with backend values rather than calculating locally
-     * @param includeHidden - Whether to include face-down cards in calculation (default: false)
-     * @returns The calculated value from backend or local cache
-     */
-    public calculateValue(): number {
-        let value = 0;
-        let aces = 0;
-        // Sum up the values of all cards
-        for (const card of this.cards) {
-          
-          
-          // Count aces separately
-          if (card.rank === 'A') {
-            aces++;
-          } else {
-            value += card.value;
-          }
-        }
-        
-        // Add aces with optimal values
-        for (let i = 0; i < aces; i++) {
-          if (value + 11 <= 21) {
-            value += 11;
-          } else {
-            value += 1;
-          }
-        }
-        
-        // Store the calculated value
-        this.value = value;
-        
-        return value;
-    }
     
-  
- 
-      /**
+    /**
+     * Ensure the texture for a card is available
+     * @param card - The card to ensure texture is available for
+     */
+    private ensureTextureAvailable(card: Card): void {
+        // Determine which texture to use based on whether the card is face up
+        let textureKey = card.faceUp ? card.spriteKey : 'cardBack';
+        
+        // Check if the texture exists
+        if (!Globals.resources[textureKey]) {
+            console.warn(`Texture ${textureKey} not found, checking alternatives`);
+            
+            // Try lowercase version
+            const lowercaseKey = textureKey.toLowerCase();
+            if (Globals.resources[lowercaseKey]) {
+                console.log(`Found texture with lowercase key: ${lowercaseKey}`);
+                card.spriteKey = lowercaseKey;
+                return;
+            }
+            
+            // Try with different suit prefix formats
+            if (card.faceUp) {
+                const suit = card.suit.toLowerCase();
+                const rank = card.rank.toUpperCase();
+                
+                // Try various formats that might exist
+                const keyVariants = [
+                    `${suit}_${rank}`,
+                    `${suit}${rank}`,
+                    `${suit.charAt(0)}${rank}`,
+                    `card_${suit}_${rank}`
+                ];
+                
+                for (const variant of keyVariants) {
+                    if (Globals.resources[variant]) {
+                        console.log(`Found texture with variant key: ${variant}`);
+                        card.spriteKey = variant;
+                        return;
+                    }
+                }
+            }
+            
+            // If all else fails, use cardBack
+            console.error(`No matching texture found for ${card.rank} of ${card.suit}, using cardBack`);
+            card.spriteKey = 'cardBack';
+        }
+    }
+
+    /**
      * Create a card sprite
      * @param card - The card to create a sprite for
      */
-      createCardSprite(card: Card): void {
+    createCardSprite(card: Card): void {
         // Log detailed card information for debugging
         console.log(`Creating card sprite for ${card.rank} of ${card.suit} (faceUp: ${card.faceUp})`);
+        console.log(`Card spriteKey: ${card.spriteKey}`);
         
-        // Determine which texture to use based on whether the card is face up
+        // Use cardBack for face down cards
         let textureKey = card.faceUp ? card.spriteKey : 'cardBack';
         
         // Verify the texture exists
         if (!Globals.resources[textureKey]) {
-            console.warn(`Texture ${textureKey} not found, attempting to correct it`);
-            
-            if (card.faceUp) {
-                // Try to construct the texture key correctly
-                textureKey = `${getSuitPrefix(card.suit as "hearts" | "diamonds" | "clubs" | "spades")}${card.rank}`;
-                console.log(`Attempted to correct texture key to: ${textureKey}`);
-                
-                // If still not found, fall back to card back
-                if (!Globals.resources[textureKey]) {
-                    console.error(`Texture ${textureKey} still not found, falling back to card back`);
-                    textureKey = 'cardBack';
-                }
-            } else {
-                textureKey = 'cardBack';
-            }
+            console.warn(`Texture ${textureKey} not found, falling back to cardBack`);
+            textureKey = 'cardBack';
         }
         
-        // Create sprite
-        const sprite = new Sprite(Globals.resources[textureKey]);
+        console.log(`Final texture key: ${textureKey}`);
+        console.log(`Texture exists: ${!!Globals.resources[textureKey]}`);
         
-        // Set anchor to center
-        sprite.anchor.set(0.5);
-        
-        // Calculate card scale based on current screen dimensions
-        const cardScale = this.calculateCardScale();
-        
-        // Scale card with the calculated scale
-        sprite.scale.set(cardScale);
-        
-        // Store sprite in card
-        card.sprite = sprite;
-        
-        // Initial properties for animation
-        // We'll set the actual position in animateCardToHand
-        sprite.alpha = 0; // Start invisible
-        
-        // Fade in quickly
         try {
-            new Tween(sprite)
-                .to({ alpha: 1 }, 100)
-                .start();
-        } catch (error) {
-            console.error("Error animating card fade-in:", error);
-            // Set alpha directly as fallback
+            // Create sprite
+            const sprite = new Sprite(Globals.resources[textureKey]);
+            
+            // Force visibility
+            sprite.visible = true;
+            
+            // Set anchor to center
+            sprite.anchor.set(0.5);
+            
+            // Calculate card scale based on current screen dimensions
+            const cardScale = this.calculateCardScale();
+            console.log(`Card scale: ${cardScale}`);
+            
+            // Scale card with the calculated scale
+            sprite.scale.set(cardScale);
+            
+            // Store sprite in card
+            card.sprite = sprite;
+            
+            // Initial properties for animation
+            // We'll set the actual position in animateCardToHand
+            // Start slightly transparent but still visible
             sprite.alpha = 1;
+            
+            // Log sprite properties for debugging
+            console.log(`Created sprite: visible=${sprite.visible}, alpha=${sprite.alpha}, width=${sprite.width}, height=${sprite.height}`);
+            
+            // Fade in quickly
+            try {
+                new Tween(sprite)
+                    .to({ alpha: 1 }, 100)
+                    .start();
+            } catch (error) {
+                console.error("Error animating card fade-in:", error);
+                // Set alpha directly as fallback
+                sprite.alpha = 1;
+            }
+            
+            // Log success
+            console.log(`Card sprite created successfully for ${card.rank} of ${card.suit}`);
+        } catch (error) {
+            console.error("Error creating card sprite:", error);
+            console.error("Texture:", Globals.resources[textureKey]);
+            card.sprite = undefined;
         }
-        
-        // Log success
-        console.log(`Card sprite created successfully for ${card.rank} of ${card.suit}`);
     }
 
     
@@ -426,26 +467,97 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
     }
     
 
+    /**
+     * Position cards in a hand with smooth animation
+     * @param hand - The hand to position cards in
+     */
+    positionCardsInHand(hand: Hand): void {
+        const cardCount = hand.cards.length;
+        if (cardCount === 0) return;
+        
+        // Use the consistent card scale calculation
+        const cardScale = this.calculateCardScale();
+        
+        // Get the overlap factor
+        const overlapFactor = this.getCardOverlapFactor();
+        
+        // Calculate positions using the shared helper method
+        const { positions, cardWidth, cardHeight } = this.calculateCardPositions(hand, cardScale);
+        
+        // Position each card with animation
+        hand.cards.forEach((card, index) => {
+            if (card.sprite && index < positions.length) {
+                // Ensure the card has the correct scale
+                card.sprite.scale.set(cardScale);
+                
+                // Get the calculated position
+                const { x, y } = positions[index];
+                
+                // Update card's target position
+                card.targetPosition = {
+                    x: x,
+                    y: y,
+                    index: index
+                };
+                
+                // Animate to the new position
+                new Tween(card.sprite.position)
+                    .to({ x, y }, 300)
+                    .easing(Easing.Cubic.Out)
+                    .start();
+                
+                // Set z-index based on card position
+                card.sprite.zIndex = index;
+                
+                // Apply a slight rotation for a more natural look
+                if (cardCount > 1) {
+                    const rotationOffset = (index - (cardCount - 1) / 2) * 0.5;
+                    new Tween(card.sprite)
+                        .to({ rotation: rotationOffset * (Math.PI / 180) }, 300)
+                        .easing(Easing.Cubic.Out)
+                        .start();
+                }
+            }
+        });
+        
+        // Position the points display after cards are positioned
+        this.positionPointsDisplay();
+        
+        // After positioning the points display, adjust card positions to ensure
+        // the points display is centered relative to the cards
+        this.adjustCardsForCenteredPointsDisplay(cardWidth);
+    }
+
+    /**
+     * Set container position with smooth animation
+     */
     setContainerPosition(hasSplit: boolean = false) {
-    
         const playerY = window.innerHeight * 0.40; // Player hand at 40% from top
         const dealerY = -window.innerHeight * 0.25; // Dealer hand at 25% from top
+        const { Tween, Easing } = require("@tweenjs/tween.js");
+
+        let targetX = 0;
+        let targetY = 0;
 
         if(this.type === 'player') {
+            targetY = playerY;
             if(hasSplit) {
-                this.position.set(window.innerWidth *0.2, playerY);
-            }
-            else {
-                this.position.set(0, playerY);
+                targetX = window.innerWidth * 0.2;
             }
         } else if(this.type === 'dealer') {
-            this.position.set(0, dealerY);
+            targetY = dealerY;
+        } else if(this.type === 'split') {
+            targetY = playerY;
+            targetX = -window.innerWidth * 0.2;
         }
-        else if(this.type === 'split') {
-            
-            this.position.set(-window.innerWidth *0.2, playerY);
-        }
+
+        // Animate to new position
+        new Tween(this.position)
+            .to({ x: targetX, y: targetY }, 300)
+            .easing(Easing.Cubic.Out)
+            .start();
     }
+
     /**
      * Calculate card positions for a hand
      * This is a helper method to ensure consistent positioning across all methods
@@ -543,61 +655,6 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
     }
 
     /**
-     * Position cards in a hand
-     * @param hand - The hand to position cards in
-     */
-    positionCardsInHand(hand: Hand): void {
-        const cardCount = hand.cards.length;
-        if (cardCount === 0) return;
-        
-        // Use the consistent card scale calculation
-        const cardScale = this.calculateCardScale();
-        
-        // Get the overlap factor
-        const overlapFactor = this.getCardOverlapFactor();
-        
-        // Calculate positions using the shared helper method
-        const { positions, cardWidth, cardHeight } = this.calculateCardPositions(hand, cardScale);
-        
-        // Position each card with animation
-        hand.cards.forEach((card, index) => {
-            if (card.sprite && index < positions.length) {
-                // Ensure the card has the correct scale
-                card.sprite.scale.set(cardScale);
-                
-                // Get the calculated position
-                const { x, y } = positions[index];
-                
-                // Update card's target position
-                card.targetPosition = {
-                    x: x,
-                    y: y,
-                    index: index
-                };
-                
-                // Immediately set the position for proper layout
-                card.sprite.position.set(x, y);
-                
-                // Set z-index based on card position
-                card.sprite.zIndex = index;
-                
-                // Apply a slight rotation for a more natural look
-                if (cardCount > 1) {
-                    const rotationOffset = (index - (cardCount - 1) / 2) * 0.5;
-                    card.sprite.rotation = rotationOffset * (Math.PI / 180);
-                }
-            }
-        });
-        
-        // Position the points display after cards are positioned
-        this.positionPointsDisplay();
-        
-        // After positioning the points display, adjust card positions to ensure
-        // the points display is centered relative to the cards
-        this.adjustCardsForCenteredPointsDisplay(cardWidth);
-    }
-    
-    /**
      * Adjust cards to ensure the points display is centered
      * @param cardWidth - Width of a card
      */
@@ -649,7 +706,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
      * @param card - The card to animate
      * @param hand - The hand the card is being dealt to
      */
-     animateCardToHand(card: Card, hand: Hand): void {
+    animateCardToHand(card: Card, hand: Hand): void {
         if (!card.sprite) return;
         
         // Get screen dimensions
@@ -680,65 +737,58 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
             index: cardIndex
         };
         
-        // Set z-index (render order) based on card position
-        // Later cards should appear on top of earlier cards
+        // Set z-index based on card position
         card.sprite.zIndex = cardIndex;
         
-        // New: Start position from left corner of the screen
-        const startX = -screenWidth / 2 + cardWidth / 2; // Left edge of screen
-        const startY = screenHeight / 2 - cardHeight / 2; // Bottom edge of screen
+        // Start position from left corner of the screen
+        const startX = -screenWidth / 2 + cardWidth / 2;
+        const startY = screenHeight / 2 - cardHeight / 2;
         
-        // Set initial position (left corner)
+        // Set initial position and rotation
         card.sprite.position.set(startX, startY);
-        
-        // Set initial rotation (a bit tilted)
-        card.sprite.rotation = -Math.PI / 4; // -45 degrees
+        card.sprite.rotation = -Math.PI / 4;
         
         // Calculate a curved path from left corner to the target position
         const controlPoint = {
-            x: (startX + targetX) / 2 - 50, // Control point slightly offset to create curve
-            y: Math.min(startY, targetY) - 100 // Control point above the path for an arc
+            x: (startX + targetX) / 2 - 50,
+            y: Math.min(startY, targetY) - 100
         };
-        
-        // Animation duration
-        const duration = this.dealAnimationSpeed;
         
         // Create a progress tween from 0 to 1
         const progress = { value: 0 };
-        
-        // Store sprite reference for use in tweens to avoid null checks inside callbacks
-        const sprite = card.sprite;
+        const { Tween, Easing } = require("@tweenjs/tween.js");
         
         new Tween(progress, Globals.sceneManager?.tweenGroup)
-            .to({ value: 1 }, duration)
-            .easing(Easing.Cubic.Out) // Smoother deceleration
+            .to({ value: 1 }, this.dealAnimationSpeed)
+            .easing(Easing.Cubic.Out)
             .onUpdate(() => {
-                // Calculate position using quadratic Bezier curve
+                if (!card.sprite) return;
+                
                 const t = progress.value;
                 
-                // Quadratic Bezier curve formula: P = (1-t)²P₀ + 2(1-t)tP₁ + t²P₂
+                // Quadratic Bezier curve formula
                 const x = Math.pow(1-t, 2) * startX + 
-                          2 * (1-t) * t * controlPoint.x + 
-                          Math.pow(t, 2) * targetX;
+                         2 * (1-t) * t * controlPoint.x + 
+                         Math.pow(t, 2) * targetX;
                 
                 const y = Math.pow(1-t, 2) * startY + 
-                          2 * (1-t) * t * controlPoint.y + 
-                          Math.pow(t, 2) * targetY;
+                         2 * (1-t) * t * controlPoint.y + 
+                         Math.pow(t, 2) * targetY;
                 
-                // Update sprite position
-                sprite.position.set(x, y);
+                card.sprite.position.set(x, y);
                 
-                // Rotate from starting rotation to 0 (upright)
-                sprite.rotation = -Math.PI / 4 * (1 - t) + (Math.PI * 2 * t); // Rotate a full 360° + ending at 0
+                // Smooth rotation during flight
+                card.sprite.rotation = -Math.PI / 4 * (1 - t) + (Math.PI * 2 * t);
             })
             .start();
             
-        // Add a slight scale bounce at the end
+        // Add a bounce effect at the end
         new Tween({}, Globals.sceneManager?.tweenGroup)
-            .to({}, duration)
+            .to({}, this.dealAnimationSpeed)
             .onComplete(() => {
-                // Create bounce effect
-                new Tween(sprite.scale, Globals.sceneManager?.tweenGroup)
+                if (!card.sprite) return;
+                
+                new Tween(card.sprite.scale)
                     .to({ 
                         x: cardScale * 1.1,
                         y: cardScale * 1.1
@@ -746,22 +796,21 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                     .easing(Easing.Cubic.Out)
                     .yoyo(true)
                     .repeat(1)
+                    .onComplete(() => {
+                        this.updatePointsDisplay(true);
+                        
+                        // Ensure points display appears smoothly
+                        if (this.pointsDisplay) {
+                            this.pointsDisplay.alpha = 0;
+                            this.pointsDisplay.visible = true;
+                            
+                            new Tween(this.pointsDisplay)
+                                .to({ alpha: 1 }, 300)
+                                .easing(Easing.Cubic.Out)
+                                .start();
+                        }
+                    })
                     .start();
-            })
-            .onComplete(() => {
-                
-                this.updatePointsDisplay(true);
-                // Ensure points display is visible and positioned correctly
-                this.pointsDisplay.alpha = 0;
-                this.pointsDisplay.visible = true;
-                const progress = { value: 0 };
-                new Tween( progress, Globals.sceneManager?.tweenGroup)
-                .to({ value: 1 }, 500)
-                .easing(Easing.Cubic.Out)
-                .onUpdate(() => {
-                    this.pointsDisplay.alpha = progress.value;
-                })
-                .start();
             })
             .start();
     }
@@ -969,6 +1018,79 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         
         // Force update of the points display
         this.updatePointsDisplay(true);
+    }
+
+    /**
+     * Calculate the value of the hand
+     * This method handles ace values optimally (as 11 or 1)
+     * @returns The calculated value of the hand
+     */
+    calculateValue(): number {
+        let value = 0;
+        let aces = 0;
+        
+        // First sum up all non-ace cards
+        for (const card of this.cards) {
+            if (card.rank === 'A') {
+                aces++;
+            } else {
+                value += card.value;
+            }
+        }
+        
+        // Then add aces with optimal values
+        for (let i = 0; i < aces; i++) {
+            // Count ace as 11 if it doesn't cause a bust, otherwise as 1
+            if (value + 11 <= 21) {
+                value += 11;
+                this.soft = true; // Mark as soft hand (contains an ace counted as 11)
+            } else {
+                value += 1;
+            }
+        }
+        
+        // Update hand state based on calculated value
+        this.value = value;
+        this.busted = value > 21;
+        
+        // Check for blackjack (21 with exactly 2 cards)
+        if (this.cards.length === 2 && value === 21) {
+            this.blackjack = true;
+        }
+        
+        return value;
+    }
+    
+    /**
+     * Get the visible value of the hand (for dealer's hand when hole card is hidden)
+     * Only counts face-up cards
+     * @returns The visible value of the hand
+     */
+    getVisibleValue(): number {
+        let value = 0;
+        let aces = 0;
+        
+        // Only count face-up cards
+        for (const card of this.cards) {
+            if (!card.faceUp) continue;
+            
+            if (card.rank === 'A') {
+                aces++;
+            } else {
+                value += card.value;
+            }
+        }
+        
+        // Handle aces optimally
+        for (let i = 0; i < aces; i++) {
+            if (value + 11 <= 21) {
+                value += 11;
+            } else {
+                value += 1;
+            }
+        }
+        
+        return value;
     }
 }
 /**

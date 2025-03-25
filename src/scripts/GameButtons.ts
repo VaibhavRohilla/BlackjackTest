@@ -91,6 +91,19 @@ export class GameButtonContainer extends Container {
     private animationTimeout: any = null;
     public toShowButtons: GameButtonType[] = [];
     
+    // Stored values for reuse
+    private _buttonsScale: number = 0;
+    private _buttonsWidth: number = 0;
+    private _screenWidth: number = 0;
+    private _screenHeight: number = 0;
+    
+    // Internal state trackers for showing/hiding buttons
+    private _showButtonsInProgress: boolean = false;
+    private _hideButtonsInProgress: boolean = false;
+    
+    // Store animation tweens so they can be cancelled
+    private _activeTweens: any[] = [];
+    
     constructor() {
         super();
         
@@ -1073,253 +1086,184 @@ export class GameButtonContainer extends Container {
     }
 
     /**
-     * Show specific buttons by their type names
-     * @param buttonNames - Array of button types to show
-     * @param immediate - Whether to show immediately (no animation)
-     * @param preventDuplicates - Whether to prevent showing if these buttons are already visible
-     * @returns 
+     * Shows specific buttons based on provided button names
+     * @param buttonNames Array of button names to show
+     * @param immediate Whether to show buttons immediately without animation
+     * @param preventDuplicates Whether to check if buttons are already shown
+     * @returns boolean indicating if all buttons were shown successfully
      */
     public showSpecificButtons(buttonNames: GameButtonType[], immediate: boolean = false, preventDuplicates: boolean = true): boolean {
-        console.log("Showing specific buttons:", buttonNames);
-        
-        // Skip if empty array
-        if (!buttonNames || buttonNames.length === 0) {
-            console.log("Empty button array provided, skipping");
-            return false;
-        }
-        
-        // Create a unique operation ID to track this specific operation
-        const operationId = Date.now();
-        this.currentOperationId = operationId;
-        
-        // Check if critical buttons like PLAYON or REBET are included
-        const hasCriticalButtons = buttonNames.includes(GameButtonType.PLAYON) || 
-                                    buttonNames.includes(GameButtonType.REBET) ||
-                                    buttonNames.includes(GameButtonType.PLAY);
-        
-        // Force immediate display for critical buttons
-        if (hasCriticalButtons) {
-            console.log("Critical buttons detected - ensuring immediate display");
-            immediate = true;
-            
-            // Force stop any ongoing animations
-            if (this.animationTimeout) {
-                clearTimeout(this.animationTimeout);
-                this.animationTimeout = null;
-            }
-            
-            // Clear any pending animations
-            this.pendingAnimations = 0;
-            this.isAnimating = false;
-        }
-        
-        // First check if all these buttons are already visible (if preventing duplicates)
-        if (preventDuplicates) {
-            let allButtonsAlreadyVisible = true;
-            
-            for (const buttonName of buttonNames) {
-                const button = this.getButton(buttonName);
-                if (!button || !button.visible) {
-                    allButtonsAlreadyVisible = false;
-                    break;
-                }
-            }
-            
-            if (allButtonsAlreadyVisible) {
-                console.log("These exact buttons are already showing, skipping animation");
-                return false;
-            }
-        }
-        
-        // Hide any currently visible buttons first if they're different
-        let visibleButtons = Array.from(this.buttons.entries())
-            .filter(([type, button]) => button.visible)
-            .map(([type]) => type);
-            
-        // Only hide if the visible buttons are different from what we want to show
-        const buttonsAreDifferent = visibleButtons.length !== buttonNames.length || 
-            visibleButtons.some(type => !buttonNames.includes(type));
-        
-        if (buttonsAreDifferent && visibleButtons.length > 0 && !immediate) {
-            // We need to hide current buttons first
-            console.log("Need to hide existing buttons before showing new ones");
-            
-            // Remember what we want to show after hiding
-            this.toShowButtons = [...buttonNames];
-            
-            // Hide all buttons first, then show the new ones
-            this.hideAllButtons(false, () => {
-                // Check if this operation is still current
-                if (this.currentOperationId !== operationId) {
-                    console.log("Operation was superseded, not showing buttons");
-                    return;
-                }
+        console.log(`Showing specific buttons:`, buttonNames);
+
+        // Check if these exact buttons are already showing (to prevent duplicate animations)
+        if (preventDuplicates && buttonNames.length > 0) {
+            // Only check if we have the same number of active buttons
+            if (this.currentActiveButtons.length === buttonNames.length) {
+                // Get the types of all current active buttons
+                const currentButtonTypes = this.currentActiveButtons
+                    .map(btn => this.getButtonTypeByInstance(btn))
+                    .filter(type => type !== null) as GameButtonType[];
                 
-                // Show the specified buttons
-                this.showSpecificButtonsImpl(buttonNames, immediate, operationId);
+                // Check if all requested buttons are already shown
+                const allButtonsAlreadyShown = buttonNames.every(type => 
+                    currentButtonTypes.includes(type));
+                
+                if (allButtonsAlreadyShown) {
+                    console.log("These exact buttons are already showing, skipping animation");
+                    return true;
+                }
+            }
+        }
+
+        // Hide all current buttons first
+        this.hideAllButtons(immediate, () => {
+            // Mark as animating
+            this.isAnimating = true;
+            this.pendingAnimations = 0;
+            this.buttonStateVersion++;
+            
+            // Pre-position all buttons first so calculations are correct
+            const buttonsToShow: GameButton[] = [];
+            buttonNames.forEach(buttonType => {
+                const button = this.buttons.get(buttonType);
+                if (button) {
+                    buttonsToShow.push(button);
+                    // Make button active for correct positioning
+                    button.visible = true;
+                    button.alpha = 0;
+                    if (!this.currentActiveButtons.includes(button)) {
+                        this.currentActiveButtons.push(button);
+                    }
+                } else {
+                    console.warn(`Button ${buttonType} not found`);
+                }
             });
             
-            return true;
-        } else {
-            // No buttons to hide or using immediate mode, show the specified buttons directly
-            return this.showSpecificButtonsImpl(buttonNames, immediate, operationId);
-        }
-    }
-
-    /**
-     * Implementation for showing specific buttons
-     * @private
-     */
-    private showSpecificButtonsImpl(buttonNames: GameButtonType[], immediate: boolean, operationId: number): boolean {
-        // Log what buttons we're about to show
-        console.log(`Showing buttons implementation for: ${buttonNames.join(', ')}`);
-        
-        // If we're already animating and not in immediate mode, queue this operation
-        if (this.isAnimating && !immediate) {
-            console.log("Already animating, queuing button display");
-            this.toShowButtons = [...buttonNames];
-            return false;
-        }
-        
-        // Mark that we're starting a new animation sequence
-        this.isAnimating = !immediate;
-        this.buttonStateVersion++;
-        const currentVersion = this.buttonStateVersion;
-        
-        // Reset active buttons array
-        this.currentActiveButtons = [];
-        
-        // Filter to only include buttons that exist
-        const existingButtons = buttonNames
-            .map(name => this.getButton(name))
-            .filter(button => button !== undefined) as GameButton[];
-        
-        if (existingButtons.length === 0) {
-            console.log("No valid buttons to show");
-            this.isAnimating = false;
-            return false;
-        }
-        
-        // Track pending animations if we're animating
-        this.pendingAnimations = immediate ? 0 : existingButtons.length;
-        
-        // Sort buttons by their positions - left side first, then right side
-        existingButtons.sort((a, b) => {
-            const posA = a.options.position === ButtonPosition.LEFT ? 0 : 1;
-            const posB = b.options.position === ButtonPosition.LEFT ? 0 : 1;
-            return posA - posB;
-        });
-        
-        // For each button, show it with staggered timing
-        existingButtons.forEach((button, index) => {
-            this.currentActiveButtons.push(button);
-            
-            if (immediate) {
-                // Immediately show and position the button
-                button.visible = true;
-                button.alpha = 1;
-                button.setActive(true);
-                this.positionButton(button);
-            } else {
-                // Use a timeout to stagger the button appearances
-                const delay = index * this.STAGGER_DELAY;
-                
-                setTimeout(() => {
-                    // Skip if the operation has been superseded
-                    if (this.currentOperationId !== operationId || this.buttonStateVersion !== currentVersion) {
-                        console.log("Button animation skipped due to superseded operation");
-                        return;
-                    }
-                    
-                    // Now animate the button in
-                    this.animateButtonIn(button, () => {
-                        this.pendingAnimations--;
-                        
-                        // If all animations are complete, we're done
-                        if (this.pendingAnimations <= 0) {
-                            this.isAnimating = false;
-                        }
-                    });
-                }, delay);
+            // If no valid buttons found, return early
+            if (buttonsToShow.length === 0) {
+                this.isAnimating = false;
+                return;
             }
-        });
-        
-        // If we're in immediate mode, we're done
-        if (immediate) {
-            this.isAnimating = false;
-        }
-        
-        return true;
-    }
 
-    /**
-     * Animate a button into position
-     * @param button The button to animate
-     * @param callback Callback to execute when animation is complete
-     */
-    private animateButtonIn(button: GameButton, callback?: () => void): void {
-        // Store final position
-        const finalPosition = {
-            x: button.position.x,
-            y: button.position.y
-        };
-        
-        // Move button off-screen based on its position
-        const offscreenX = button.options.position === ButtonPosition.LEFT 
-            ? finalPosition.x - this.OFFSCREEN_OFFSET 
-            : finalPosition.x + this.OFFSCREEN_OFFSET;
-        
-        // Set initial position
-        button.position.set(offscreenX, finalPosition.y);
-        button.alpha = 0;
-        button.visible = true;
-        
-        try {
-            // Using simple animation for better reliability
-            const startTime = performance.now();
-            const duration = this.ANIMATION_DURATION;
-            
-            // Animate the button
-            const animate = (currentTime: number) => {
-                const elapsed = currentTime - startTime;
-                const progress = Math.min(elapsed / duration, 1);
-                
-                // Ease out cubic: calculate eased progress
-                const easedProgress = 1 - Math.pow(1 - progress, 3);
-                
-                // Update position and alpha
-                const newX = offscreenX + (finalPosition.x - offscreenX) * easedProgress;
-                button.position.x = newX;
-                button.alpha = easedProgress;
-                
-                // Continue animation if not complete
-                if (progress < 1) {
-                    this.animationTimeout = requestAnimationFrame(animate);
-                } else {
-                    // Animation complete
-                    button.position.x = finalPosition.x;
+            // Now position all buttons
+            buttonsToShow.forEach(button => {
+                this.positionButton(button);
+            });
+
+            // If immediate mode, show all buttons instantly
+            if (immediate) {
+                buttonsToShow.forEach(button => {
+                    button.visible = true;
                     button.alpha = 1;
                     button.setActive(true);
+                });
+                this.isAnimating = false;
+                return;
+            }
+
+            // Ensure tweens are properly initialized
+            if (!Globals.sceneManager?.tweenGroup) {
+                console.warn("Tween group is not available, falling back to immediate mode");
+                buttonsToShow.forEach(button => {
+                    button.visible = true;
+                    button.alpha = 1;
+                    button.setActive(true);
+                });
+                this.isAnimating = false;
+                return;
+            }
+
+            // Add a small delay before starting animations to ensure previous animations are complete
+            setTimeout(() => {
+                // Animate each button with staggered timing
+                buttonsToShow.forEach((button, index) => {
+                    // Store final position
+                    const finalPosition = {
+                        x: button.position.x,
+                        y: button.position.y
+                    };
                     
-                    // Call the callback
-                    if (callback) callback();
-                }
-            };
-            
-            // Start animation
-            this.animationTimeout = requestAnimationFrame(animate);
-        } catch (e) {
-            console.error("Error animating button:", e);
-            
-            // Fallback: set button visible immediately
-            button.position.x = finalPosition.x;
-            button.alpha = 1;
-            button.visible = true;
-            button.setActive(true);
-            
-            // Call the callback
-            if (callback) callback();
-        }
+                    // Move button off-screen based on its position
+                    const offscreenX = button.options.position === ButtonPosition.LEFT 
+                        ? finalPosition.x - this.OFFSCREEN_OFFSET 
+                        : finalPosition.x + this.OFFSCREEN_OFFSET;
+                    
+                    button.position.set(offscreenX, finalPosition.y);
+                    
+                    // Calculate delay for staggered animation
+                    const delay = index * this.STAGGER_DELAY;
+                    this.pendingAnimations++;
+                    
+                    // Keep track of tweens for this button
+                    let positionTween: any, alphaTween: any;
+                    
+                    try {
+                        // Animate button into position
+                        positionTween = new Tween(button.position, Globals.sceneManager!.tweenGroup)
+                            .to({ x: finalPosition.x }, this.ANIMATION_DURATION)
+                            .easing(Easing.Cubic.Out)
+                            .delay(delay)
+                            .onUpdate(() => {
+                                // Ensure the button is visible during animation
+                                button.visible = true;
+                            })
+                            .start();
+                        
+                        // Fade in
+                        alphaTween = new Tween(button, Globals.sceneManager!.tweenGroup)
+                            .to({ alpha: 1 }, this.ANIMATION_DURATION)
+                            .easing(Easing.Quadratic.Out)
+                            .delay(delay)
+                            .onComplete(() => {
+                                button.setActive(true);
+                                this.pendingAnimations--;
+                                if (this.pendingAnimations <= 0) {
+                                    this.isAnimating = false;
+                                }
+                            })
+                            .start();
+                    } catch (e) {
+                        console.error("Error creating button tween:", e);
+                        // Fallback: set button visible immediately
+                        button.position.x = finalPosition.x;
+                        button.alpha = 1;
+                        button.visible = true;
+                        button.setActive(true);
+                        this.pendingAnimations--;
+                    }
+                    
+                    // Failsafe: ensure button becomes visible even if animation fails
+                    setTimeout(() => {
+                        if (button.alpha < 0.5) {
+                            console.warn(`Button ${index} animation may have failed, forcing visibility`);
+                            button.position.x = finalPosition.x;
+                            button.alpha = 1;
+                            button.visible = true;
+                            button.setActive(true);
+                        }
+                    }, this.ANIMATION_DURATION + delay + 100);
+                });
+                
+                // Failsafe: clear animation state after maximum possible animation time
+                const maxAnimationTime = this.ANIMATION_DURATION + (buttonsToShow.length * this.STAGGER_DELAY) + 200;
+                setTimeout(() => {
+                    if (this.isAnimating) {
+                        console.warn("Animation timeout reached, forcing completion");
+                        this.isAnimating = false;
+                        this.pendingAnimations = 0;
+                        
+                        // Ensure all buttons are visible and active
+                        buttonsToShow.forEach(button => {
+                            button.alpha = 1;
+                            button.visible = true;
+                            button.setActive(true);
+                        });
+                    }
+                }, maxAnimationTime);
+            }, 50); // Small delay before starting new animations
+        });
+
+        return true;
     }
 
     /**
@@ -1375,6 +1319,31 @@ export class GameButtonContainer extends Container {
                 }
             }
         });
+    }
+
+    /**
+     * Cancel all active button animations to prevent visual glitches
+     * when multiple animations run simultaneously
+     */
+    cancelAllButtonAnimations(): void {
+        // Stop all active tweens
+        if (this._activeTweens && this._activeTweens.length > 0) {
+            console.log(`Cancelling ${this._activeTweens.length} active button animations`);
+            
+            // Stop each tween
+            this._activeTweens.forEach(tween => {
+                if (tween) {
+                    tween.stop();
+                }
+            });
+            
+            // Clear the array
+            this._activeTweens = [];
+        }
+        
+        // Reset animation flags to prevent deadlocks
+        this._showButtonsInProgress = false;
+        this._hideButtonsInProgress = false;
     }
 }
 

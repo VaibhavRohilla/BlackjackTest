@@ -141,7 +141,15 @@ export class BackendService {
     try {
       const message = JSON.parse(event.data);
       console.log(`Received ${message.type} message with data:`, JSON.stringify(message.data));
-      
+  
+      if(message.type === MessageType.START_GAME) {
+        console.log("Received start game message:", message.data);
+        Globals.Manager?.HandleStartGame(message.data);
+      }
+      if(message.type === MessageType.END_GAME) {
+        console.log("Received end game message:", message.data);
+        Globals.Manager?.handleGameOutcome(message.data);
+      }
       // Handle authentication messages (case insensitive)
       const messageType = message.type.toLowerCase();
       if (messageType === 'auth_success' || messageType === 'auth_success') {

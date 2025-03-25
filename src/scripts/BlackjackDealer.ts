@@ -26,11 +26,10 @@ export class BlackjackDealer extends Container {
     // Define constants for split hand positions - must be accessible to both methods
     private readonly FINAL_PLAYER_X = 220; // Right position - first hand
     private readonly FINAL_SPLIT_X = -220; // Left position - second hand
-    
-    // Add tracking for current positions to prevent teleporting
-    private _playerHandLastX: number = 0;
-    private _splitHandLastX: number = 0;
-    private _positionsInitialized: boolean = false;
+    private readonly PLAYER_Y_OFFSET = 0.40; // Player hands at 40% from top
+    private readonly DEALER_Y_OFFSET = -0.25; // Dealer hand at 25% from top
+    private readonly SPLIT_ANIMATION_DURATION = 400; // Duration for split animations
+    private readonly CARD_DEAL_DELAY = 200; // Delay between dealing cards
 
     /**
      * Create a new blackjack dealer
@@ -43,14 +42,21 @@ export class BlackjackDealer extends Container {
         this.cardContainer.addChild(this.playerHand);
         this.cardContainer.addChild(this.dealerHand);
 
+        // Ensure the card container is visible and properly positioned
+        this.cardContainer.visible = true;
+        this.cardContainer.sortableChildren = true;
+        
         // Add card container to this container
         this.addChild(this.cardContainer);
-        
-        // Initialize position tracking
-        this._playerHandLastX = 0;
-        this._splitHandLastX = 0;
-        
         this.resize();
+        
+        // Log the card container properties for debugging
+        console.log("Card container initialized:", {
+            visible: this.cardContainer.visible,
+            position: `(${this.cardContainer.x}, ${this.cardContainer.y})`,
+            zIndex: this.cardContainer.zIndex,
+            childCount: this.cardContainer.children.length
+        });
     }
 
     /**
@@ -75,27 +81,12 @@ export class BlackjackDealer extends Container {
             // Import Tween and Easing if not available globally
             const { Tween, Easing } = require("@tweenjs/tween.js");
             
-            // Calculate target positions based on window size
-            const windowWidth = window.innerWidth;
-            const targetPlayerX = this.FINAL_PLAYER_X;
-            const targetSplitX = this.FINAL_SPLIT_X;
-            
-            // Store current positions for state tracking
-            this._playerHandLastX = originalX;
-            
-            // Create a tween for the player hand moving right
+            // Create a tween for the player hand moving right with bounce effect
             new Tween(this.playerHand)
-                .to({ x: targetPlayerX }, 400) // 400ms animation
-                .easing(Easing.Cubic.Out) // Smooth deceleration
-                .onUpdate(() => {
-                    // Update position tracking during animation
-                    this._playerHandLastX = this.playerHand.x;
-                })
+                .to({ x: this.FINAL_PLAYER_X }, this.SPLIT_ANIMATION_DURATION)
+                .easing(Easing.Back.Out) // Add bounce effect
                 .onComplete(() => {
                     console.log("Player hand animation complete, creating split hand");
-                    
-                    // Update position tracking
-                    this._playerHandLastX = targetPlayerX;
                     
                     // Create the split hand after the animation completes
                     if (!this.splitHand) {
@@ -103,42 +94,25 @@ export class BlackjackDealer extends Container {
                         this.cardContainer.addChild(this.splitHand);
                         
                         // Set initial position and scale for the split hand
-                        this.splitHand.x = originalX; // Start at player's original position
+                        this.splitHand.x = originalX;
                         this.splitHand.y = originalY;
-                        this.splitHand.alpha = 0; // Start transparent
-                        
-                        // Initialize tracking for split hand
-                        this._splitHandLastX = originalX;
-                        
+                        this.splitHand.alpha = 0;
                         console.log(`Created split hand at (${this.splitHand.x}, ${this.splitHand.y})`);
                         
-                        // Create a local reference to splitHand to avoid null checks in the closure
-                        const splitHand = this.splitHand;
-                        
-                        // Animate the split hand appearing
-                        new Tween(splitHand)
+                        // Animate the split hand appearing with bounce effect
+                        new Tween(this.splitHand)
                             .to({ 
-                                x: targetSplitX, // Final left position
+                                x: this.FINAL_SPLIT_X,
                                 alpha: 1 
-                            }, 400)
-                            .easing(Easing.Cubic.Out)
-                            .onUpdate(() => {
-                                // Only update tracking if we still have a reference to the split hand
-                                if (this.splitHand === splitHand) {
-                                    this._splitHandLastX = splitHand.x;
-                                }
-                            })
+                            }, this.SPLIT_ANIMATION_DURATION)
+                            .easing(Easing.Back.Out)
                             .onComplete(() => {
-                                // Only update positions if the split hand is still the same instance
-                                if (this.splitHand === splitHand) {
-                                    // Ensure final positions are exact (no rounding errors)
-                                    this.playerHand.x = targetPlayerX;
-                                    this.splitHand.x = targetSplitX;
-                                    this._splitHandLastX = targetSplitX;
-                                    
-                                    // Mark positions as initialized
-                                    this._positionsInitialized = true;
-                                    
+                                // Ensure final positions are exact
+                                this.playerHand.x = this.FINAL_PLAYER_X;
+                                if (this.splitHand) {
+                                    this.splitHand.x = this.FINAL_SPLIT_X;
+                                    // Force a resize to ensure proper positioning
+                                    this.resize();
                                     console.log("Split hand animation complete with final positions:", 
                                         `player (${this.playerHand.x}), split (${this.splitHand.x})`);
                                 }
@@ -148,9 +122,8 @@ export class BlackjackDealer extends Container {
                 })
                 .start();
             
-            // We need to ensure the tween updates are processed
-            if (Globals.sceneManager && Globals.sceneManager.tweenGroup) {
-                // If using a scene manager with tween group
+            // Ensure tween updates are processed
+            if (Globals.sceneManager?.tweenGroup) {
                 Globals.sceneManager.tweenGroup.add(new Tween({}));
             }
         } catch (error) {
@@ -160,16 +133,9 @@ export class BlackjackDealer extends Container {
                 this.splitHand = new Hand('split');
                 this.cardContainer.addChild(this.splitHand);
                 
-                // Set positions directly using the same constants
+                // Set positions directly
                 this.splitHand.x = this.FINAL_SPLIT_X;
                 this.playerHand.x = this.FINAL_PLAYER_X;
-                
-                // Update position tracking
-                this._playerHandLastX = this.FINAL_PLAYER_X;
-                this._splitHandLastX = this.FINAL_SPLIT_X;
-                
-                // Mark positions as initialized
-                this._positionsInitialized = true;
                 
                 // Ensure resize is called
                 this.resize();
@@ -186,182 +152,93 @@ export class BlackjackDealer extends Container {
     positionSplitHands(): void {
         if (!this.splitHand) return;
         
-        // Calculate target positions based on window width
-        const targetPlayerX = this.FINAL_PLAYER_X;
-        const targetSplitX = this.FINAL_SPLIT_X;
+        // Calculate Y position based on screen height
+        const screenHeight = window.innerHeight;
+        const playerY = screenHeight * this.PLAYER_Y_OFFSET;
         
-        // Check if positions already match targets
-        const playerPosMatches = Math.abs(this.playerHand.x - targetPlayerX) < 1;
-        const splitPosMatches = Math.abs(this.splitHand.x - targetSplitX) < 1;
+        // Ensure hands have the right positions with smooth transition
+        const { Tween, Easing } = require("@tweenjs/tween.js");
         
-        // Only log if positions are changing
-        if (!playerPosMatches || !splitPosMatches) {
-            console.log(`Repositioning split hands from: player (${this.playerHand.x}), split (${this.splitHand.x})`);
+        // Animate player hand position
+        new Tween(this.playerHand)
+            .to({ 
+                x: this.FINAL_PLAYER_X,
+                y: playerY 
+            }, 300)
+            .easing(Easing.Cubic.Out)
+            .start();
+        
+        // Animate split hand position
+        new Tween(this.splitHand)
+            .to({ 
+                x: this.FINAL_SPLIT_X,
+                y: playerY 
+            }, 300)
+            .easing(Easing.Cubic.Out)
+            .start();
+        
+        // Ensure points displays are properly positioned
+        if (this.playerHand.pointsDisplay) {
+            this.playerHand.pointsDisplay.visible = true;
+            new Tween(this.playerHand.pointsDisplay)
+                .to({ alpha: 1 }, 200)
+                .start();
         }
         
-        // If positions match and have been initialized, no need to reposition
-        if (this._positionsInitialized && playerPosMatches && splitPosMatches) {
-            return;
+        if (this.splitHand.pointsDisplay) {
+            this.splitHand.pointsDisplay.visible = true;
+            new Tween(this.splitHand.pointsDisplay)
+                .to({ alpha: 1 }, 200)
+                .start();
         }
         
-        // Use smooth transitions if positions have moved significantly
-        if (this._positionsInitialized && 
-            (Math.abs(this.playerHand.x - this._playerHandLastX) > 5 || 
-             Math.abs(this.splitHand.x - this._splitHandLastX) > 5)) {
-            
-            try {
-                const { Tween, Easing } = require("@tweenjs/tween.js");
+        // Make sure the bust indicators are updated
+        this.updateBustStatus();
+        
+        // Set scale for active hand with smooth transition
+        const activeHand = Globals.activeHand || 'first';
+        const activeScale = 1.0;
+        const inactiveScale = 0.95;
+        
+        if (activeHand === 'first') {
+            new Tween(this.playerHand.scale)
+                .to({ x: activeScale, y: activeScale }, 300)
+                .easing(Easing.Cubic.Out)
+                .start();
                 
-                // Create smooth tween transitions
-                new Tween(this.playerHand)
-                    .to({ x: targetPlayerX }, 200)
-                    .easing(Easing.Cubic.Out)
-                    .onUpdate(() => {
-                        this._playerHandLastX = this.playerHand.x;
-                    })
-                    .start();
-                    
-                const splitHand = this.splitHand;
+            new Tween(this.splitHand.scale)
+                .to({ x: inactiveScale, y: inactiveScale }, 300)
+                .easing(Easing.Cubic.Out)
+                .start();
+        } else {
+            new Tween(this.playerHand.scale)
+                .to({ x: inactiveScale, y: inactiveScale }, 300)
+                .easing(Easing.Cubic.Out)
+                .start();
                 
-                new Tween(splitHand)
-                    .to({ x: targetSplitX }, 200)
-                    .easing(Easing.Cubic.Out)
-                    .onUpdate(() => {
-                        if (this.splitHand === splitHand) {
-                            this._splitHandLastX = splitHand.x;
-                        }
-                    })
-                    .onComplete(() => {
-                        if (this.splitHand === splitHand) {
-                            console.log(`Split hand smooth repositioning complete: player (${this.playerHand.x}), split (${this.splitHand.x})`);
-                        }
-                    })
-                    .start();
-                
-                if (Globals.sceneManager?.tweenGroup) {
-                    Globals.sceneManager.tweenGroup.add(new Tween({}));
-                }
-                
-                return;
-            } catch (error) {
-                console.error("Error during position tweening:", error);
-            }
+            new Tween(this.splitHand.scale)
+                .to({ x: activeScale, y: activeScale }, 300)
+                .easing(Easing.Cubic.Out)
+                .start();
         }
-        
-        // Set positions directly if needed
-        this.playerHand.x = targetPlayerX;
-        this.splitHand.x = targetSplitX;
-        
-        // Update position tracking
-        this._playerHandLastX = targetPlayerX;
-        this._splitHandLastX = targetSplitX;
-        
-        // Mark positions as initialized
-        this._positionsInitialized = true;
-        
-        // Log final positions
-        console.log(`Final split hand positions: player (${this.playerHand.x}), split (${this.splitHand.x})`);
     }
 
     /**
-     * Deal cards from backend data with animation
-     * @param playerHand The player hand data from backend
-     * @param dealerHand The dealer hand data from backend 
-     * @returns Promise that resolves when all cards are dealt
+     * Deal initial cards based on hand data from backend
      */
-    dealCards(playerHand: any, dealerHand: any): Promise<void> {
+    async dealCards(playerHand: any, dealerHand: any): Promise<void> {
         console.log("Dealing initial cards from backend data");
-        
-        // Print detailed card information for debugging
-        console.log("Player hand data:", JSON.stringify(playerHand.cards));
-        console.log("Dealer hand data:", JSON.stringify(dealerHand.cards));
-        
-        // Set flag to prevent premature button display
-        this.isCardDealInProgress = true;
-        
-        // Reset hands first
-        this.playerHand.reset();
-        this.dealerHand.reset();
-        
-        // Make sure hands are visible
-        this.playerHand.visible = true;
-        this.dealerHand.visible = true;
-        
-        // Return a promise that resolves when all cards are dealt
-        return new Promise<void>(async (resolve) => {
-            // Make sure we have valid data
-            if (!playerHand || !playerHand.cards || !dealerHand || !dealerHand.cards) {
-                console.error("Invalid hand data received from backend");
-                this.isCardDealInProgress = false;
-                resolve();
-                return;
-            }
-            
-            try {
-                // Deal player's first card
-                if (playerHand.cards.length > 0) {
-                    await this.playerHand.dealCards(playerHand.cards[0]);
-                    console.log("Player's first card dealt");
-                }
-                
-                // Deal dealer's first card
-                if (dealerHand.cards.length > 0) {
-                    await this.dealerHand.dealCards(dealerHand.cards[0]);
-                    console.log("Dealer's first card dealt");
-                }
-                
-                // Deal player's second card
-                if (playerHand.cards.length > 1) {
-                    await this.playerHand.dealCards(playerHand.cards[1]);
-                    console.log("Player's second card dealt");
-                }
-                
-                // Deal dealer's second card (face down if not specified)
-                if (dealerHand.cards.length > 1) {
-                    const secondCard = dealerHand.cards[1];
-                    // Check if the card is already face down in the data
-                    if (secondCard.faceUp === false) {
-                        // It's already face down, just deal it
-                        await this.dealerHand.dealCards(secondCard);
-                        console.log("Dealer's second card dealt (face down)");
-                    } else {
-                        // Create a face-down version of the card
-                        const faceDownCard = {
-                            ...secondCard,
-                            faceUp: false,
-                            // Save original card data to use when revealing
-                            originalCard: secondCard
-                        };
-                        await this.dealerHand.dealCards(faceDownCard);
-                        console.log("Dealer's second card dealt (converted to face down)");
-                    }
-                }
-                
-                // Update display of hand values
-                console.log("Updating points displays");
-                this.playerHand.updatePointsDisplay?.(true);
-                this.dealerHand.updatePointsDisplay?.(true);
-                
-                // Check for blackjack visibility
-                if (playerHand.blackjack) {
-                    // Ensure blackjack status is visible if needed
-                    console.log("Player has blackjack - showing status");
-                    this.playerHand.blackjack = true;
-                }
-                
-                console.log("All initial cards have been dealt");
-                
-                // Release the card dealing lock
-                this.isCardDealInProgress = false;
-                
-                // Resolve the promise to signal completion
-                resolve();
-            } catch (error) {
-                console.error("Error dealing cards:", error);
-                this.isCardDealInProgress = false;
-                resolve(); // Resolve anyway to prevent blocking the game
-            }
-        });
+
+        // Deal the cards in the proper sequence with animations
+        // This creates the initial dealing animation when starting a game
+        await this.playerHand.dealCards(playerHand.cards[0]);
+        await this.dealerHand.dealCards(dealerHand.cards[0]);
+        await this.playerHand.dealCards(playerHand.cards[1]);
+        await this.dealerHand.dealCards(dealerHand.cards[1]);
+
+        // Update card values display
+        this.playerHand.updatePointsDisplay?.(true);
+        this.dealerHand.updatePointsDisplay?.(true);
     }
 
     /**
@@ -386,7 +263,8 @@ export class BlackjackDealer extends Container {
             this.splitHand.destroy();
             this.splitHand = null;
         }
-
+        this.playerHand.alpha = 1.0;
+        this.dealerHand.alpha = 1.0;
         // Reset flags
         this.isCardDealInProgress = false;
         this.isInsuranceAvailable = false;
@@ -406,24 +284,46 @@ export class BlackjackDealer extends Container {
     resize(): void {
         // Set card container in center of screen
         this.cardContainer.position.set(window.innerWidth / 2, window.innerHeight / 2);
-
+        
+        // Calculate Y positions
+        const screenHeight = window.innerHeight;
+        const playerY = screenHeight * this.PLAYER_Y_OFFSET;
+        const dealerY = screenHeight * this.DEALER_Y_OFFSET;
+        
+        // Ensure the container is visible
+        this.cardContainer.visible = true;
+        
         const hasSplit = this.splitHand !== null;
 
-        // Resize all hands
+        // Position dealer hand
+        this.dealerHand.x = 0;
+        this.dealerHand.y = dealerY;
         this.dealerHand.resize(hasSplit);
-        this.playerHand.resize(hasSplit);
 
         if (hasSplit) {
-            this.splitHand?.resize(true);
-            
-            // Use the dedicated function for positioning split hands
+            // Position split hands with animation
+            this.playerHand.y = playerY;
+            if (this.splitHand) {
+                this.splitHand.y = playerY;
+                this.splitHand.resize(true);
+            }
             this.positionSplitHands();
         } else {
             // Reset player hand position if no split
             this.playerHand.x = 0;
+            this.playerHand.y = playerY;
             this.playerHand.scale.set(1.0);
-            this._playerHandLastX = 0;
         }
+        
+        // Resize player hand
+        this.playerHand.resize(hasSplit);
+        
+        // Log positions for debugging
+        console.log("Hand positions after resize:", {
+            dealer: `(${this.dealerHand.x}, ${this.dealerHand.y})`,
+            player: `(${this.playerHand.x}, ${this.playerHand.y})`,
+            split: this.splitHand ? `(${this.splitHand.x}, ${this.splitHand.y})` : "none"
+        });
     }
 
     /**
@@ -442,38 +342,28 @@ export class BlackjackDealer extends Container {
      * Highlight the active split hand in the UI
      */
     setActiveSplitHand(hand: 'first' | 'second'): void {
+        // Make sure we have both hands
         if (!this.playerHand || !this.splitHand) {
             console.error("Cannot set active split hand - missing hands");
             return;
         }
 
-        // Update visual state for both hands
         if (hand === 'first') {
+            // First hand is active (original player hand)
             this.playerHand.highlightActive(true);
             this.splitHand.highlightActive(false);
-            
-            // Ensure proper opacity and scale
-            if (this.playerHand.pointsDisplay) {
-                this.playerHand.pointsDisplay.alpha = 1.0;
-                this.playerHand.pointsDisplay.scale.set(1.2);
-            }
-            if (this.splitHand.pointsDisplay) {
-                this.splitHand.pointsDisplay.alpha = 0.5;
-                this.splitHand.pointsDisplay.scale.set(1.0);
-            }
+
+            // Use opacity for visual differentiation
+            if (this.playerHand.pointsDisplay) this.playerHand.pointsDisplay.alpha = 1.0;
+            if (this.splitHand.pointsDisplay) this.splitHand.pointsDisplay.alpha = 0.5;
         } else {
+            // Second hand is active (split hand)
             this.playerHand.highlightActive(false);
             this.splitHand.highlightActive(true);
-            
-            // Ensure proper opacity and scale
-            if (this.playerHand.pointsDisplay) {
-                this.playerHand.pointsDisplay.alpha = 0.5;
-                this.playerHand.pointsDisplay.scale.set(1.0);
-            }
-            if (this.splitHand.pointsDisplay) {
-                this.splitHand.pointsDisplay.alpha = 1.0;
-                this.splitHand.pointsDisplay.scale.set(1.2);
-            }
+
+            // Use opacity for visual differentiation
+            if (this.playerHand.pointsDisplay) this.playerHand.pointsDisplay.alpha = 0.5;
+            if (this.splitHand.pointsDisplay) this.splitHand.pointsDisplay.alpha = 1.0;
         }
 
         // Force card repositioning
@@ -527,13 +417,6 @@ export class BlackjackDealer extends Container {
             const playerBusted = this.isHandBusted(this.playerHand);
             this.playerHand.pointsDisplay.tint = playerBusted ? 0xFF5555 : 0xFFFFFF;
             this.playerHand.pointsDisplay.visible = true;
-            
-            // Update card opacity for busted hand
-            this.playerHand.cards.forEach(card => {
-                if (card.sprite) {
-                    card.sprite.alpha = playerBusted ? 0.7 : 1.0;
-                }
-            });
         }
 
         // Update split hand
@@ -541,13 +424,6 @@ export class BlackjackDealer extends Container {
             const splitBusted = this.isHandBusted(this.splitHand);
             this.splitHand.pointsDisplay.tint = splitBusted ? 0xFF5555 : 0xFFFFFF;
             this.splitHand.pointsDisplay.visible = true;
-            
-            // Update card opacity for busted hand
-            this.splitHand.cards.forEach(card => {
-                if (card.sprite) {
-                    card.sprite.alpha = splitBusted ? 0.7 : 1.0;
-                }
-            });
         }
 
         // Update dealer hand
@@ -630,6 +506,65 @@ export class BlackjackDealer extends Container {
                 // card1.filters = null;
                 // card2.filters = null;
             }
+        }
+    }
+
+    /**
+     * Create a visual transition effect when switching between split hands
+     * @param toHand Which hand to highlight as active ('first' or 'second')
+     */
+    showHandTransition(toHand: 'first' | 'second'): void {
+        // Ensure we have both hands
+        if (!this.splitHand) return;
+        
+        // Import required animation libraries
+        const { Tween, Easing } = require("@tweenjs/tween.js");
+        
+        // Get references to both hands
+        const firstHand = this.playerHand;
+        const secondHand = this.splitHand;
+        
+        // Determine target hand to highlight
+        const targetHand = toHand === 'first' ? firstHand : secondHand;
+        const otherHand = toHand === 'first' ? secondHand : firstHand;
+        
+        // Store original scales
+        const targetOriginalScale = targetHand.scale.x;
+        const otherOriginalScale = otherHand.scale.x;
+        
+        // Set a visual tint on the points display for active hand
+        if (targetHand.pointsDisplay) {
+            targetHand.pointsDisplay.tint = 0xFFFFFF;
+            targetHand.pointsDisplay.alpha = 1.0;
+        }
+        
+        if (otherHand.pointsDisplay) {
+            otherHand.pointsDisplay.tint = 0xDDDDDD;
+            otherHand.pointsDisplay.alpha = 0.7;
+        }
+        
+        // Create a pulse animation for the active hand
+        new Tween(targetHand.scale)
+            .to({ x: targetOriginalScale * 1.1, y: targetOriginalScale * 1.1 }, 300)
+            .easing(Easing.Quadratic.Out)
+            .onComplete(() => {
+                // Return to original scale after pulse
+                new Tween(targetHand.scale)
+                    .to({ x: targetOriginalScale, y: targetOriginalScale }, 200)
+                    .easing(Easing.Quadratic.In)
+                    .start();
+            })
+            .start();
+        
+        // Slightly shrink the inactive hand
+        new Tween(otherHand.scale)
+            .to({ x: otherOriginalScale * 0.95, y: otherOriginalScale * 0.95 }, 300)
+            .easing(Easing.Quadratic.Out)
+            .start();
+        
+        // Make sure our animations run
+        if (Globals.sceneManager && Globals.sceneManager.tweenGroup) {
+            Globals.sceneManager.tweenGroup.update();
         }
     }
 }

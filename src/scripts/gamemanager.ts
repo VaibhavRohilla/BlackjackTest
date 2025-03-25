@@ -29,26 +29,32 @@ export class GameManager extends Container {
     popupManager: PopupManager = new PopupManager();
     gameButtonsContainer: GameButtonContainer = new GameButtonContainer();
     
-    // Track pending game outcome to show after card dealing
-    pendingOutcome: any = null;
-
-    // Flag to track if we have a pending split option to handle
-    private pendingSplitOption: boolean = false;
-
-    unlockShopCallback: () => void = () => { };
-    cancelShopCallBack: () => void = () => { };
-    shopPopup: ShopPopup = new ShopPopup(this.unlockShopCallback, this.cancelShopCallBack);
-
-    // Add this property declaration at the class level along with the other private properties
     // Flag to track if we're already processing an outcome to prevent duplicate calls
     private _processingOutcome: boolean = false;
 
     // Add a debounce flag for Play On button
     private _playOnInProgress: boolean = false;
 
-    // Add these properties to the class
-    private _outcomePopupShown: boolean = false;
-    private _currentOutcomeId: number = 0;
+    // Flag to track if we're processing a split result to prevent duplicates
+    private _processingSplitResult: boolean = false;
+
+    // Flag to track if a pending split option is available
+    private pendingSplitOption: boolean = false;
+    
+    // Flag to track if we're in a surrender animation
+    private _isSurrenderInProgress: boolean = false;
+
+    unlockShopCallback: () => void = () => { };
+    cancelShopCallBack: () => void = () => { };
+    shopPopup: ShopPopup = new ShopPopup(this.unlockShopCallback, this.cancelShopCallBack);
+
+    // Add this property to track card dealing
+    private _pendingCardDeals: number = 0;
+    private _showPopupAfterDealing: boolean = false;
+    private _pendingPopupMessage: string = '';
+
+    // Add this property to track insurance decision
+    private _insuranceDecided: boolean = false;
 
     constructor() {
         super();
@@ -132,6 +138,29 @@ export class GameManager extends Container {
                             }, 200);
                         }
                     }
+                }
+            }
+            
+            // GLOBAL PROCESSING FLAG FAILSAFE
+            // Check if processing flags have been stuck for too long in betting phase
+            if (Globals.gameState === 'betting') {
+                const shouldShowBettingButtons = !this.gameButtonsContainer.isButtonVisible(GameButtonType.PLAY);
+                
+                if (shouldShowBettingButtons && (this._processingOutcome || this.blackjackDealer.isCardDealInProgress)) {
+                    console.warn("Processing flags stuck in betting phase - force resetting");
+                    this._processingOutcome = false;
+                    this.blackjackDealer.isCardDealInProgress = false;
+                    this._processingSplitResult = false;
+                    
+                    // Force buttons to show after reset
+                    setTimeout(() => {
+                        this.gameButtonsContainer.toShowButtons = [GameButtonType.PLAY, GameButtonType.REBET];
+                        this.gameButtonsContainer.showSpecificButtons(
+                            this.gameButtonsContainer.toShowButtons,
+                            true, // Show immediately
+                            false // Don't prevent duplicates
+                        );
+                    }, 100);
                 }
             }
         }, 3000); // Check every 3 seconds
@@ -270,8 +299,20 @@ export class GameManager extends Container {
         let hasInitialBlackjack = data.playerHand?.cards?.length === 2 && 
             this.blackjackDealer.calculateHandValue(data.playerHand) === 21;
             
+        // Initialize card tracking - 4 cards for standard initial deal
+        const totalCards = data.playerHand?.cards?.length + data.dealerHand?.cards?.length || 4;
+        let handMessage = "";
+            
         if (hasInitialBlackjack) {
-            console.log("Initial player blackjack detected - will show outcome after all cards are dealt");
+            console.log("Initial player blackjack detected");
+            handMessage = "Blackjack! 21 on first deal.";
+        } else if (data.playerHand?.cards?.length === 2) {
+            const handValue = this.blackjackDealer.calculateHandValue(data.playerHand);
+            handMessage = `Starting hand: ${handValue}`;
+        }
+        
+        if (handMessage) {
+            this.trackCardDealing(totalCards, handMessage);
         }
         
         // Delay checking for outcomes until ALL cards are dealt
@@ -291,12 +332,12 @@ export class GameManager extends Container {
     resetGame() {
         Globals.currentBet = 0;
         this.blackjackDealer.resetHands();
-        this.pendingOutcome = null; // Clear any pending outcome
+        // Remove pendingOutcome reference
         Globals.gameState = 'betting';
-        // this.popupManager.hidePopup(() => {
-            this.gameButtonsContainer.hideAllButtons();
-        // });
-        
+        this.gameButtonsContainer.hideAllButtons();
+        // Reset flags
+        this._insuranceDecided = false;
+        this._isSurrenderInProgress = false;
     }
 
     moveToBetting() {
@@ -338,235 +379,67 @@ export class GameManager extends Container {
     recveiveBackendMessages(msgType: string, data: any) {
         console.log("Received message", msgType, data);
         
-        // Handle special cases for split operations
+        // Skip message processing for split operations or if in the middle of a split result
         if (msgType === MessageType.SPLIT_RESULT) {
-            // For split result, don't process other messages until split is done
             this.handleSplitResult(data);
             return;
         }
         
-        // Skip most message processing if we're processing a split result
-        if (this._processingSplitResult) {
-            console.log("Currently processing split result, deferring message:", msgType);
-            
-            
-            // Only process these critical message types during split
-            if (msgType === MessageType.BALANCE_UPDATE) {
-                // Always process balance updates
-                this.uiContainer.updateBalancefromBackend(data.balance);
+        if (this._processingSplitResult && 
+            msgType !== MessageType.BALANCE_UPDATE && 
+            msgType !== MessageType.GAME_OUTCOME && 
+            !(msgType === MessageType.ACTION_RESULT && data?.action === 'split')) {
                 return;
-            } else if (msgType === MessageType.GAME_OUTCOME) {
-                // Store the outcome to be shown after split processing completes
-                this.pendingOutcome = data.outcome;
-                return;
-            } else if (msgType === MessageType.ACTION_RESULT && data.action === 'split') {
-                // Let split-related action results through
-                console.log("Processing split-related action result during split processing");
-            } 
-           
-            else {
-                // Queue up other messages by returning early
-                return;
-            }
         }
         
-        // Store allowed actions for later use after card dealing completes
-        if (data && data.allowedActions) {
-            // Don't process allowed actions here for GAME_OUTCOME or during split - we'll do it specially in those cases
-            if (msgType !== MessageType.GAME_OUTCOME && !this._processingSplitResult) {
+        // Store allowed actions for later use
+        if (data?.allowedActions && msgType !== MessageType.GAME_OUTCOME && !this._processingSplitResult) {
+            // Convert backend actions to button types
                 this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
+            
+            // Remove insurance button from allowed actions if insurance has already been decided
+            if (this._insuranceDecided) {
+                const insuranceIndex = this.gameButtonsContainer.toShowButtons.indexOf(GameButtonType.INSURANCE);
+                if (insuranceIndex !== -1) {
+                    console.log("Insurance already decided - removing insurance button from allowed actions");
+                    this.gameButtonsContainer.toShowButtons.splice(insuranceIndex, 1);
+                }
             }
         }
         
-        // Process the message normally
+        // Process the message based on type
         switch (msgType) {
             case MessageType.GAME_STATE:
-                // Handle game state updates (replaces HAND_UPDATED)
                 this.HandleGameInProgress(data);
                 break;
             
             case MessageType.CARD_DEALT:
-                // When dealing cards, don't show buttons until all cards are dealt
                 this.blackjackDealer.isCardDealInProgress = true;
                 this.giveCards(data);
                 break;
             
             case MessageType.BALANCE_UPDATE:
-                // Handle balance updates
                 this.uiContainer.updateBalancefromBackend(data.balance);
                 break;
             
             case MessageType.SPECIAL_CASE:
-                // Handle special cases like insurance and split
-                if (data.type === 'insurance_win') {
-                    // Show insurance popup or UI
-                    // this.handleInsuranceOffer();
-                } else if (data.type === 'insurance_lost') {
-                    // Handle insurance lost outcome
-                    console.log("Insurance lost - dealer doesn't have blackjack");
-                    
-                    // Show the insurance lost popup
-                    this.popupManager.showInsuranceResult(false);
-                    
-                    // Set a timer to hide the popup and show action buttons after 2 seconds
-                    setTimeout(() => {
-                        this.popupManager.hidePopup(()=>{
-                            this.gameButtonsContainer.showGameplayButtons();
-                        });
-                        
-                        // Now show the allowed action buttons
-                        if (data.allowedActions) {
-                            this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
-                        }
-                        this.checkPendingOutcome();
-                    }, 2000);
-                } else if (data.type === 'split') {
-                    // Skip split option if we already have a split hand or are processing split
-                    if (this.blackjackDealer.splitHand || this._processingSplitResult) {
-                        console.log("Split already performed or in progress, ignoring split option");
-                        return;
-                    }
-                    
-                    // For split option, we need to be careful about button timing
-                    // Only proceed if we're not already in the middle of card dealing
+                if (data.type === 'insurance' && !this._insuranceDecided) {
+                    this.handleInsuranceOffer(data);
+                } 
+                else if (data.type === 'split') {
+                    // Queue split option for when card dealing completes
+                    if (!this.blackjackDealer.splitHand && !this._processingSplitResult) {
                     if (!this.blackjackDealer.isCardDealInProgress) {
                         this.handleSplitOption();
                     } else {
-                        // If cards are being dealt, wait until complete
-                        console.log("Received split option during card dealing, deferring handling");
                         this.pendingSplitOption = true;
+                        }
                     }
                 }
                 break;
             
             case MessageType.GAME_OUTCOME:
-                // Update game state
-                Globals.gameState = data.gamePhase || 'complete';
-                
-                // For game outcome specifically, explicitly map the allowed actions
-                let outcomeButtons = [];
-                
-                // Log the allowed actions we received
-                console.log("Game outcome allowed actions:", data.allowedActions);
-                
-                // If allowedActions is present, process them
-                if (data.allowedActions && Array.isArray(data.allowedActions)) {
-                    // Explicitly check for each action type for game outcome
-                    if (data.allowedActions.includes('place_bet')) {
-                        outcomeButtons.push(GameButtonType.PLAYON);
-                    }
-                    if (data.allowedActions.includes('rebet')) {
-                        outcomeButtons.push(GameButtonType.REBET);
-                    }
-                    
-                    // If no buttons were added but we had actions, use the standard function as fallback
-                    if (outcomeButtons.length === 0 && data.allowedActions.length > 0) {
-                        outcomeButtons = getButtonType(data.allowedActions);
-                        
-                        // Always remove split button from outcome buttons
-                        const splitIndex = outcomeButtons.indexOf(GameButtonType.SPLIT);
-                        if (splitIndex !== -1) {
-                            outcomeButtons.splice(splitIndex, 1);
-                        }
-                    }
-                    
-                    // If still empty, use default buttons
-                    if (outcomeButtons.length === 0) {
-                        outcomeButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
-                    }
-                } else {
-                    // Default if no allowed actions
-                    outcomeButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
-                }
-                
-                // Store the button types we've determined
-                console.log("Mapped outcome buttons:", outcomeButtons);
-                this.gameButtonsContainer.toShowButtons = outcomeButtons;
-                
-                // Update balance
-                this.uiContainer.updateBalancefromBackend(data.playerBalance);
-                this.blackjackDealer.payout = data.payout;
-                
-                // Store outcome to be shown after all card dealing completes
-                this.pendingOutcome = data.outcome;
-                
-                // Special handling for insurance win
-                if (data.outcome === 'insurance_won') {
-                    console.log("Insurance win outcome received - this is the final outcome");
-                    // Ensure we don't show a second outcome popup
-                    Globals.gameState = 'complete';
-                }
-                
-                // Special handling for blackjack
-                const isBlackjack = data.outcome === 'player_blackjack';
-                
-                if (isBlackjack) {
-                    console.log("Blackjack outcome detected - ensuring all cards are dealt before showing popup");
-                    
-                    // For blackjack, always wait for card dealing to complete
-                    if (this.blackjackDealer.isCardDealInProgress || !this.blackjackDealer.dealerHand.cards[0]?.faceUp) {
-                        console.log("Card dealing still in progress for blackjack - deferring outcome display");
-                        
-                        // Add a robust check to wait for all cards to be dealt properly
-                        const checkCardsDealt = () => {
-                            // Wait for dealer's card to be face up and card dealing to complete
-                            if (!this.blackjackDealer.isCardDealInProgress && 
-                                this.blackjackDealer.dealerHand.cards[0]?.faceUp &&
-                                !this._processingSplitResult) {
-                                console.log("All cards now dealt - showing blackjack outcome");
-                                this.showPendingOutcome();
-                                
-                                // Ensure end game buttons are shown
-                                setTimeout(() => {
-                                    this.gameButtonsContainer.showSpecificButtons(
-                                        this.gameButtonsContainer.toShowButtons,
-                                        true // Show immediately
-                                    );
-                                }, 300);
-                            } else {
-                                // Check again after a short delay
-                                setTimeout(checkCardsDealt, 300);
-                            }
-                        };
-                        
-                        // Start checking for cards to be fully dealt
-                        setTimeout(checkCardsDealt, 300);
-                        return;
-                    }
-                }
-                
-                // If no cards are currently being dealt, show outcome immediately
-                if (!this.blackjackDealer.isCardDealInProgress && !this._processingSplitResult) {
-                    this.showPendingOutcome();
-                    
-                    // For player_blackjack, ensure buttons are shown right away
-                    if (isBlackjack && Globals.gameState === 'complete') {
-                        console.log("Player blackjack detected, ensuring end-game buttons are visible immediately");
-                        this.gameButtonsContainer.showSpecificButtons(
-                            this.gameButtonsContainer.toShowButtons, 
-                            true  // Show immediately
-                        );
-                    }
-                } else {
-                    console.log("Card dealing or split processing in progress, outcome will be shown when complete");
-                    
-                    // Add a failsafe check in case the flag gets stuck
-                    setTimeout(() => {
-                        if (this.pendingOutcome && !this._processingOutcome) {
-                            console.log("Failsafe: forcing pending outcome display after timeout");
-                            this.showPendingOutcome();
-                            
-                            // Also ensure buttons are shown if it's a complete state
-                            if (Globals.gameState === 'complete') {
-                                console.log("Ensuring end-game buttons are visible after delayed outcome");
-                                this.gameButtonsContainer.showSpecificButtons(
-                                    this.gameButtonsContainer.toShowButtons, 
-                                    true  // Show immediately
-                                );
-                            }
-                        }
-                    }, 5000); // 5 second safety timeout
-                }
+                this.handleGameOutcome(data);
                 break;
             
             case MessageType.HAND_UPDATED:
@@ -579,109 +452,157 @@ export class GameManager extends Container {
      * Check if there's a pending outcome to show after card dealing is complete
      */
     private checkPendingOutcome(): void {
-        // Only proceed if all card dealing animations are complete
+        // Don't show buttons while cards are being dealt or split is processing
         if (this.blackjackDealer.isCardDealInProgress || this._processingSplitResult) {
-            console.log("Card dealing or split processing in progress, deferring button display");
             return;
         }
         
-        // Set flag to prevent multiple calls
+        // Prevent multiple simultaneous calls
         if (this._processingOutcome) {
-            console.log("Already processing outcome, skipping duplicate call");
-            
-            // Special case: If we're in split mode with second hand at 21, force button display
-            if (this.blackjackDealer.splitHand && Globals.activeHand === 'second') {
-                const splitHandValue = this.blackjackDealer.calculateHandValue(this.blackjackDealer.splitHand);
-                if (splitHandValue === 21 && this.gameButtonsContainer.toShowButtons?.length > 0) {
-                    console.log("Split second hand has 21 - forcing button display despite processing flag");
-                    // Reset processing flag to allow buttons to show
-                    this._processingOutcome = false;
-                    // Continue processing to show buttons
-                } else {
-                    return; // Return normally for other cases
-                }
-            } else {
-                return; // Return normally for non-split cases
-            }
-        }
-        
-        // Set flag to prevent multiple calls (if we got here without the flag already set)
-        if (!this._processingOutcome) {
-            this._processingOutcome = true;
-        }
-        
-        // Special check for blackjack - ensure dealer card is face up
-        if (this.pendingOutcome === 'player_blackjack' && 
-            (!this.blackjackDealer.dealerHand.cards[0]?.faceUp || this.blackjackDealer.dealerHand.cards.length < 2)) {
-            console.log("Detected blackjack but dealer card not fully revealed, deferring outcome display");
-            setTimeout(() => this.checkPendingOutcome(), 300);
-            return;
-        }
-        
-        // Create stable version for this operation to track race conditions
-        const operationVersion = Date.now();
-        this._currentOperationVersion = operationVersion;
-        
-        console.log(`Starting button update operation ${operationVersion}`);
-        
-        // Always hide current buttons first to ensure a clean state
-        this.gameButtonsContainer.hideAllButtons(true, () => {
-            // Check if this operation is still current
-            if (operationVersion !== this._currentOperationVersion) {
-                console.log(`Button operation ${operationVersion} was superseded, aborting`);
+            // Force reset processing flag for betting phase to avoid stuck state
+            if (Globals.gameState === 'betting') {
                 this._processingOutcome = false;
+            } else {
                 return;
             }
+        }
+        
+        // Set processing flag
+        this._processingOutcome = true;
             
-            // After buttons are hidden, proceed with outcome and new buttons
-            setTimeout(() => {
-                // Check if this operation is still current
-                if (operationVersion !== this._currentOperationVersion) {
-                    console.log(`Button operation ${operationVersion} was superseded, aborting`);
+        // Set a timeout to auto-reset the flag after 3s in case of errors
+        setTimeout(() => {
+            if (this._processingOutcome) {
+                console.log("Auto-resetting processing flag after timeout");
+                this._processingOutcome = false;
+            }
+        }, 3000);
+        
+        // Check for pending split option first
+        if (this.pendingSplitOption && !this.blackjackDealer.splitHand) {
+            this.handleSplitOption();
+            this.pendingSplitOption = false;
+        }
+        
+        // Clone the buttons array to avoid reference issues
+        const buttonsToShow = [...(this.gameButtonsContainer.toShowButtons || [])];
+        
+        // Remove split button if already in split mode
+        if (this.blackjackDealer.splitHand) {
+            const splitIndex = buttonsToShow.indexOf(GameButtonType.SPLIT);
+            if (splitIndex !== -1) {
+                buttonsToShow.splice(splitIndex, 1);
+            }
+        }
+        
+        // Clear the button queue to prevent showing buttons multiple times
+        this.gameButtonsContainer.toShowButtons = [];
+        
+        // Show buttons if we have any to show
+        if (buttonsToShow.length > 0) {
+            const showImmediately = Globals.gameState === 'complete';
+            
+            // Use the improved button transition method
+            this.manageButtonTransition(
+                buttonsToShow,
+                showImmediately,
+                () => {
+                    // Reset processing flag after transition completes
                     this._processingOutcome = false;
-                    return;
                 }
-                
-                // First check if we have a pending split option
-                if (this.pendingSplitOption && !this.blackjackDealer.splitHand) {
-                    console.log("Processing pending split option");
-                    this.handleSplitOption();
-                    this.pendingSplitOption = false;
-                }
-                
-                // Show outcome if there is one - this should happen BEFORE showing buttons
-                if (this.pendingOutcome) {
-                    console.log("Showing pending outcome:", this.pendingOutcome);
-                    
-                    // Show the outcome popup first, then wait before showing buttons
-                    this.popupManager.showOutcomePopup(this.pendingOutcome, this.blackjackDealer.payout);
-                    this.pendingOutcome = null;
-                    
-                    // Delay showing buttons to ensure popup is fully visible first
-                    setTimeout(() => {
-                        // Check if this operation is still current
-                        if (operationVersion !== this._currentOperationVersion) {
-                            console.log(`Button operation ${operationVersion} was superseded, aborting`);
-                            this._processingOutcome = false;
-                            return;
-                        }
-                        
-                        this.showButtonsAfterOutcome(operationVersion);
-                    }, 600); // Increased delay to avoid conflicts
-                } else {
-                    // No outcome to show, show buttons immediately
-                    this.showButtonsAfterOutcome(operationVersion);
-                }
-            }, 300); // Increased delay before showing new content
-        });
+            );
+        } else {
+            // No buttons to show, just reset the flag
+            this._processingOutcome = false;
+        }
     }
     
     // Track the current operation version to prevent race conditions
     private _currentOperationVersion: number = 0;
     
     /**
-     * Helper method to show buttons after outcome is displayed
-     * Extracted to avoid duplicating code
+     * Enhanced method to manage button transitions with better reliability
+     * @param buttonsToShow Array of button types to show
+     * @param immediate Whether to show buttons immediately without animation
+     * @param callback Optional callback to execute after transition completes
+     */
+    private manageButtonTransition(buttonsToShow: GameButtonType[], immediate: boolean = false, callback?: () => void): void {
+        console.log(`Managing button transition to: ${buttonsToShow.join(', ')}`);
+        
+        // Generate a unique operation ID to track this specific transition
+        const operationId = Date.now();
+        
+        // First, cancel ALL ongoing animations to prevent conflicts
+        this.gameButtonsContainer.cancelAllButtonAnimations();
+        
+        // Clear any queued button operations
+        this.gameButtonsContainer.toShowButtons = [];
+        
+        // Set a flag to prevent simultaneous transitions
+        if (this._pendingButtonUpdate) {
+            console.log("Button transition already in progress, canceling previous");
+        }
+        this._pendingButtonUpdate = true;
+        
+        // Hide all buttons first with immediate=true to ensure clean state
+        this.gameButtonsContainer.hideAllButtons(true, () => {
+            // Check if this operation is still valid (not superseded by a newer one)
+            if (!this._pendingButtonUpdate) {
+                console.log("Button transition was cancelled, aborting");
+                if (callback) callback();
+                return;
+            }
+            
+            // If we have buttons to show, show them
+            if (buttonsToShow.length > 0) {
+                // Add a small delay to ensure DOM updates and prevent visual glitches
+                setTimeout(() => {
+                    // Final check before showing buttons
+                    if (!this._pendingButtonUpdate) {
+                        console.log("Button transition was cancelled during delay, aborting");
+                        if (callback) callback();
+                        return;
+                    }
+                    
+                    // Show the buttons with specified animation setting
+                    this.gameButtonsContainer.showSpecificButtons(
+                        buttonsToShow,
+                        immediate,
+                        false // Don't prevent duplicates - we already cleared everything
+                    );
+                    
+                    // Reset the pending flag after a delay to ensure animations complete
+                    setTimeout(() => {
+                        this._pendingButtonUpdate = false;
+                        
+                        // Execute callback if provided
+                        if (callback) callback();
+                        
+                        // Verify buttons are visible for reliability
+                        const allShown = buttonsToShow.every(btn => 
+                            this.gameButtonsContainer.isButtonVisible(btn)
+                        );
+                        
+                        if (!allShown && buttonsToShow.length > 0) {
+                            console.warn("Button visibility verification failed - attempting recovery");
+                            this.gameButtonsContainer.showSpecificButtons(
+                                buttonsToShow,
+                                true, // Use immediate mode for recovery
+                                false
+                            );
+                        }
+                    }, immediate ? 50 : 450); // Use 450ms instead of accessing private ANIMATION_DURATION (350ms + buffer)
+                }, 50); // Small delay for DOM updates
+            } else {
+                // No buttons to show, just reset flag and call callback
+                this._pendingButtonUpdate = false;
+                if (callback) callback();
+            }
+        });
+    }
+
+    /**
+     * Enhanced version of showButtonsAfterOutcome that uses improved transition management
      */
     private showButtonsAfterOutcome(operationVersion?: number): void {
         // Check if this operation was superseded
@@ -694,27 +615,25 @@ export class GameManager extends Container {
         // Skip button display if the active split hand is busted
         if (this.blackjackDealer.splitHand && Globals.activeHand) {
             // Check if current active hand is busted
-            const activeHand = Globals.activeHand;
-            const handToCheck = activeHand === 'first' ? this.blackjackDealer.playerHand : this.blackjackDealer.splitHand;
+            const isBusted = Globals.activeHand === 'first' 
+                ? this.blackjackDealer.isHandBusted(this.blackjackDealer.playerHand)
+                : this.blackjackDealer.isHandBusted(this.blackjackDealer.splitHand);
             
-            if (handToCheck) {
-                const handValue = this.blackjackDealer.calculateHandValue(handToCheck);
-                const isBusted = handValue > 21;
-                
-                // Special case - never skip buttons if we have 21 in split mode
-                const hasExactly21 = handValue === 21;
-                
-                // Only skip buttons if the current active hand is busted and doesn't have 21
-                // This ensures we show buttons for the second hand even if first hand is busted
-                if (isBusted && !hasExactly21) {
-                    console.log(`Active hand ${activeHand} is busted with value ${handValue}, not showing buttons`);
-                    this._processingOutcome = false;
-                    return;
-                }
-                
-                if (hasExactly21) {
-                    console.log(`Active hand ${activeHand} has exactly 21, ensuring buttons are shown`);
-                }
+            // Special case - never skip buttons if we have 21 in split mode
+            const handValue = Globals.activeHand === 'first'
+                ? this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand)
+                : this.blackjackDealer.calculateHandValue(this.blackjackDealer.splitHand);
+            
+            const hasExactly21 = handValue === 21;
+            
+            if (isBusted && !hasExactly21) {
+                console.log(`Active hand ${Globals.activeHand} is busted, not showing buttons`);
+                this._processingOutcome = false;
+                return;
+            }
+            
+            if (hasExactly21) {
+                console.log(`Active hand ${Globals.activeHand} has exactly 21, ensuring buttons are shown`);
             }
         }
         
@@ -744,561 +663,271 @@ export class GameManager extends Container {
                 console.log("Game complete state detected - showing end-game buttons immediately");
             }
             
-            // Show the buttons - use immediate mode for complete state to ensure buttons appear
-            this.gameButtonsContainer.showSpecificButtons(finalButtons, showImmediately, true);
-            
-            // Add a failsafe to ensure buttons stay visible
-            setTimeout(() => {
-                // Double-check if any buttons are visible
-                let anyButtonsVisible = false;
-                finalButtons.forEach(buttonType => {
-                    if (this.gameButtonsContainer.isButtonVisible(buttonType)) {
-                        anyButtonsVisible = true;
-                    } else {
-                        // Force show any buttons that should be visible but aren't
-                        console.log(`Button ${buttonType} should be visible - forcing display`);
-                        this.gameButtonsContainer.showButton(buttonType, true);
-                    }
-                });
-                
-                if (!anyButtonsVisible && finalButtons.length > 0) {
-                    console.warn("No end-game buttons visible, forcing display");
-                    this.gameButtonsContainer.showSpecificButtons(finalButtons, true, false);
+            // Use the improved button transition method
+            this.manageButtonTransition(
+                finalButtons,
+                showImmediately,
+                () => {
+                    // Reset processing flag after transition completes
+                    this._processingOutcome = false;
                 }
-            }, 800);
+            );
+        } else {
+            // Reset processing flag
+            this._processingOutcome = false;
         }
-        
-        // Reset processing flag
-        this._processingOutcome = false;
     }
 
     private showPendingOutcome(): void {
-        // Only show outcome if card dealing is complete
-        if (this.blackjackDealer.isCardDealInProgress) {
-            console.log("Card dealing in progress, deferring outcome display");
-            return;
-        }
+        // Replace this method with a direct popup show
+        // Reset all processing flags to allow buttons to display
+        this._processingOutcome = false;
+        this.blackjackDealer.isCardDealInProgress = false;
         
-        // This method now just calls checkPendingOutcome for centralized button management
+        // Show buttons directly
         this.checkPendingOutcome();
     }
 
     // Flag to track if a button update is in progress
     private _pendingButtonUpdate: boolean = false;
 
-    giveCards(cardData: { target: string, card: any, isHoleCard: boolean, isAdditionalCard: boolean }) {
-        console.log("GIVE CARDS", cardData);
-        
-        // Skip card dealing if we're processing a split result
-        if (this._processingSplitResult) {
-            console.log("Currently processing split result, skipping individual card deal for", cardData.target);
-            return;
-        }
+    /**
+     * Track card dealing and show popup when complete
+     * @param totalCards Total number of cards to be dealt
+     * @param message Message to show in popup after dealing
+     */
+    private trackCardDealing(totalCards: number, message: string = ''): void {
+        this._pendingCardDeals = totalCards;
+        this._showPopupAfterDealing = true;
+        this._pendingPopupMessage = message;
+    }
 
-        if(cardData.target === 'player') {
-            // Check if the card is already in the player's hand
-            const isCardDuplicate = this.blackjackDealer.playerHand.cards.some(card => 
-                card.rank === cardData.card.rank && 
-                card.suit === cardData.card.suit &&
-                card.value === cardData.card.value
-            );
+    /**
+     * Register a card has been dealt and check if dealing is complete
+     */
+    private cardDealComplete(): void {
+        // Decrement pending card count
+        if (this._pendingCardDeals > 0) {
+            this._pendingCardDeals--;
+        }
+        
+        // Check if all card dealing is complete
+        if (this._pendingCardDeals === 0 && this._showPopupAfterDealing) {
+            // Reset the flag
+            this._showPopupAfterDealing = false;
             
-            if (isCardDuplicate) {
-                console.log("Skipping duplicate player card:", cardData.card);
-                return;
-            }
-            
-            // Set flag to prevent button display during animation
-            this.blackjackDealer.isCardDealInProgress = true;
-            
-            this.blackjackDealer.playerHand.dealCards(cardData.card).then(() => {
-                // Add a small delay to ensure animations are complete
+            // Show popup with the pending message
+            if (this._pendingPopupMessage) {
+                // Use a small delay to ensure animations complete
                 setTimeout(() => {
-                    // Mark card dealing as complete ONLY if there are no pending card deals
-                    this.blackjackDealer.isCardDealInProgress = false;
+                    // Create a temporary text display over the cards
+                    const isBlackjack = this._pendingPopupMessage.includes("Blackjack");
                     
-                    // Check if player busted and we're in split mode
-                    if (this.blackjackDealer.splitHand) {
-                        // Calculate player hand value using blackjackDealer method
-                        const playerHandValue = this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand);
-                        
-                        // Check if player busted and we're on the first hand
-                        if (playerHandValue > 21 && Globals.activeHand === 'first') {
-                            console.log("First hand busted with value", playerHandValue, "- switching to second hand");
+                    // For blackjack, use the existing visual feedback
+                    if (isBlackjack) {
+                        if (this.blackjackDealer.playerHand.pointsDisplay) {
+                            // Highlight the points display in green with a pulse
+                            this.blackjackDealer.playerHand.pointsDisplay.tint = 0x00FF00;
                             
-                            // Update bust status visuals
-                            if (this.blackjackDealer.updateBustStatus) {
-                                this.blackjackDealer.updateBustStatus();
+                            // Add a scale animation to draw attention
+                            const originalScale = this.blackjackDealer.playerHand.pointsDisplay.scale.x;
+                            const { Tween, Easing } = require("@tweenjs/tween.js");
+                            
+                            // Create a pulse animation for the points display
+                            new Tween(this.blackjackDealer.playerHand.pointsDisplay.scale)
+                                .to({ x: originalScale * 1.3, y: originalScale * 1.3 }, 300)
+                                .easing(Easing.Quadratic.Out)
+                                .yoyo(true)
+                                .repeat(1)
+                                .start();
+                            
+                            // Make sure animation runs
+                            if (Globals.sceneManager && Globals.sceneManager.tweenGroup) {
+                                Globals.sceneManager.tweenGroup.update();
                             }
+                        }
+                    } else {
+                        // For regular hands, just emphasize the points display
+                        if (this.blackjackDealer.playerHand.pointsDisplay) {
+                            // Make sure points display is visible
+                            this.blackjackDealer.playerHand.pointsDisplay.visible = true;
+                            this.blackjackDealer.playerHand.pointsDisplay.alpha = 1.0;
                             
-                            // Force points to stay visible with red tint
-                            if (this.blackjackDealer.playerHand.pointsDisplay) {
-                                this.blackjackDealer.playerHand.pointsDisplay.visible = true;
-                                this.blackjackDealer.playerHand.pointsDisplay.tint = 0xFF0000;
+                            // Add a subtle pulse animation
+                            const originalScale = this.blackjackDealer.playerHand.pointsDisplay.scale.x;
+                            const { Tween, Easing } = require("@tweenjs/tween.js");
+                            
+                            // Create a pulse animation for the points display
+                            new Tween(this.blackjackDealer.playerHand.pointsDisplay.scale)
+                                .to({ x: originalScale * 1.2, y: originalScale * 1.2 }, 200)
+                                .easing(Easing.Quadratic.Out)
+                                .yoyo(true)
+                                .repeat(1)
+                                .start();
+                            
+                            // Make sure animation runs
+                            if (Globals.sceneManager && Globals.sceneManager.tweenGroup) {
+                                Globals.sceneManager.tweenGroup.update();
                             }
-                            
-                            // Force split hand positions to be maintained - prevent drift
-                            this.blackjackDealer.positionSplitHands();
-                            
-                            // Create a copy of the buttons to show for second hand
-                            const secondHandButtons = [
-                                GameButtonType.HIT, 
-                                GameButtonType.STAND,
-                                GameButtonType.DOUBLE
-                            ];
-                            
-                            // Switch to the second hand AFTER storing buttons
-                            this.updateActiveHandIndicator('second');
-                            
-                            // Wait a moment for visual transition to complete
-                            setTimeout(() => {
-                                // Make sure card dealing flag is off
-                                this.blackjackDealer.isCardDealInProgress = false;
-                                this._processingOutcome = false;
-                                
-                                // Ensure positions are maintained
-                                this.blackjackDealer.positionSplitHands();
-                                
-                                // Clear existing buttons by hiding them first
-                                this.gameButtonsContainer.hideAllButtons(true, () => {
-                                    console.log("Showing buttons for second hand after first hand bust:", secondHandButtons);
-                                    
-                                    // Show buttons for second hand with immediate display
-                                    this.gameButtonsContainer.showSpecificButtons(
-                                        secondHandButtons,
-                                        true,   // Immediate display
-                                        false   // Don't prevent duplicates
-                                    );
-                                });
-                            }, 300);
                         }
                     }
                     
-                    // Update the points display to show current hand value
-                    if (this.blackjackDealer.playerHand.updatePointsDisplay) {
-                        this.blackjackDealer.playerHand.updatePointsDisplay(true);
-                    }
-                    
-                    // Update bust status visuals for all hands
-                    if (this.blackjackDealer.updateBustStatus) {
-                        this.blackjackDealer.updateBustStatus();
-                    }
-                    
-                    // Check if we can show buttons
-                    this.checkPendingOutcome();
-                }, 200);
-            });
-        }
-        else if(cardData.target === 'dealer') {
-            // Check if the card is already in the dealer's hand
-            const isCardDuplicate = this.blackjackDealer.dealerHand.cards.some(card => 
-                card.rank === cardData.card.rank && 
-                card.suit === cardData.card.suit &&
-                card.value === cardData.card.value
-            );
-            
-            if (isCardDuplicate && !cardData.isHoleCard) {
-                console.log("Skipping duplicate dealer card:", cardData.card);
-                return;
-            }
-            
-            // Set flag to prevent button display during animation
-            this.blackjackDealer.isCardDealInProgress = true;
-            
-            if(cardData.isHoleCard) {
-                // Special handling for hole card: Make sure we have at least one card first
-                if (this.blackjackDealer.dealerHand.cards.length === 0) {
-                    console.log("Cannot reveal dealer hole card yet - dealing it face down first");
-                    // Deal the hole card face down first
-                    const faceDownCard = {...cardData.card, faceUp: false};
-                    this.blackjackDealer.dealerHand.dealCards(faceDownCard).then(() => {
-                        // Now reveal it in a moment
-                        setTimeout(() => {
-                            this.blackjackDealer.dealerHand.revealDealerCard(cardData.card).then(() => {
-                                setTimeout(() => {
-                                    this.blackjackDealer.isCardDealInProgress = false;
-                                    
-                                    // Check if this is a blackjack reveal
-                                    if (this.pendingOutcome === 'player_blackjack') {
-                                        console.log("Dealer card revealed for blackjack outcome");
-                                        // Force check for pending outcome after dealer card is revealed
-                                        this.checkPendingOutcome();
-                                    } else {
-                                        this.checkPendingOutcome();
-                                    }
-                                }, 200);
-                            });
+                    // Clear the message
+                    this._pendingPopupMessage = '';
                         }, 300);
-                    });
-                } else {
-                    // Revealing the hole card normally
+            }
+        }
+    }
+
+    giveCards(cardData: { target: string, card: any, isHoleCard: boolean, isAdditionalCard: boolean }) {
+        // Skip processing if in the middle of a split operation
+        if (this._processingSplitResult) return;
+
+        // Set card dealing in progress flag to prevent premature button display
+        this.blackjackDealer.isCardDealInProgress = true;
+
+        // Handle dealer cards - special handling for hole card
+        if (cardData.target === 'dealer') {
+            if (cardData.isHoleCard) {
+                // Special handling for revealing hole card
                     this.blackjackDealer.dealerHand.revealDealerCard(cardData.card).then(() => {
                         setTimeout(() => {
                             this.blackjackDealer.isCardDealInProgress = false;
-                            
-                            // Check if this is a blackjack reveal
-                            if (this.pendingOutcome === 'player_blackjack') {
-                                console.log("Dealer card revealed for blackjack outcome");
-                                // Force check for pending outcome after dealer card is revealed
-                                this.checkPendingOutcome();
-                            } else {
-                                this.checkPendingOutcome();
-                            }
+                        this.cardDealComplete(); // Register card deal completion
+                            this.checkPendingOutcome();
                         }, 200);
                     });
-                }
             } else {
                 // Regular dealer card
                 this.blackjackDealer.dealerHand.dealCards(cardData.card).then(() => {
                     setTimeout(() => {
                         this.blackjackDealer.isCardDealInProgress = false;
+                        this.cardDealComplete(); // Register card deal completion
                         this.checkPendingOutcome();
                     }, 200);
                 });
             }
         }
-        else if(cardData.target === 'split') {
-            // Set flag to prevent button display during animation
-            this.blackjackDealer.isCardDealInProgress = true;
-            
-            // Initialize split hand if it doesn't exist
-            if (!this.blackjackDealer.splitHand) {
-                const isNewHand = this.blackjackDealer.initializeSplitHand();
-                if (isNewHand) {
-                    console.log("Created new split hand for split target card");
+        // Handle player cards
+        else if (cardData.target === 'player') {
+            this.blackjackDealer.playerHand.dealCards(cardData.card).then(() => {
+                // Update points display
+                this.blackjackDealer.playerHand.updatePointsDisplay?.(true);
+                
+                // Check for bust in split mode
+                if (this.blackjackDealer.splitHand && Globals.activeHand === 'first') {
+                    const playerValue = this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand);
+                    if (playerValue > 21) {
+                        // Hand is busted, switch to second hand
+                        this.handleSplitHandSwitch('second');
+                    }
                 }
+                
+                            setTimeout(() => {
+                                this.blackjackDealer.isCardDealInProgress = false;
+                    this.cardDealComplete(); // Register card deal completion
+                    this.checkPendingOutcome();
+                }, 200);
+            });
+        }
+        // Handle split hand cards
+        else if (cardData.target === 'split') {
+            // Initialize split hand if needed
+            if (!this.blackjackDealer.splitHand) {
+                this.blackjackDealer.initializeSplitHand();
             }
             
-            if(this.blackjackDealer.splitHand) {
-                // Check if the card is already in the split hand
-                const isCardDuplicate = this.blackjackDealer.splitHand.cards.some(card => 
-                    card.rank === cardData.card.rank && 
-                    card.suit === cardData.card.suit &&
-                    card.value === cardData.card.value
-                );
-                
-                if (isCardDuplicate) {
-                    console.log("Skipping duplicate split card:", cardData.card);
-                    this.blackjackDealer.isCardDealInProgress = false;
-                    this.checkPendingOutcome();
-                    return;
-                }
-                
-                console.log("Dealing card to split hand:", cardData.card);
+            // Make sure split hand exists now
+            if (this.blackjackDealer.splitHand) {
                 this.blackjackDealer.splitHand.dealCards(cardData.card).then(() => {
-                    // Add a small delay to ensure animations are complete
-                    setTimeout(() => {
-                        // Mark card dealing as complete
-                        this.blackjackDealer.isCardDealInProgress = false;
-                        
-                        // Update the points display
-                        if (this.blackjackDealer.splitHand?.updatePointsDisplay) {
-                            this.blackjackDealer.splitHand.updatePointsDisplay(true);
-                        }
-                        
-                        // Update bust status visuals
-                        if (this.blackjackDealer.updateBustStatus) {
-                            this.blackjackDealer.updateBustStatus();
-                        }
-                        
-                        // Check if split hand busted while active
-                        if (this.blackjackDealer.splitHand) {
-                            const splitHandValue = this.blackjackDealer.calculateHandValue(this.blackjackDealer.splitHand);
-                            
-                            // Handle bust case - second split hand went over 21
-                            if (splitHandValue > 21 && Globals.activeHand === 'second') {
-                                console.log("Second hand busted with value", splitHandValue);
-                                
-                                // Apply red tint to points display
-                                if (this.blackjackDealer.splitHand.pointsDisplay) {
-                                    this.blackjackDealer.splitHand.pointsDisplay.tint = 0xFF0000;
-                                }
-                                
-                                // Hide all buttons immediately when second hand busts
-                                this.gameButtonsContainer.hideAllButtons(true, () => {
-                                    console.log("Second hand busted - hiding all buttons");
-                                    // Set game phase to dealer turn or complete based on game state
-                                    if (Globals.gameState === 'player_turn') {
-                                        // The backend will transition to dealer_turn or complete
-                                        console.log("Waiting for backend to progress game state after second hand bust");
-                                    }
-                                });
-                                
-                                // Make sure we don't show buttons again for busted hand
-                                this.gameButtonsContainer.toShowButtons = [];
-                                this._processingOutcome = true;
-                                
-                                // Clear the flag after a delay to prevent it getting stuck 
+                    // Update points display
+                    this.blackjackDealer.splitHand?.updatePointsDisplay?.(true);
+                    
+                    // Maintain split hand positions
+                    this.blackjackDealer.positionSplitHands();
+                    
                                 setTimeout(() => {
-                                    // Only reset if we're in complete or dealer_turn phase
-                                    if (Globals.gameState !== 'player_turn') {
-                                        this._processingOutcome = false;
-                                    }
-                                }, 1000);
-                            } 
-                            // Handle 21 case - second split hand reached exactly 21
-                            else if (splitHandValue === 21 && Globals.activeHand === 'second') {
-                                console.log("Second hand has exactly 21 - ensuring buttons appear");
-                                
-                                // Reset processing flags to allow stand button to show
-                                this._processingOutcome = false;
-                                
-                                // Apply green tint to points display for 21
-                                if (this.blackjackDealer.splitHand.pointsDisplay) {
-                                    this.blackjackDealer.splitHand.pointsDisplay.tint = 0x00FF00;
-                                }
-                                
-                                // For a hand with 21, we should show the stand button
-                                // Check if we need to force stand button display
-                                const standButtonVisible = this.gameButtonsContainer.isButtonVisible(GameButtonType.STAND);
-                                
-                                if (!standButtonVisible) {
-                                    console.log("Stand button not visible for hand with 21 - forcing display");
-                                    // Force stand button to display using universal method
-                                    this.gameButtonsContainer.universalShowStandButton();
-                                } else {
-                                    console.log("Stand button already visible for hand with 21");
-                                }
-                            }
-                            // For other cases, ensure flags are reset to allow button display
-                            else {
-                                // Reset processing flags to ensure buttons can be shown
-                                this._processingOutcome = false;
-                            }
-                        }
-                        
-                        // Check if we can show buttons
+                        this.blackjackDealer.isCardDealInProgress = false;
+                        this.cardDealComplete(); // Register card deal completion
                         this.checkPendingOutcome();
                     }, 200);
                 });
             } else {
-                console.error("Split hand is still null after initialization attempt");
+                console.error("Failed to create split hand");
                 this.blackjackDealer.isCardDealInProgress = false;
-                this.checkPendingOutcome();
+                this.cardDealComplete(); // Register even failed card deals
             }
         }
     }
     
     HandleGameInProgress(data: any) {
-        // Skip handling during split processing to avoid visual glitches
+        // Skip handling during split processing
         if (this._processingSplitResult) {
             console.log("Currently processing split result, deferring HandleGameInProgress");
             return;
         }
         
-        // --- LOGGING FOR DEBUGGING ---
-        // Log detailed information for split hand states
+        // Log full data for debugging split hand issues
         if (data.splitHand && data.activeSplitHand) {
-            console.log("Processing split game state:", {
+            console.log("Received split game state data:", {
                 activeSplitHand: data.activeSplitHand,
-                playerHand: data.playerHand ? 
-                    `Cards: ${data.playerHand.cards?.length}, Value: ${data.playerHand.value}, Busted: ${data.playerHand.busted}` : 'N/A',
-                splitHand: data.splitHand ? 
-                    `Cards: ${data.splitHand.cards?.length}, Value: ${data.splitHand.value}, Busted: ${data.splitHand.busted}` : 'N/A',
-                gamePhase: data.gamePhase
+                playerHand: {
+                    cards: data.playerHand?.cards?.length,
+                    value: data.playerHand?.value,
+                    busted: data.playerHand?.busted
+                },
+                splitHand: {
+                    cards: data.splitHand?.cards?.length,
+                    value: data.splitHand?.value,
+                    busted: data.splitHand?.busted
+                },
+                allowedActions: data.allowedActions,
+                cardPositionsLocked: data.cardPositionsLocked || false
             });
             
-            // Maintain card positions for split hands
+            // Check if the backend has indicated card positions should remain locked
             if (data.cardPositionsLocked) {
+                console.log("Card positions are locked - maintaining current positions");
+                // Force current positions to be maintained
                 this.blackjackDealer.positionSplitHands();
             }
         }
         
-        // --- HANDLE ACTIVE SPLIT HAND CHANGES ---
-        // Update active split hand if provided by backend
-        if (data.activeSplitHand && (data.activeSplitHand === 'first' || data.activeSplitHand === 'second')) {
-            const previousHand = Globals.activeHand;
-            
-            if (previousHand !== data.activeSplitHand) {
-                console.log(`Updating active split hand from backend: ${data.activeSplitHand} (was: ${previousHand})`);
-                Globals.activeHand = data.activeSplitHand;
-                
-                // Update visual indicators for active hand
-                this.blackjackDealer.setActiveSplitHand(data.activeSplitHand);
-                
-                // Handle special case: switching to second hand after first hand busts
-                if (previousHand === 'first' && data.activeSplitHand === 'second' && data.playerHand?.busted) {
-                    console.log("First hand busted, switched to second hand");
-                }
-                
-                // Ensure buttons are visible for the newly active hand
-                if (data.activeSplitHand === 'second') {
-                    this._processingOutcome = false;
-                    this.blackjackDealer.isCardDealInProgress = false;
-                    
-                    // Show appropriate buttons
-                    this.updateButtonsForActiveSplitHand(data);
-                }
-            }
+        // Update game state
+        if (data.gamePhase) {
+            Globals.gameState = data.gamePhase;
         }
         
-        // --- HANDLE ALLOWED ACTIONS ---
-        // Update buttons based on allowed actions from backend
+        // Update active split hand in Globals if it's set in the data and has changed
+        if (data.activeSplitHand && 
+            (data.activeSplitHand === 'first' || data.activeSplitHand === 'second') &&
+            data.activeSplitHand !== Globals.activeHand) {
+            
+            console.log(`Backend indicates hand switch to: ${data.activeSplitHand}`);
+            
+            // Use our improved split hand switch handler
+            this.handleSplitHandSwitch(data.activeSplitHand);
+        }
+        
+        // Store the allowed buttons for later use
         if (data.allowedActions) {
+            // Convert actions to button types
             this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
             
-            // In split mode, remove split button (can't split again)
+            // If in split mode, always remove split button (can't split again)
             if (this.blackjackDealer.splitHand) {
                 const splitIndex = this.gameButtonsContainer.toShowButtons.indexOf(GameButtonType.SPLIT);
                 if (splitIndex !== -1) {
+                    console.log("Removing split button - already in split mode");
                     this.gameButtonsContainer.toShowButtons.splice(splitIndex, 1);
                 }
             }
             
-            console.log("Allowed actions from backend:", data.allowedActions);
-            console.log("Buttons that will be shown:", this.gameButtonsContainer.toShowButtons);
-            
-            // Determine if we should show buttons based on game state
-            const canShowButtons = !this.blackjackDealer.isCardDealInProgress && 
-                                  !this._processingSplitResult && 
-                                  !this._processingOutcome &&
-                                  data.gamePhase !== 'dealer_turn' && 
-                                  data.gamePhase !== 'complete';
-            
-            if (canShowButtons) {
-                this.gameButtonsContainer.showSpecificButtons(
-                    this.gameButtonsContainer.toShowButtons,
-                    true,   // Show immediately
-                    false   // Don't prevent duplicates
-                );
+            // If we're not dealing cards or processing split, we can show buttons now
+            if (!this.blackjackDealer.isCardDealInProgress && !this._processingSplitResult) {
+                this.checkPendingOutcome();
             }
         }
-        
-        // --- HANDLE SPECIAL HAND VALUES ---
-        // Handle player hands with special values (21 or bust)
-        if (data.gamePhase === 'player_turn') {
-            // Get the currently active hand based on split status
-            const currentHand = this.blackjackDealer.splitHand && Globals.activeHand === 'second' ? 
-                data.splitHand : data.playerHand;
-            
-            if (currentHand) {
-                const handValue = currentHand.value;
-                const isBusted = currentHand.busted || handValue > 21;
-                
-                console.log(`Current hand value: ${handValue}, Busted: ${isBusted}, Active hand: ${Globals.activeHand || 'main'}`);
-                
-                if (isBusted) {
-                    // Handle busted hand
-                    console.log("Current hand is busted");
-                    this.handleBustedHand(data);
-                } else if (handValue === 21) {
-                    // Handle hand with value 21
-                    console.log("Hand has 21 - automatically standing");
-                    this.handleHand21(data);
-                }
-            }
-        }
-        
-        // --- HANDLE COMPLETE PHASE ---
-        // Special handling for game completion
-        if (data.gamePhase === 'complete' && !this._processingOutcome) {
-            console.log("Game entered complete phase - handling outcome");
-            
-            // Mark as processing outcome to prevent duplicate handling
-            this._processingOutcome = true;
-            
-            // Hide all buttons during outcome processing
-            this.gameButtonsContainer.hideAllButtons(true);
-            
-            // If data contains outcome, handle it
-            if (data.outcome) {
-                console.log("Handling outcome from complete phase:", data.outcome);
-                this.handleGameOutcome(data);
-            } else {
-                console.log("Complete phase without outcome data - waiting for game_end message");
-            }
-        }
-    }
-
-    /**
-     * Handle case where current hand has busted
-     */
-    private handleBustedHand(data: any): void {
-        // Hide buttons immediately on bust
-        this.gameButtonsContainer.hideAllButtons(true);
-        
-        // Update bust status visually
-        if (this.blackjackDealer.updateBustStatus) {
-            this.blackjackDealer.updateBustStatus();
-        }
-        
-        // Check if we need to switch to second hand
-        if (this.blackjackDealer.splitHand && Globals.activeHand === 'first') {
-            console.log("First hand busted - switching to second hand");
-            Globals.activeHand = 'second';
-            this.blackjackDealer.setActiveSplitHand('second');
-            
-            // Update buttons for second hand
-            this.updateButtonsForActiveSplitHand(data);
-        } else {
-            // Both hands busted or non-split bust - end the game
-            console.log("Hand busted - proceeding to dealer turn");
-            this._processingOutcome = true;
-        }
-    }
-
-    /**
-     * Handle case where current hand has value 21
-     */
-    private handleHand21(data: any): void {
-        console.log("Hand has 21 - showing only stand button");
-        
-        // When hand has 21, only allow standing
-        this.gameButtonsContainer.toShowButtons = [GameButtonType.STAND];
-        
-        // Show stand button
-        this.gameButtonsContainer.showSpecificButtons(
-            this.gameButtonsContainer.toShowButtons,
-            true,   // Show immediately
-            false   // Don't prevent duplicates
-        );
-    }
-
-    /**
-     * Update buttons for the active split hand
-     */
-    private updateButtonsForActiveSplitHand(data: any): void {
-        // Clear any processing flags
-        this._processingOutcome = false;
-        this.blackjackDealer.isCardDealInProgress = false;
-        
-        // Determine which buttons to show
-        let buttonsToShow = [];
-        
-        if (data.allowedActions && Array.isArray(data.allowedActions)) {
-            buttonsToShow = getButtonType(data.allowedActions);
-        } else {
-            // Default buttons if none provided
-            buttonsToShow = [
-                GameButtonType.HIT, 
-                GameButtonType.STAND
-            ];
-            
-            // Add double only if we have exactly 1 card in the active hand
-            const activeHand = Globals.activeHand === 'second' ? 
-                this.blackjackDealer.splitHand : this.blackjackDealer.playerHand;
-            
-            if (activeHand && activeHand.cards.length === 1) {
-                buttonsToShow.push(GameButtonType.DOUBLE);
-            }
-        }
-        
-        console.log(`Buttons for ${Globals.activeHand} hand:`, buttonsToShow);
-        
-        // Store the buttons
-        this.gameButtonsContainer.toShowButtons = buttonsToShow;
-        
-        // Force correct position of split hands
-        this.blackjackDealer.positionSplitHands();
-        
-        // Show buttons with slight delay
-        setTimeout(() => {
-            this.gameButtonsContainer.showSpecificButtons(
-                buttonsToShow,
-                true,   // Show immediately
-                false   // Don't prevent duplicates
-            );
-        }, 200);
     }
 
     recieveMessages(msgType: string, data: any) {
@@ -1342,172 +971,98 @@ export class GameManager extends Container {
 
         }
     }
-    /**
-     * Handle hit button click
-     */
     onHitClicked() {
-        // Track the active hand for split scenarios
-        const activeHand = Globals.activeHand || 'first';
-        console.log(`Hit clicked for ${this.blackjackDealer.splitHand ? activeHand + ' hand' : 'hand'}`);
+        if(Globals.gameState === 'player_turn' ) {
+            // Check if insurance decision is pending
+            if (this.blackjackDealer.isInsuranceAvailable) {
+                // Auto-decline insurance before proceeding with hit
+                this.handleInsuranceDecisionNeeded('hit');
+                return;
+            }
+
+            // Hide all buttons during hit operation to prevent multiple clicks
+            this.gameButtonsContainer.hideAllButtons(true);
+            
+            // Flag as dealing to prevent premature button display
+            this.blackjackDealer.isCardDealInProgress = true;
+            
+            // If in split mode, determine which hand is active
+            if (this.blackjackDealer.splitHand) {
+                // Use the active hand from globals (this is set when we receive the hand_updated message)
+                const activeHand = Globals.activeHand || 'first';
+                console.log(`Hit on ${activeHand} hand in split mode`);
+                
+                // Set up card tracking for the hit
+                const targetHand = activeHand === 'first' ? 
+                    this.blackjackDealer.playerHand : 
+                    this.blackjackDealer.splitHand;
+                
+                if (targetHand) {
+                    const currentValue = this.blackjackDealer.calculateHandValue(targetHand);
+                    this.trackCardDealing(1, `${activeHand === 'first' ? 'First' : 'Second'} hand: ${currentValue}`);
+                }
+                
+                // Call hit with the appropriate hand parameter
+                Globals.backendService?.hit(activeHand);
+            } else {
+                // Not in split mode, just call hit without a hand parameter
+                // Set up card tracking for the hit
+                const currentValue = this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand);
+                this.trackCardDealing(1, `Hand: ${currentValue}`);
+                
+                Globals.backendService?.hit();
+            }
+        }
+    }
+    onStandClicked() {
+        if(Globals.gameState !== 'player_turn') return;
         
-        // Prevent multiple hits while card animation is in progress
-        if (this.blackjackDealer.isCardDealInProgress) {
-            console.log("Card deal in progress, ignoring hit request");
+        // Check if insurance decision is pending
+        if (this.blackjackDealer.isInsuranceAvailable) {
+            console.log("Handling stand with insurance available - auto declining");
+            // Auto-decline insurance before proceeding with stand
+            this.handleInsuranceDecisionNeeded('stand');
+            
+            // Early return to prevent calling stand twice
             return;
         }
+
+        console.log("Processing stand action without insurance");
         
-        // Hide buttons during card deal to prevent double-clicking
+        // Hide all buttons during stand operation
         this.gameButtonsContainer.hideAllButtons(true);
         
-        // Set flag to indicate card deal is in progress
+        // Flag as dealing to prevent premature button display
         this.blackjackDealer.isCardDealInProgress = true;
         
-        // Send hit request to backend based on active hand
-        if (this.blackjackDealer.splitHand && activeHand === 'second') {
-            console.log("Hitting second (split) hand");
-            // Globals.backendService?.hitSplit(activeHand);
-        } else {
-            console.log("Hitting main hand");
-            Globals.backendService?.hit(activeHand);
-        }
-        
-        // Failsafe to ensure buttons come back if no response
-        setTimeout(() => {
-            if (this.blackjackDealer.isCardDealInProgress) {
-                console.log("Hit response timeout - resetting card deal flag");
-                this.blackjackDealer.isCardDealInProgress = false;
-                
-                // Only restore buttons if game is still in player turn
-                if (Globals.gameState === 'player_turn') {
-                    this.gameButtonsContainer.showSpecificButtons(
-                        this.gameButtonsContainer.toShowButtons,
-                        true,
-                        false
-                    );
-                }
-            }
-        }, 2000);
-    }
-
-    /**
-     * Handle stand button click
-     */
-    onStandClicked() {
-        // Track the active hand for split scenarios
-        const activeHand = Globals.activeHand || 'first';
-        console.log(`Stand clicked for ${this.blackjackDealer.splitHand ? activeHand + ' hand' : 'hand'}`);
-        
-        // Prevent action while card animation is in progress
-        if (this.blackjackDealer.isCardDealInProgress) {
-            console.log("Card deal in progress, ignoring stand request");
-            return;
-        }
-        
-        // Hide buttons during action
-        this.gameButtonsContainer.hideAllButtons(true);
-        
-        // Send stand request to backend based on active hand
+        // If in split mode, determine which hand is active
         if (this.blackjackDealer.splitHand) {
-            if (activeHand === 'second') {
-                console.log("Standing on second (split) hand");
-                // Standing on second hand ends player turn
-                // Globals.backendService?.standSplit(activeHand);
-            } else {
-                console.log("Standing on first hand - will switch to second hand");
-                // Standing on first hand should switch to second hand
-                // Globals.backendService?.standSplit(activeHand);
+            // Use the active hand from globals
+            const activeHand = Globals.activeHand || 'first';
+            console.log(`Stand on ${activeHand} hand in split mode`);
+            
+            // Special handling for standing on first hand
+            if (activeHand === 'first') {
+                // Call stand with the appropriate hand parameter
+                Globals.backendService?.stand(activeHand);
                 
-                // Mark that we're intentionally processing a split result
-                this._processingSplitResult = true;
-                
-                // Failsafe to ensure processing flag is cleared
+                // Schedule a switch to second hand after a delay
                 setTimeout(() => {
-                    this._processingSplitResult = false;
-                }, 2000);
+                    // If we're still on first hand, force switch to second
+                    if (Globals.activeHand === 'first') {
+                        console.log("Forcing switch to second hand after standing on first");
+                        this.handleSplitHandSwitch('second');
+                    }
+                }, 800);
+            } else {
+                // For second hand, standard behavior
+                Globals.backendService?.stand(activeHand);
             }
         } else {
-            console.log("Standing on main hand");
+            // Not in split mode, just call stand without a hand parameter
             Globals.backendService?.stand();
         }
     }
-
-    /**
-     * Handle double down button click
-     */
-    onDoubleClicked() {
-        console.log("Double down clicked");
-        
-        // Prevent action while card animation is in progress
-        if (this.blackjackDealer.isCardDealInProgress) {
-            console.log("Card deal in progress, ignoring double down request");
-            return;
-        }
-        
-        // Hide buttons during action
-        this.gameButtonsContainer.hideAllButtons(true);
-        
-        // Set flag to indicate card deal is in progress
-        this.blackjackDealer.isCardDealInProgress = true;
-        
-        // Send double down request to backend
-        Globals.backendService?.doubleDown();
-        
-        // Failsafe to ensure flags are reset if no response
-        setTimeout(() => {
-            this.blackjackDealer.isCardDealInProgress = false;
-        }, 2000);
-    }
-
-    /**
-     * Handle split button click
-     */
-    onSplitClicked() {
-        console.log("Split clicked");
-        
-        // Prevent action while card animation is in progress
-        if (this.blackjackDealer.isCardDealInProgress) {
-            console.log("Card deal in progress, ignoring split request");
-            return;
-        }
-        
-        // Hide buttons during action
-        this.gameButtonsContainer.hideAllButtons(true);
-        
-        // Set flag to indicate we're processing split
-        this._processingSplitResult = true;
-        
-        // Send split request to backend
-        Globals.backendService?.split();
-        
-        // Failsafe to ensure processing flag is cleared if no response
-        setTimeout(() => {
-            this._processingSplitResult = false;
-            this.blackjackDealer.isCardDealInProgress = false;
-        }, 5000);
-    }
-
-    /**
-     * Handle surrender button click
-     */
-    onSurrenderClicked() {
-        console.log("Surrender clicked");
-        
-        // Prevent action while card animation is in progress
-        if (this.blackjackDealer.isCardDealInProgress) {
-            console.log("Card deal in progress, ignoring surrender request");
-            return;
-        }
-        
-        // Hide buttons during action
-        this.gameButtonsContainer.hideAllButtons(true);
-        
-        // Send surrender request to backend
-        Globals.backendService?.surrender();
-        
-        // Mark as processing outcome to prevent further actions
-        this._processingOutcome = true;
-    }
-
     onClearClicked() {
 
         const currentBet = Globals.currentBet;
@@ -1564,7 +1119,7 @@ export class GameManager extends Container {
         console.log("Processing Play On click - hiding popup");
         this.popupManager.hidePopup();
 
-        if(Globals.gameState === 'complete' ) {
+        if(Globals.gameState === 'complete' || Globals.gameState === 'betting' ) {
             this.resetGame();
 
             // First save current chips as "remove chips" to animate them
@@ -1608,34 +1163,157 @@ export class GameManager extends Container {
         }
         }
     }
-    onInsuranceClicked() {
+    onSurrenderClicked() {
         if(Globals.gameState === 'player_turn') {
+            // Prevent multiple surrender clicks
+            if (this._isSurrenderInProgress) {
+                console.log("Surrender already in progress - ignoring duplicate click");
+                return;
+            }
+            
+            // Check if insurance decision is pending
+            if (this.blackjackDealer.isInsuranceAvailable) {
+                // Auto-decline insurance before proceeding with surrender
+                this.handleInsuranceDecisionNeeded('surrender');
+                return;
+            }
+
+            console.log("Processing surrender action");
+            
+            // Set surrender in progress flag
+            this._isSurrenderInProgress = true;
+            
+            // Hide all action buttons immediately to prevent double clicks
+            this.gameButtonsContainer.hideAllButtons(true);
+            
+            // Set card dealing flag to block premature button display
+            this.blackjackDealer.isCardDealInProgress = true;
+            
+            // Pre-emptively update the game state to complete
+            // This ensures any race conditions with backend messages don't cause issues
+            Globals.gameState = 'complete';
+            
+            // Reset the surrender flag if it was set
+            this._isSurrenderInProgress = false;
+            
+            // Special visual for surrender - fade player's hand
+            if (this.blackjackDealer.playerHand) {
+                // Ensure consistent alpha value for surrender
+                this.blackjackDealer.playerHand.alpha = 0.6;
+                
+                // Add a subtle pulse animation to indicate the surrender
+                // This helps users understand the outcome visually
+                const originalScale = this.blackjackDealer.playerHand.scale.x;
+                new Tween(this.blackjackDealer.playerHand.scale)
+                    .to({ x: originalScale * 0.95, y: originalScale * 0.95 }, 200)
+                    .easing(Easing.Cubic.Out)
+                    .yoyo(true)
+                    .repeat(1)
+                    .start();
+            }
+            
+            // Make sure dealer cards are visible
+            if (this.blackjackDealer.dealerHand && this.blackjackDealer.dealerHand.cards.length > 0) {
+                this.blackjackDealer.dealerHand.cards.forEach(card => {
+                    if (card.sprite) {
+                        card.sprite.visible = true;
+                    }
+                });
+            }
+            
+            // Call the backend surrender method
+            Globals.backendService?.surrender();
+        }
+    }
+    onDoubleClicked() {
+        if(Globals.gameState === 'player_turn') {
+            // Check if insurance decision is pending
+            if (this.blackjackDealer.isInsuranceAvailable) {
+                // Auto-decline insurance before proceeding with double
+                this.handleInsuranceDecisionNeeded('double');
+                return;
+            }
+
+            // In split mode, doubleDown requires specifying which hand
+            if (this.blackjackDealer.splitHand) {
+                // Check which hand is active based on tint
+                const isFirstHandActive = this.blackjackDealer.playerHand.pointsDisplay.tint === 0xFFFFFF;
+                
+                // Currently the backend doubleDown doesn't accept a hand parameter
+                // We would need to modify the backend service and backend code
+                // For now, we'll at least ensure that the UI stays consistent
+                Globals.backendService?.doubleDown();
+                
+                // Force a resize to ensure split positioning is maintained
+                this.blackjackDealer.resize();
+            } else {
+                // Standard double down
+                Globals.backendService?.doubleDown();
+            }
+        }
+    }
+    onSplitClicked() {
+        if(Globals.gameState === 'player_turn') {
+            console.log("Split button clicked");
+            
+            // Check if insurance decision is pending
+            if (this.blackjackDealer.isInsuranceAvailable) {
+                // Auto-decline insurance before proceeding with split
+                this.handleInsuranceDecisionNeeded('split');
+                return;
+            }
+            
+            // Check if this is a valid split scenario (two cards of the same rank)
+            if (this.blackjackDealer.playerHand && this.blackjackDealer.playerHand.cards.length === 2) {
+                const card1 = this.blackjackDealer.playerHand.cards[0];
+                const card2 = this.blackjackDealer.playerHand.cards[1];
+                
+                if (card1 && card2 && card1.value === card2.value) {
+                    // Valid split - set flag to prevent premature button display
+                    this.blackjackDealer.isCardDealInProgress = true;
+                    
+                    // Reset the processing flag in case it was stuck from a previous attempt
+                    this._processingSplitResult = false;
+                    
+                    // Hide all buttons during split operation
+                    this.gameButtonsContainer.hideAllButtons(true);
+                    
+                    // Turn off split visual indicator
+                    this.blackjackDealer.setSplitAvailableVisual(false);
+                    
+                    // Initialize active hand tracking
+                    Globals.activeHand = 'first';
+                    
+                    // Call backend to perform the split
+                    Globals.backendService?.split();
+                } else {
+                    console.log("Cannot split: cards must be of the same rank");
+                }
+            } else {
+                console.log("Cannot split: player must have exactly 2 cards");
+            }
+        }
+    }
+    onInsuranceClicked() {
+        if (Globals.gameState !== 'player_turn' || !this.blackjackDealer.isInsuranceAvailable) return;
+        
             // Hide all buttons during insurance operation
             this.gameButtonsContainer.hideAllButtons(true);
             
-            // Set card dealing flag to prevent premature button display
+        // Set processing flag to prevent premature button display
             this.blackjackDealer.isCardDealInProgress = true;
             
-            console.log("Insurance accepted - sending to backend");
-            
-            // Clear the insurance available flag since player has made a decision
+        // Clear the insurance available flag
             this.blackjackDealer.isInsuranceAvailable = false;
             
-            // Calculate insurance amount (half the current bet)
-            const insuranceAmount = Globals.currentBet / 2;
-            console.log(`Taking insurance for ${insuranceAmount} chips`);
-            
-            // Send insurance request to backend
-            Globals.backendService?.insurance(true);
-            
-            // The backend will handle the result:
-            // If dealer has blackjack: 
-            //   - Player wins insurance bet at 2:1
-            //   - Game ends with dealer win but insurance win
-            // If dealer does not have blackjack:
-            //   - Player loses insurance bet
-            //   - Game continues with normal gameplay
-        }
+        // Mark insurance as decided for this game
+        this._insuranceDecided = true;
+        
+        // Close any insurance popup
+        this.popupManager.hidePopup();
+        
+        // Call backend with insurance acceptance
+        Globals.backendService?.insurance(true);
     }
    
     onRebetClicked() {
@@ -1704,7 +1382,7 @@ export class GameManager extends Container {
                         
                         // Start the game with the bet amount
                         Globals.backendService?.startGame(Globals.currentBet);
-                    }, 300); // Small delay before adding new chips
+                    }, 300);
                 }, true); // true to hide bet holder after animation
             }
         }
@@ -1828,45 +1506,11 @@ export class GameManager extends Container {
             this._processingSplitResult = false;
             this.blackjackDealer.isCardDealInProgress = false;
             
-            // Force resize to ensure proper positions
-            this.blackjackDealer.resize();
+            // Get the active hand to switch to
+            const activeHand = data.activeSplitHand || 'first';
             
-            // Get allowed action buttons from backend or use defaults
-            let splitButtons: GameButtonType[];
-            
-            if (data.allowedActions && data.allowedActions.length > 0) {
-                // Convert backend actions to button types
-                splitButtons = getButtonType(data.allowedActions);
-                
-                // Always remove split button - can't split again
-                const splitIndex = splitButtons.indexOf(GameButtonType.SPLIT);
-                if (splitIndex !== -1) {
-                    splitButtons.splice(splitIndex, 1);
-                    console.log("Removed split button from allowed actions after split");
-                }
-            } else {
-                // Use default buttons if not provided
-                splitButtons = [GameButtonType.HIT, GameButtonType.STAND, GameButtonType.DOUBLE];
-                console.log("Using default buttons for split hand");
-            }
-            
-            // Store the buttons for showing
-            this.gameButtonsContainer.toShowButtons = [...splitButtons];
-            
-            console.log("Showing buttons after split completion:", splitButtons);
-            
-            // Clear any other flags that might prevent button display
-            this._processingOutcome = false;
-            
-            // Force split hand positions to be maintained
-            this.blackjackDealer.positionSplitHands();
-            
-            // Show buttons immediately
-            this.gameButtonsContainer.showSpecificButtons(
-                splitButtons,
-                true,   // Show immediately
-                false   // Don't prevent duplicates (ensure buttons appear)
-            );
+            // Use our improved split hand switch handler
+            this.handleSplitHandSwitch(activeHand);
         });
     }
 
@@ -1949,7 +1593,7 @@ export class GameManager extends Container {
         
         // Set the active hand based on backend data
         const activeHand = data.activeSplitHand || 'first';
-        this.updateActiveHandIndicator(activeHand);
+        this.handleSplitHandSwitch(activeHand);
         
         // Set global state
         Globals.activeHand = activeHand;
@@ -1994,172 +1638,132 @@ export class GameManager extends Container {
     }
 
     /**
-     * Update visual indicator for active hand
-     * @param activeHand Which hand is active ('first' or 'second')
+     * Handle switching between split hands with proper visual transition
+     * @param toHand The hand to switch to ('first' or 'second')
      */
-    private updateActiveHandIndicator(activeHand: string): void {
-        if (!activeHand) {
-            console.warn("updateActiveHandIndicator called with null or undefined activeHand");
-            return;
-        }
+    private handleSplitHandSwitch(toHand: 'first' | 'second'): void {
+        console.log(`Switching to ${toHand} hand in split mode`);
         
-        console.log(`Setting active split hand: ${activeHand}`);
-        
-        // Update active hand in game state for reference
-        if (activeHand === "first" || activeHand === "second") {
-            const oldHand = Globals.activeHand;
-            Globals.activeHand = activeHand as 'first' | 'second';
-            
-            // Only proceed with visual updates if we have both hands
+        // Ensure we have a split hand
             if (!this.blackjackDealer.splitHand) {
-                console.warn("Can't update active split hand visual - split hand doesn't exist");
+            console.error("Cannot switch hands - split hand doesn't exist");
                 return;
             }
             
-            // Store current positions before making any changes
-            const playerHandX = this.blackjackDealer.playerHand.x;
-            const splitHandX = this.blackjackDealer.splitHand.x;
-            
-            // Apply visual changes to indicate active hand
-            this.blackjackDealer.setActiveSplitHand(activeHand as 'first' | 'second');
-            
-            // Check if the first hand is busted when switching to second hand
-            const isFirstHandBusted = activeHand === 'second' && 
-                this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand) > 21;
-            
-            // Check if current hand has exactly 21
-            const currentHandValue = activeHand === 'first' 
-                ? this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand)
-                : this.blackjackDealer.calculateHandValue(this.blackjackDealer.splitHand);
-            
-            const hasExactly21 = currentHandValue === 21;
-            
-            if (isFirstHandBusted) {
-                console.log("First hand is busted, switching to second hand with special handling");
-            }
-            
-            if (hasExactly21) {
-                console.log(`Current hand (${activeHand}) has exactly 21 - special handling`);
-            }
-            
-            // Restore positions to prevent teleporting - this is important for smooth transitions
-            this.blackjackDealer.playerHand.x = playerHandX;
-            this.blackjackDealer.splitHand.x = splitHandX;
-            
-            // Force positions to be maintained
-            this.blackjackDealer.positionSplitHands();
-            
-            // Force a resize to update positions - but don't recalculate positions which would cause teleporting
-            this.blackjackDealer.resize();
-            
-            // Log detailed split hand info for debugging
-            this.blackjackDealer.logSplitHandInfo();
-            
-            // If the active hand changed, we need to update buttons
-            if (oldHand !== activeHand) {
-                console.log(`Hand switched from ${oldHand} to ${activeHand} - updating buttons`);
-                
-                // Ensure card dealing flag is cleared to allow buttons
-                this.blackjackDealer.isCardDealInProgress = false;
-                
-                // Clear the processing outcome flag if it's set to ensure we can show buttons
-                this._processingOutcome = false;
-                
-                // If we switched to second hand, ensure appropriate buttons are shown
-                if (activeHand === 'second') {
-                    // Define the default buttons for second hand
-                    const secondHandButtons = [
-                        GameButtonType.HIT, 
-                        GameButtonType.STAND,
-                        GameButtonType.DOUBLE
-                    ];
-                    
-                    // Force a clear of any queued buttons to prevent backend override
-                    this.gameButtonsContainer.toShowButtons = [...secondHandButtons];
-                    
-                    // Different handling based on whether first hand busted
-                    if (isFirstHandBusted) {
-                        // For busted first hand, use immediate button display
-                        console.log("First hand busted - using immediate button display for second hand");
-                        
-                        // Hide current buttons first
-                        this.gameButtonsContainer.hideAllButtons(true, () => {
-                            // Show the buttons immediately
-                            this.gameButtonsContainer.showSpecificButtons(
-                                secondHandButtons,
-                                true,   // Show immediately
-                                false   // Don't prevent duplicates to ensure they appear
-                            );
-                        });
-                        
-                        // Force positions again after UI updates to prevent any drift
-                        setTimeout(() => {
-                            this.blackjackDealer.positionSplitHands();
-                        }, 100);
-                    } else {
-                        // For normal hand transition, use the standard hide-then-show approach
-                        // Hide any current buttons first
-                        this.gameButtonsContainer.hideAllButtons(true, () => {
-                            // Use a local copy of buttons to show
-                            const buttonsToShow = [...this.gameButtonsContainer.toShowButtons];
-                            
-                            // Clear the queue to prevent showing buttons twice
-                            this.gameButtonsContainer.toShowButtons = [];
-                            
-                            console.log("Showing buttons for second hand:", buttonsToShow);
-                            
-                            // Show buttons immediately to ensure they appear
-                            setTimeout(() => {
-                                this.gameButtonsContainer.showSpecificButtons(
-                                    buttonsToShow, 
-                                    true,   // Show immediately
-                                    false   // Don't prevent duplicates to ensure buttons show
-                                );
-                                
-                                // Force positions again after UI updates to prevent any drift
-                                this.blackjackDealer.positionSplitHands();
-                            }, 100); // Small delay to ensure previous hide operation completes
-                        });
-                    }
-                } else {
-                    // For first hand, use standard behavior
-                    setTimeout(() => {
-                        this.checkPendingOutcome();
-                        
-                        // Force positions again after UI updates to prevent any drift
-                        this.blackjackDealer.positionSplitHands();
-                    }, 100);
-                }
-                
-                // Schedule one more position check after all animations to ensure stability
-                setTimeout(() => {
-                    this.blackjackDealer.positionSplitHands();
-                }, 500);
-            }
-        } else {
-            console.warn(`Invalid active hand value: ${activeHand}`);
-        }
-    }
-
-    // Flag to track if we're processing a split result to prevent duplicates
-    private _processingSplitResult: boolean = false;
-
-    /* Add a method to decline insurance */
-    handleInsuranceDeclined() {
-        console.log("Declining insurance");
-        
-        // Hide all buttons during processing
-        this.gameButtonsContainer.hideAllButtons(true);
-        
-        // Set card dealing flag to prevent premature button display
+        // Pause any ongoing processes to prevent race conditions
+        this._processingOutcome = true;
         this.blackjackDealer.isCardDealInProgress = true;
         
-        // Send insurance decline request to backend
-        Globals.backendService?.insurance(false);
+        // Store the previous active hand for reference
+        const previousHand = Globals.activeHand;
         
-        // Backend will check if dealer has blackjack:
-        // If yes: Dealer wins immediately (player loses bet)
-        // If no: Game continues with normal gameplay
+        // Update global state immediately
+        Globals.activeHand = toHand;
+        
+        // Check if this is an actual switch or initial setup
+        const isActualSwitch = previousHand && previousHand !== toHand;
+        
+        // Show visual transition between hands
+        if (isActualSwitch) {
+            this.blackjackDealer.showHandTransition(toHand);
+        }
+        
+        // Check hand values to determine correct button state after switch
+        const firstHandValue = this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand);
+        const firstHandBusted = firstHandValue > 21;
+        
+        const secondHandValue = this.blackjackDealer.splitHand ? 
+            this.blackjackDealer.calculateHandValue(this.blackjackDealer.splitHand) : 0;
+        const secondHandBusted = secondHandValue > 21;
+        
+        // Set the correct buttons for the target hand
+        let targetButtons: GameButtonType[] = [];
+        
+        if (toHand === 'first') {
+            // First hand buttons
+            if (!firstHandBusted && firstHandValue !== 21) {
+                // Normal gameplay buttons
+                targetButtons = [GameButtonType.HIT, GameButtonType.STAND];
+                
+                // Add double down only for first action on this hand (exactly 2 cards)
+                if (this.blackjackDealer.playerHand.cards.length === 2) {
+                    targetButtons.push(GameButtonType.DOUBLE);
+                }
+            } 
+            else if (firstHandValue === 21) {
+                // Only stand button for 21
+                targetButtons = [GameButtonType.STAND];
+            }
+            // No buttons for busted hand
+        } 
+        else {
+            // Second hand buttons
+            if (!secondHandBusted && secondHandValue !== 21) {
+                // Normal gameplay buttons
+                targetButtons = [GameButtonType.HIT, GameButtonType.STAND];
+                
+                // Add double down only for first action on this hand (exactly 2 cards)
+                if (this.blackjackDealer.splitHand.cards.length === 2) {
+                    targetButtons.push(GameButtonType.DOUBLE);
+                }
+            } 
+            else if (secondHandValue === 21) {
+                // Only stand button for 21
+                targetButtons = [GameButtonType.STAND];
+            }
+            // No buttons for busted hand
+        }
+        
+        // Store the buttons to show
+        this.gameButtonsContainer.toShowButtons = targetButtons;
+        
+        // Allow time for animations to complete
+        setTimeout(() => {
+            // Ensure visual indicators are updated
+            this.blackjackDealer.setActiveSplitHand(toHand);
+            
+            // Fix hand positions to prevent jumping
+            this.blackjackDealer.positionSplitHands();
+            
+            // Clear flags to allow UI updates
+            this._processingOutcome = false;
+            this.blackjackDealer.isCardDealInProgress = false;
+            
+            // Hide old buttons and show new ones
+                        this.gameButtonsContainer.hideAllButtons(true, () => {
+                if (targetButtons.length > 0) {
+                            this.gameButtonsContainer.showSpecificButtons(
+                        targetButtons,
+                        true, // Show immediately
+                        false // Don't prevent duplicates
+                    );
+                }
+            });
+        }, 400); // Wait for transition animation
+    }
+
+    /**
+     * Handle insurance offers from the backend
+     * @param data Insurance offer data
+     */
+    private handleInsuranceOffer(data: any): void {
+        // Skip if insurance decision has already been made for this game
+        if (this._insuranceDecided) {
+            console.log("Insurance already decided, skipping offer");
+            return;
+        }
+        
+        // Set flag to indicate insurance is available
+        this.blackjackDealer.isInsuranceAvailable = true;
+        
+        // Add insurance button to allowed actions
+        const currentButtons = this.gameButtonsContainer.toShowButtons || [];
+        if (!currentButtons.includes(GameButtonType.INSURANCE)) {
+            this.gameButtonsContainer.toShowButtons = [...currentButtons, GameButtonType.INSURANCE];
+        }
+        
+        // Update buttons to include insurance option
+        this.checkPendingOutcome();
     }
 
     /**
@@ -2238,295 +1842,454 @@ export class GameManager extends Container {
     }
 
     /**
+     * Handle split outcome visuals
+     * @param outcomeType The split outcome type
+     */
+    private handleSplitOutcome(outcomeType: string): void {
+        // Only proceed if we have both hands
+        if (!this.blackjackDealer.playerHand || !this.blackjackDealer.splitHand) {
+            return;
+        }
+        
+        // Set appropriate tints based on outcome
+        switch (outcomeType) {
+            case 'split_win':
+            case 'split_win_lose':
+            case 'split_win_push':
+                // At least one hand won - highlight appropriately
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0x00FF00;
+                this.blackjackDealer.splitHand.pointsDisplay.tint = 0x00FF00;
+                break;
+                
+            case 'split_lose':
+            case 'split_lose_push':
+                // Both hands lost or one lost, one push - highlight appropriately
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0xFF0000;
+                this.blackjackDealer.splitHand.pointsDisplay.tint = 0xFF0000;
+                break;
+                
+            case 'split_push':
+                // Both hands pushed - neutral highlight
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0xFFFF00;
+                this.blackjackDealer.splitHand.pointsDisplay.tint = 0xFFFF00;
+                break;
+        }
+        
+        // Make sure both hands are visible for the outcome
+        this.blackjackDealer.playerHand.alpha = 1;
+        this.blackjackDealer.splitHand.alpha = 1;
+        
+        // Make sure hands are positioned correctly
+        this.blackjackDealer.positionSplitHands();
+    }
+
+    /**
+     * Handle insurance declined - call backend
+     */
+    handleInsuranceDeclined() {
+        // Only proceed if insurance is actually available
+        if (!this.blackjackDealer.isInsuranceAvailable) return;
+        
+        // Hide all buttons during processing
+        this.gameButtonsContainer.hideAllButtons(true);
+        
+        // Set processing flag to prevent premature button display
+        this.blackjackDealer.isCardDealInProgress = true;
+        
+        // Clear the insurance available flag
+        this.blackjackDealer.isInsuranceAvailable = false;
+        
+        // Mark insurance as decided for this game
+        this._insuranceDecided = true;
+        
+        // Close any insurance popup
+        this.popupManager.hidePopup();
+        
+        // Call backend with insurance declined
+        Globals.backendService?.insurance(false);
+    }
+
+    /**
+     * Handle game outcome messages
+     * @param data The outcome data from the backend
+     */
+    handleGameOutcome(data: any): void {
+        // Update game state to complete
+        Globals.gameState = 'complete';
+        
+        // Reset all processing flags to ensure buttons and popups can show
+        this._processingOutcome = false;
+        this.blackjackDealer.isCardDealInProgress = false;
+        this._processingSplitResult = false;
+        
+        // Determine buttons to show - default to play again and rebet
+        const outcomeButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
+        
+        // Map backend outcome to GameOutcome enum if needed
+        let outcomeType = data.outcome;
+        
+        // Special handling based on outcome type
+        console.log(`Processing game outcome: ${outcomeType}`, data);
+        
+        // Apply special visuals based on outcome type
+        switch (outcomeType) {
+            case 'blackjack':
+            case 'player_blackjack':
+                // Special visual for blackjack
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0x00FF00;
+                
+                // Make sure dealer cards are visible
+                if (this.blackjackDealer.dealerHand && this.blackjackDealer.dealerHand.cards.length > 0) {
+                    this.blackjackDealer.dealerHand.cards.forEach(card => {
+                        if (card.sprite) {
+                            card.sprite.visible = true;
+                        }
+                    });
+                }
+                break;
+            
+            case 'surrender':
+                // Reset the surrender flag if it was set
+                this._isSurrenderInProgress = false;
+                
+                // Special visual for surrender - fade player's hand
+                if (this.blackjackDealer.playerHand) {
+                    // Ensure consistent alpha value for surrender
+                    this.blackjackDealer.playerHand.alpha = 0.6;
+                    
+                    // Add a subtle pulse animation to indicate the surrender
+                    // This helps users understand the outcome visually
+                    const originalScale = this.blackjackDealer.playerHand.scale.x;
+                    new Tween(this.blackjackDealer.playerHand.scale)
+                        .to({ x: originalScale * 0.95, y: originalScale * 0.95 }, 200)
+                        .easing(Easing.Cubic.Out)
+                        .yoyo(true)
+                        .repeat(1)
+                        .start();
+                }
+                
+                // Make sure dealer cards are visible
+                if (this.blackjackDealer.dealerHand && this.blackjackDealer.dealerHand.cards.length > 0) {
+                    this.blackjackDealer.dealerHand.cards.forEach(card => {
+                        if (card.sprite) {
+                            card.sprite.visible = true;
+                        }
+                    });
+                }
+                break;
+            
+            case 'insurance_won':
+                // Make sure dealer cards are visible
+                if (this.blackjackDealer.dealerHand && this.blackjackDealer.dealerHand.cards.length > 0) {
+                    this.blackjackDealer.dealerHand.cards.forEach(card => {
+                        if (card.sprite) {
+                            card.sprite.visible = true;
+                        }
+                    });
+                }
+                
+                if (data.insurancePayout) {
+                    this.blackjackDealer.payout = data.insurancePayout;
+                }
+                
+                // Show positive insurance outcome
+                this.popupManager.showInsuranceResult(true);
+                break;
+                
+            case 'player_win':
+                // Highlight player's hand for win
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0x00FF00;
+                break;
+                
+            case 'dealer_win':
+                // Standard dealer win - no special visual
+                break;
+                
+            case 'push':
+                // Push outcome - show a neutral highlight
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0xFFFF00;
+                break;
+                
+            case 'player_bust':
+                // Player bust - red highlight
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0xFF0000;
+                break;
+                
+            case 'dealer_bust':
+                // Dealer bust - green highlight for player
+                this.blackjackDealer.playerHand.pointsDisplay.tint = 0x00FF00;
+                break;
+                
+            // Handle split outcomes
+            case 'split_win':
+            case 'split_win_lose':
+            case 'split_win_push':
+                // At least one hand won - highlight appropriately
+                this.handleSplitOutcome(outcomeType);
+                break;
+                
+            case 'split_lose':
+            case 'split_lose_push':
+                // Both hands lost or one lost, one push - highlight appropriately
+                this.handleSplitOutcome(outcomeType);
+                break;
+                
+            case 'split_push':
+                // Both hands pushed - neutral highlight
+                this.handleSplitOutcome(outcomeType);
+                break;
+        }
+
+        console.log("Showing outcome popup", data.outcome, data.payout); 
+        
+        // Cancel any pending animations and clear any existing buttons
+        if (this.gameButtonsContainer.cancelAllButtonAnimations) {
+            this.gameButtonsContainer.cancelAllButtonAnimations();
+        }
+        
+        // Clean existing toShowButtons to prevent conflicting buttons
+        this.gameButtonsContainer.toShowButtons = [];
+        
+        // For surrender, we need special handling to ensure popup shows properly
+        if (outcomeType === 'surrender') {
+            // Update UI with outcome popup - explicit call for surrender
+            setTimeout(() => {
+                // Show outcome popup with a slight delay to ensure all visuals are updated
+                this.popupManager.showOutcomePopup(data.outcome, data.payout || 0);
+                
+                // Update player balance
+                this.uiContainer.updateBalancefromBackend(data.playerBalance);
+                
+                // Store payout info for reference
+                this.blackjackDealer.payout = data.payout || 0;
+                
+                // Show buttons after popup is displayed
+                setTimeout(() => {
+                    // Hide any existing buttons first
+                    this.gameButtonsContainer.hideAllButtons(true, () => {
+                        // Force complete state
+                        Globals.gameState = 'complete';
+                        
+                        // Show end game buttons
+                        this.gameButtonsContainer.showSpecificButtons(
+                            outcomeButtons,
+                            true,  // Show immediately
+                            false  // Don't prevent duplicates
+                        );
+                    });
+                }, 500); // Wait for popup to appear
+            }, 100);
+        } else {
+            // Normal outcome handling for non-surrender outcomes
+            
+            // Update UI with outcome popup
+            this.popupManager.showOutcomePopup(data.outcome, data.payout || 0);
+            
+            // Update player balance
+            this.uiContainer.updateBalancefromBackend(data.playerBalance);
+            
+            // Store payout info for reference
+            this.blackjackDealer.payout = data.payout || 0;
+            
+            // Add a small delay to ensure popup is displayed before showing buttons
+            // This prevents visual conflict between popup and buttons
+            setTimeout(() => {
+                // Make sure all buttons are fully hidden before showing outcome buttons
+                this.gameButtonsContainer.hideAllButtons(true, () => {
+                    // Double-check that we're still in 'complete' state
+                    if (Globals.gameState !== 'complete') {
+                        console.warn("Game state changed from 'complete' during outcome processing - forcing complete state");
+                        Globals.gameState = 'complete';
+                    }
+                    
+                    // Set the buttons to show explicitly for this game outcome
+                    // This prevents other messages from overriding with the wrong buttons
+                    this.gameButtonsContainer.toShowButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
+                    
+                    // Show end-game buttons with guaranteed animation completion
+                    this.gameButtonsContainer.showSpecificButtons(
+                        outcomeButtons,
+                        true,  // Show immediately
+                        false   // Don't prevent duplicates
+                    );
+                    
+                    // Add a safety check to ensure buttons are visible
+                    setTimeout(() => {
+                        // Check if buttons are visible
+                        const anyButtonVisible = outcomeButtons.some(btn => 
+                            this.gameButtonsContainer.isButtonVisible(btn)
+                        );
+                        
+                        if (!anyButtonVisible) {
+                            console.warn("End-game buttons not visible after delay - forcing display");
+                            
+                            // Force reset any flags that might be preventing buttons from appearing
+                            this._processingOutcome = false;
+                            this.blackjackDealer.isCardDealInProgress = false;
+                            
+                            // Ensure we're in the right game state for end buttons
+                            Globals.gameState = 'complete';
+                            
+                            // Force show the end game buttons one more time
+                            this.gameButtonsContainer.toShowButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
+                            this.gameButtonsContainer.showSpecificButtons(
+                                outcomeButtons, 
+                                true,   // Show immediately
+                                false   // Don't prevent duplicates
+                            );
+                        }
+                    }, 500);
+                });
+            }, 300);
+        }
+    }
+
+    /**
      * Central handler for all backend messages
      * Call this from app.ts to handle all messages from backend in one place
      */
     handleBackendMessage(messageType: string, data: any): void {
         console.log(`GameManager received message: ${messageType}`, data);
         
-        // Track the previous game phase before processing this message
-        const previousPhase = Globals.gameState;
-        
-        // --- PRIORITY HANDLERS: These messages take precedence over normal flow ---
-        
-        // Handle game_end message with highest priority - this always contains the final outcome
-        if (messageType === 'game_end') {
-            console.log("Received game_end message with priority handling", data);
-            
-            // Reset processing flags to ensure clean state
-            this._processingOutcome = true; // Mark as processing to prevent duplicate handling
-            this._processingSplitResult = false;
-            this.blackjackDealer.isCardDealInProgress = false;
-            
-            // Create a stable unique ID to track this outcome
-            const outcomeId = Date.now();
-            this._currentOutcomeId = outcomeId;
-            
-            // Cancel any pending button updates to prevent flashing
-            if (this._currentOperationVersion) {
-                this._currentOperationVersion = Date.now() + 10000; // Force any in-progress operations to abort
+        // Special handling for GAME_END to prevent race conditions
+        if (messageType === MessageType.GAME_END) {
+            // Cancel all pending button animations
+            if (this.gameButtonsContainer.cancelAllButtonAnimations) {
+                this.gameButtonsContainer.cancelAllButtonAnimations();
             }
             
-            // Hide all gameplay buttons immediately for clean UI
-            this.gameButtonsContainer.hideAllButtons(true);
-            
-            // Update game state to complete
+            // Force correct game state regardless of what message says
             Globals.gameState = 'complete';
             
-            // Directly process the outcome without waiting for other messages
-            if (data) {
-                // Handle the outcome immediately
-                this.handleGameOutcome(data);
-            }
+            // Prevent any other message processing
+            this._processingOutcome = true;
             
-            // Return early to prevent normal message flow
+            // Reset flags in a controlled sequence
+            setTimeout(() => {
+                this._processingOutcome = false;
+                this.blackjackDealer.isCardDealInProgress = false;
+                this._processingSplitResult = false;
+                
+                // Now handle the game outcome
+                this.handleGameOutcome(data);
+            }, 100);
+            
             return;
         }
         
-        // Handle balance updates immediately
-        if (messageType === 'balance_update' && data.balance !== undefined) {
-            // Update UI balance
-            this.uiContainer.updateBalancefromBackend(data.balance);
-        }
-        
-        // Handle insurance action specifically
-        if (messageType === 'action_result' && data?.action === 'insurance') {
-            console.log("Received insurance action result:", data);
-            // Reset insurance flags
-            this.blackjackDealer.isInsuranceAvailable = false;
-        }
-        
-        // --- GAME STATE HANDLERS: Update the core game state ---
-        
-        // Handle game state and update messages
-        if (messageType === 'game_state' || messageType === 'hand_updated') {
-            // Update game phase if provided
-            if (data.gamePhase && data.gamePhase !== previousPhase) {
-                Globals.gameState = data.gamePhase;
-                console.log(`Game phase changed from ${previousPhase} to ${data.gamePhase}`);
+        // CRITICAL FIX: If we're in 'complete' state, ignore any phase changes to 'betting'
+        // This prevents betting buttons from replacing end-game buttons after a bust/win/loss
+        if (Globals.gameState === 'complete' && 
+            (messageType === MessageType.ACTION_RESULT || messageType === MessageType.PHASE_CHANGE) &&
+            data?.phase === 'betting') {
+            console.log(`Ignoring phase change to betting while in complete state`);
+            
+            // Force end game buttons to appear if they're missing
+            const isPlayonVisible = this.gameButtonsContainer.isButtonVisible(GameButtonType.PLAYON);
+            const isRebetVisible = this.gameButtonsContainer.isButtonVisible(GameButtonType.REBET);
+                    
+            if (!isPlayonVisible && !isRebetVisible) {
+                console.log("Forcing end-game buttons to appear");
                 
-                // Handle specific phase transitions
-                // this.handleGamePhaseChange(previousPhase, data.gamePhase, data);
+                // Force show the standard end-game buttons
+                this.gameButtonsContainer.toShowButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
+                this.gameButtonsContainer.showSpecificButtons(
+                    this.gameButtonsContainer.toShowButtons, 
+                    true,  // Show immediately
+                    false  // Don't prevent duplicates
+                );
+                
+                // Clear to prevent multiple showings
+                this.gameButtonsContainer.toShowButtons = [];
             }
             
-            // Process the game state update
-            this.HandleGameInProgress(data);
+            return; // Skip further processing to prevent button replacement
         }
         
-        // --- ACTION HANDLERS: Process specific actions ---
-        
-        switch (messageType) {
-            case 'start_game':
-                this.HandleStartGame(data);
-                break;
-            
-            case 'card_dealt':
-                this.giveCards(data);
-                break;
-            
-            case 'special_case':
-                // this.handleSpecialCase(data);
-                break;
-            
-            case 'split_result':
-                this.handleSplitResult(data);
-                break;
-        }
-    }
-
-    /**
-     * Handle game phase changes
-     */
-    private handleGamePhaseChange(previousPhase: string, newPhase: string, data: any): void {
-        console.log(`Handling phase change: ${previousPhase} -> ${newPhase}`);
-        
-        // Log for debugging phase transitions
-        if (newPhase === 'complete') {
-            console.log("Game entered complete phase - preparing for outcome display");
-        } else if (newPhase === 'dealer_turn') {
-            console.log("Game entered dealer turn phase - hiding buttons");
-            this.gameButtonsContainer.hideAllButtons(true);
-        } else if (newPhase === 'player_turn' && previousPhase === 'dealing') {
-            console.log("Transitioning from dealing to player turn");
-            // Ensure buttons are visible for player's turn
+        // Reset processing flags for betting phase to ensure buttons appear
+        // Only do this for legitimate phase transitions, not for inconsistent states
+        if ((messageType === MessageType.GAME_STATE || messageType === MessageType.PHASE_CHANGE) && 
+            (data.gamePhase === 'betting' || data.to === 'betting') &&
+            Globals.gameState !== 'complete') { // Don't reset flags if we're in complete state
+                
             this._processingOutcome = false;
             this.blackjackDealer.isCardDealInProgress = false;
-        } else if (newPhase === 'betting') {
-            console.log("Entering betting phase");
-            // Update allowed actions for betting phase
-            if (data.allowedActions && Array.isArray(data.allowedActions)) {
-                console.log("Allowed actions from backend:", data.allowedActions);
-                this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
-                console.log("Buttons that will be shown:", this.gameButtonsContainer.toShowButtons);
-                
-                // Show betting buttons
-                this.gameButtonsContainer.showSpecificButtons(
-                    this.gameButtonsContainer.toShowButtons,
-                    true,    // Show immediately
-                    false    // Don't prevent duplicates
-                );
-            }
+            this._processingSplitResult = false;
+            // Do not reset _insuranceDecided here - it should persist until game is reset
         }
-    }
-
-    /**
-     * Handle the game outcome from backend
-     */
-    private handleGameOutcome(data: any): void {
-        console.log("Handling game outcome:", {
-            outcome: data.outcome,
-            gamePhase: data.gamePhase,
-            splitHand: !!data.splitHand,
-            playerHandBusted: data.playerHand?.busted,
-            splitHandBusted: data.splitHand?.busted,
-            allowedActions: data.allowedActions,
-            winnings: data.winnings,
-            message: data.message
-        });
-
-        // Reset processing flags to ensure clean state
-        this._processingOutcome = true; // Mark as processing to prevent duplicate handling
-        this._processingSplitResult = false;
-        this.blackjackDealer.isCardDealInProgress = false;
-        this._outcomePopupShown = false; // Reset the popup shown flag
-
-        // Hide all gameplay buttons immediately
-        this.gameButtonsContainer.hideAllButtons(true);
         
-        // Update game state to complete
-        Globals.gameState = data.gamePhase || 'complete';
-
-        // Determine which buttons to show based on allowed actions
-        if (data.allowedActions && data.allowedActions.length > 0) {
-            this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
-            console.log("End game buttons to show:", this.gameButtonsContainer.toShowButtons);
-        } else {
-            // Default to showing PLAYON if no specific actions provided
-            this.gameButtonsContainer.toShowButtons = [GameButtonType.PLAYON];
-            console.log("No specific actions provided, defaulting to PLAYON button");
-        }
-
-        // Special handling for split hand outcomes to ensure proper display
-        if (data.splitHand) {
-            this.handleSplitHandGameOutcome(data);
-        }
-
-        // Show outcome popup immediately to ensure it's visible
-        if (data.outcome) {
-            console.log("Showing outcome popup for:", data.outcome, "with winnings:", data.winnings);
+        // Handle insurance lost in ACTION_RESULT
+        if (messageType === MessageType.ACTION_RESULT && 
+            data?.action === MessageType.INSURANCE && 
+            data?.outcome === 'insurance_lost') {
             
-            // Mark that we're showing a popup
-            this._outcomePopupShown = true;
-            
-            // Force hide any existing popup first to prevent flashing
-            this.popupManager.hidePopup(() => {
-                // Show the outcome popup
-                setTimeout(() => {
-                    this.popupManager.showOutcomePopup(data.outcome, data.winnings);
-                    
-                    // Show end game buttons after a short delay
-                    setTimeout(() => {
-                        // Reset processing flag to allow button display
-                        this._processingOutcome = false;
-                        
-                        // Show end game buttons
-                        if (this.gameButtonsContainer.toShowButtons?.length > 0) {
-                            this.gameButtonsContainer.showSpecificButtons(
-                                this.gameButtonsContainer.toShowButtons,
-                                true,    // Show immediately
-                                false    // Don't prevent duplicates
-                            );
+            // User took insurance but dealer doesn't have blackjack
+            this.blackjackDealer.isInsuranceAvailable = false;
+            // Mark insurance as decided
+            this._insuranceDecided = true;
+                
+            // Show insurance lost popup
+            this.popupManager.showInsuranceResult(false);
+                
+            // Auto-hide popup after delay and continue game
+            setTimeout(() => {
+                this.popupManager.hidePopup(() => {
+                    if (data.allowedActions) {
+                        // Cancel any pending button animations first
+                        if (this.gameButtonsContainer.cancelAllButtonAnimations) {
+                            this.gameButtonsContainer.cancelAllButtonAnimations();
                         }
-                    }, 500);
-                }, 50);
-            });
-        } else {
-            // If no outcome, just show buttons
+                        
+                        this.gameButtonsContainer.toShowButtons = getButtonType(data.allowedActions);
+                        
+                        // Remove insurance button if present - insurance has been decided
+                        const insuranceIndex = this.gameButtonsContainer.toShowButtons.indexOf(GameButtonType.INSURANCE);
+                        if (insuranceIndex !== -1) {
+                            console.log("Removing insurance button after insurance lost outcome");
+                            this.gameButtonsContainer.toShowButtons.splice(insuranceIndex, 1);
+                        }
+                    }
+                    this.checkPendingOutcome();
+                });
+            }, 2000);
+            
+            return;
+        }
+        
+        // Similar protection for PLAYER_TURN message
+        if (messageType === MessageType.PLAYER_TURN && data?.allowedActions && this._insuranceDecided) {
+            // Convert backend actions to button types
+            const buttons = getButtonType(data.allowedActions);
+            
+            // Filter out insurance button if insurance has been decided
+            const insuranceIndex = buttons.indexOf(GameButtonType.INSURANCE);
+            if (insuranceIndex !== -1) {
+                console.log("Removing insurance button from PLAYER_TURN message - insurance already decided");
+                buttons.splice(insuranceIndex, 1);
+            }
+            
+            // Store filtered buttons
+            this.gameButtonsContainer.toShowButtons = buttons;
+            
+            // Update allowed actions in the message to ensure consistency
+            data.allowedActions = data.allowedActions.filter((action: string) => action !== 'insurance');
+        }
+        
+        // Reset flags for specific actions that should clear states
+        if (messageType === MessageType.ACTION_RESULT && 
+            (data?.action === 'surrender' || data?.action === 'insurance')) {
             this._processingOutcome = false;
+            this.blackjackDealer.isCardDealInProgress = false;
+            this.blackjackDealer.isInsuranceAvailable = false;
             
-            // Show end game buttons immediately
-            if (this.gameButtonsContainer.toShowButtons?.length > 0) {
-                this.gameButtonsContainer.showSpecificButtons(
-                    this.gameButtonsContainer.toShowButtons,
-                    true,    // Show immediately
-                    false    // Don't prevent duplicates
-                );
+            // Also mark insurance as decided if this was an insurance action
+            if (data?.action === 'insurance') {
+                this._insuranceDecided = true;
             }
         }
-
-        // Set a failsafe timeout to ensure outcome is shown
-        this.scheduleFailsafeOutcomeCheck(data);
-    }
-
-    /**
-     * Handle special case for split hand game outcomes
-     */
-    private handleSplitHandGameOutcome(data: any): void {
-        console.log("Processing split hand outcome");
         
-        // Ensure both hands' points are visible
-        if (this.blackjackDealer.playerHand?.pointsDisplay) {
-            this.blackjackDealer.playerHand.pointsDisplay.visible = true;
-        }
-        if (this.blackjackDealer.splitHand?.pointsDisplay) {
-            this.blackjackDealer.splitHand.pointsDisplay.visible = true;
-        }
-        
-        // Update bust status
-        if (this.blackjackDealer.updateBustStatus) {
-            this.blackjackDealer.updateBustStatus();
-        }
-        
-        // Lock positions of split hands to prevent movement
-        this.blackjackDealer.positionSplitHands();
-        
-        // Log for debugging
-        this.blackjackDealer.logSplitHandInfo();
-    }
-
-    /**
-     * Schedule a failsafe check to ensure outcome is shown
-     */
-    private scheduleFailsafeOutcomeCheck(data: any): void {
-        // Store the current outcome ID for this check
-        const outcomeId = this._currentOutcomeId;
-        
-        setTimeout(() => {
-            // Only proceed if this is still the current outcome
-            if (outcomeId !== this._currentOutcomeId) {
-                console.log(`Failsafe for outcome ${outcomeId} was superseded, not showing popup`);
-                return;
-            }
-            
-            // Check if popup wasn't shown
-            if (!this._outcomePopupShown && data.outcome) {
-                console.log("Failsafe: Showing pending outcome:", data.outcome);
-                this._outcomePopupShown = true;
-                this.popupManager.showOutcomePopup(data.outcome, data.winnings);
-            }
-            
-            // Check if popup is showing but buttons are missing
-            if (!this.gameButtonsContainer.areAnyButtonsVisible() && 
-                this.gameButtonsContainer.toShowButtons?.length > 0) {
-                
-                console.log("Failsafe: Forcing button display");
-                this._processingOutcome = false;
-                
-                this.gameButtonsContainer.showSpecificButtons(
-                    this.gameButtonsContainer.toShowButtons,
-                    true,    // Show immediately
-                    false    // Don't prevent duplicates
-                );
-            }
-            
-            // Final safety check for specific outcomes that might not show correctly
-            if ((data.outcome === 'dealer_win' || data.outcome === 'dealer_bust' || 
-                 data.outcome === 'surrender') && !this.popupManager.isPopupShowing()) {
-                
-                console.log(`Failsafe: Forcing ${data.outcome} popup display`);
-                this.popupManager.showOutcomePopup(data.outcome, data.winnings);
-            }
-        }, 1000);
+        // Process the message normally
+        this.recveiveBackendMessages(messageType, data);
     }
 
 }

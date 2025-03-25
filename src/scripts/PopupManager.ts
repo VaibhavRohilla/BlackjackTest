@@ -10,12 +10,12 @@ import { Button } from "./button";
 export const Z_INDEX = {
     BACKGROUND: 0,
     TABLE: 10,
-    CARDS: 10,
+    CARDS: 30,
     CHIPS: 20,
-    POPUP_OVERLAY: 30,
-    POPUPS: 40,
-    BUTTONS: 50,
-    SHOP: 60
+    POPUP_OVERLAY: 40,
+    POPUPS: 50,
+    BUTTONS: 60,
+    SHOP: 70
 };
 
 /**
@@ -395,7 +395,7 @@ export class PopupManager extends Container {
         
         // Animate the shadow - scale only since alpha is already set
         if (this.popupShadow) {
-            new Tween(this.popupShadow.scale)
+            new Tween(this.popupShadow.scale,Globals.sceneManager?.tweenGroup)
                 .to({ x: baseScale * 1.03, y: baseScale * 1.03 }, scaleInDuration)
                 .easing(Easing.Back.Out)
                 .start();
@@ -403,7 +403,7 @@ export class PopupManager extends Container {
         
         // Animate the popup with a cleaner, simpler animation - just scale
         if (this.activePopup) {
-            new Tween(this.activePopup.scale)
+            new Tween(this.activePopup.scale,Globals.sceneManager?.tweenGroup)
                 .to({ x: baseScale, y: baseScale }, scaleInDuration)
                 .easing(Easing.Back.Out)
                 .onComplete(() => {

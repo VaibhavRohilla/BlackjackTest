@@ -37,7 +37,12 @@
   },
   "dependencies": {
     "@tweenjs/tween.js": "^25.0.0",
+    "@types/cors": "^2.8.17",
+    "@types/dotenv": "^6.1.1",
+    "axios": "^1.8.4",
     "caniuse-lite": "^1.0.30001677",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
     "fontfaceobserver": "^2.3.0",
     "howler": "^2.2.4",
     "pixi-spine": "^4.0.4",

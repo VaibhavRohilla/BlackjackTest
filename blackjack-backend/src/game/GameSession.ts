@@ -1,15 +1,9 @@
-import { BlackjackServer } from '../server/blackjackserver';
-import { 
-  ClientMessage, 
-  ServerMessage, 
-  MessageType, 
-  GameStateMessage,
-  HandMessage,
-  CardMessage,
-  GameOutcomeMessage
-} from '../models/message';
-import { Card, Deck } from './deck';
-import { BlackjackGame, GameOutcome } from './blackjackgame';
+import { Card } from "./deck";
+import { MessageType, ClientMessage, ServerMessage } from "../models/message";
+import { BetResult } from "../server/apicalls";
+import { BlackjackServer } from "../server/blackjackserver";
+import { ApiService } from "../services/api.service";
+import { BlackjackGame } from "./blackjackgame";
 
 /**
  * Represents a hand in the UI
@@ -24,23 +18,46 @@ interface UIHand {
 }
 
 /**
+ * Represents player authentication data
+ */
+interface PlayerAuthData {
+  loginData: string;
+  userId: string;
+  chips: number;
+  isAuthenticated: boolean;
+}
+
+/**
  * Manages a single game for a client
  */
 export class GameSession {
   private clientId: string;
   private server: BlackjackServer;
   private game: BlackjackGame;
-  private playerBalance: number = 1000; // Starting balance
+  private playerBalance: number = 1000; // Starting balance - will be updated from API
   private gameData: any; // Store game data for reconnection
   private endGameTimeout: NodeJS.Timeout | null = null; // Timeout for holding game data
+  private apiService: ApiService;
+  private playerAuth: PlayerAuthData = {
+    loginData: '',
+    userId: '',
+    chips: 0,
+    isAuthenticated: false
+  };
+  private blackjackDealer: BlackjackGame; // Add blackjackDealer property
   
   // Add a class-level flag to track if insurance has been offered
   private insuranceOffered: boolean = false;
+  
+  // Add a flag to track if insurance has been decided for this game
+  private insuranceDecided: boolean = false;
   
   constructor(clientId: string, _unusedParam: string, server: BlackjackServer) {
     this.clientId = clientId;
     this.server = server;
     this.game = new BlackjackGame();
+    this.apiService = ApiService.getInstance();
+    this.blackjackDealer = this.game; // Initialize blackjackDealer with game instance
     
     // Initialize the game
     this.initialize();
@@ -102,12 +119,74 @@ export class GameSession {
    * Start the game with a bet amount and transition to playing state
    */
   public async startGame(betAmount: number): Promise<void> {
-    // Reset the insurance offered flag for the new game
+    // Reset the insurance offered and decided flags for the new game
     this.insuranceOffered = false;
+    this.insuranceDecided = false;
     
-    // Validate bet amount
-    if (betAmount <= 0 || betAmount > this.playerBalance) {
-      throw new Error('Invalid bet amount');
+    console.log(`Starting game validation for bet amount: ${betAmount}, player balance: ${this.playerBalance}`);
+    
+    // Basic validation
+    if (typeof betAmount !== 'number' || isNaN(betAmount)) {
+      console.error(`Invalid bet amount type: ${betAmount}`);
+      this.sendToClient({
+        type: MessageType.ERROR,
+        data: {
+          error: 'Invalid bet amount format'
+        }
+      });
+      return;
+    }
+
+    if (betAmount <= 0) {
+      console.error(`Bet amount must be greater than 0: ${betAmount}`);
+      this.sendToClient({
+        type: MessageType.ERROR,
+        data: {
+          error: 'Bet amount must be greater than 0'
+        }
+      });
+      return;
+    }
+
+    if (betAmount > this.playerBalance) {
+      console.error(`Insufficient balance: bet ${betAmount} > balance ${this.playerBalance}`);
+      this.sendToClient({
+        type: MessageType.ERROR,
+        data: {
+          error: 'Insufficient balance for this bet'
+        }
+      });
+      return;
+    }
+    
+    // Validate bet amount using API if player is authenticated
+    if (this.playerAuth.isAuthenticated && this.playerAuth.loginData) {
+      console.log(`Validating bet with API for authenticated player`);
+      try {
+        const isValidBet = await this.apiService.validateBet(betAmount, this.playerAuth.loginData);
+        
+        if (!isValidBet.success || !isValidBet.data) {
+          console.error(`API bet validation failed:`, isValidBet.error);
+          this.sendToClient({
+            type: MessageType.ERROR,
+            data: {
+              error: isValidBet.error || 'API validation failed'
+            }
+          });
+          return;
+        }
+      } catch (error) {
+        console.error(`Error during API bet validation:`, error);
+        this.sendToClient({
+          type: MessageType.ERROR,
+          data: {
+            error: 'Failed to validate bet with API'
+          }
+        });
+        return;
+      }
+    } else {
+      console.log(`Skipping API validation for unauthenticated player`);
     }
     
     console.log("---------STARTING GAME---------", betAmount);
@@ -279,42 +358,134 @@ export class GameSession {
   }
   
   /**
-   * End the game and determine the outcome
+   * End the game and record results
    */
   public async endGame(): Promise<void> {
-    // Get the final game state
-    const gameState = this.game.getGameState();
-    
-    // Get the comprehensive game result which handles all outcome types
-    const gameResult = this.game.getFinalGameResult();
-    
-    // Calculate net win/loss (negative means loss)
-    const chipsWon = gameResult.payout - (this.game.getCurrentBet() * (this.game.hasSplit() ? 2 : 1));
-    
-    // Update player balance
-    this.playerBalance += gameResult.payout;
-    
-    // Send final game state
-    this.sendToClient({
-      type: MessageType.GAME_END,
-      data: {
-        ...gameState,
-        playerBalance: this.playerBalance,
-        currentBet: this.game.getCurrentBet(),
-        winnings: chipsWon,
-        outcome: gameResult.finalOutcomeString,
-        message: gameResult.message
-      }
-    });
-    
-    // Reset the game
-    this.game.reset();
-    
-    // Clear the current bet
-    this.game.clearBet();
-    
-    // Send updated balance
-    this.sendPlayerBalanceUpdate();
+    try {
+        // Get game outcome
+        const outcome = this.game.getGameOutcome();
+        
+        // Calculate chips won/lost
+        const betAmount = this.game.getCurrentBet();
+        let chipsWon = 0;
+        let outcomeType = ''; // For frontend display using GameOutcome enum
+        
+        switch (outcome) {
+            case 'win':
+                chipsWon = betAmount * 2;
+                outcomeType = 'player_win'; // Match GameOutcome enum
+                break;
+            case 'push':
+                chipsWon = betAmount;
+                outcomeType = 'push'; // Match GameOutcome enum
+                break;
+            case 'blackjack':
+                chipsWon = betAmount * 2.5;
+                outcomeType = 'player_blackjack'; // Match GameOutcome enum
+                break;
+            case 'lose':
+                chipsWon = 0;
+                // Check for dealer blackjack (two cards with value 21)
+                if (this.game.getDealerCards().length === 2 && 
+                    this.game.getDetailedGameResult().dealerValue === 21) {
+                    outcomeType = 'dealer_win'; // Specific case for dealer blackjack
+                } 
+                // Check if player busted (went over 21)
+                else if (this.game.getDetailedGameResult().playerValue > 21) {
+                    outcomeType = 'player_bust'; // Player busted
+                } 
+                else {
+                    outcomeType = 'dealer_win'; // Regular dealer win
+                }
+                break;
+            case 'dealer_bust':
+                chipsWon = betAmount * 2;
+                outcomeType = 'dealer_bust'; // Match GameOutcome enum
+                break;
+            case 'surrender':
+                chipsWon = betAmount / 2;
+                outcomeType = 'surrender'; // Match GameOutcome enum
+                break;
+            case 'insurance_win':
+                // If player won insurance, add the insurance payout
+                const insuranceBet = this.game.getInsuranceBet();
+                chipsWon = insuranceBet * 2; // Insurance pays 2:1
+                outcomeType = 'insurance_won'; // Match GameOutcome enum
+                break;
+            // Handle split outcomes
+            case 'split_win_win':
+                chipsWon = betAmount * 4; // Win on both hands (2x bet * 2)
+                outcomeType = 'split_win';
+                break;
+            case 'split_lose_lose':
+                chipsWon = 0;
+                outcomeType = 'split_lose';
+                break;
+            case 'split_push_push':
+                chipsWon = betAmount * 2; // Return both original bets
+                outcomeType = 'split_push';
+                break;
+            case 'split_win_lose':
+                chipsWon = betAmount * 2; // Win on one hand (bet * 2), lose on other
+                outcomeType = 'split_win_lose';
+                break;
+            case 'split_lose_win':
+                chipsWon = betAmount * 2; // Win on one hand (bet * 2), lose on other
+                outcomeType = 'split_win_lose'; // Same outcome type
+                break;
+            case 'split_win_push':
+                chipsWon = betAmount * 3; // Win on one hand (bet * 2) + push bet return
+                outcomeType = 'split_win_push';
+                break;
+            case 'split_push_win':
+                chipsWon = betAmount * 3; // Win on one hand (bet * 2) + push bet return
+                outcomeType = 'split_win_push'; // Same outcome type
+                break;
+            case 'split_lose_push':
+                chipsWon = betAmount; // Lose on one hand, push on other (return 1 bet)
+                outcomeType = 'split_lose_push';
+                break;
+            case 'split_push_lose':
+                chipsWon = betAmount; // Lose on one hand, push on other (return 1 bet)
+                outcomeType = 'split_lose_push'; // Same outcome type
+                break;
+        }
+        
+        // Update player balance
+        this.playerBalance += chipsWon;
+        
+        // Record bet result if player is authenticated
+        if (this.playerAuth.isAuthenticated) {
+            await this.recordBetResult(betAmount, chipsWon);
+        }
+        
+        // Send game outcome to client via GAME_END
+        this.sendToClient({
+            type: MessageType.GAME_END,
+            data: {
+                outcome: outcomeType, // Use our enhanced outcome type that matches GameOutcome enum
+                chipsWon,
+                playerBalance: this.playerBalance,
+                payout: chipsWon, // Ensure payout field is included for UI display
+                insurancePayout: outcome === 'insurance_win' ? this.game.getInsuranceBet() * 2 : undefined
+            }
+        });
+        
+        // Reset game state
+        this.game.reset();
+        
+        // Return to betting phase
+        this.returnToBettingPhase();
+        
+    } catch (error) {
+        console.error('Error ending game:', error);
+        this.sendToClient({
+            type: MessageType.ERROR,
+            data: {
+                error: 'Error ending game'
+            }
+        });
+    }
   }
   
   /**
@@ -904,7 +1075,10 @@ export class GameSession {
         }
         
         // Insurance check - only available when dealer shows an Ace at the start of hand
-        if (this.canTakeInsurance() && this.playerBalance >= this.game.getCurrentBet() / 2) {
+        // AND insurance has not already been decided
+        if (!this.insuranceDecided && 
+            this.canTakeInsurance() && 
+            this.playerBalance >= this.game.getCurrentBet() / 2) {
           // Only include INSURANCE in allowed actions if the player still has exactly 2 cards
           // This ensures insurance is removed from options after the first hit
           if (playerCards.length === 2) {
@@ -1173,7 +1347,7 @@ export class GameSession {
         // Hit the main player hand
         cardDealt = this.game.hit();
         
-        // Send card dealt notification
+        // Send card dealt notification - simplified format with just target and card
         this.sendToClient({
           type: MessageType.CARD_DEALT,
           data: {
@@ -1190,25 +1364,18 @@ export class GameSession {
           console.log('First hand busted, switching to second hand');
           // If first hand is bust, switch to second hand
           this.handleSplitHandSwitch('second');
-          // Send updated allowed actions for the second hand
-          this.sendAllowedActions();
         }
         else if (playerHand.value === 21) {
           console.log('First hand has 21, automatically switching to second hand');
           // When first hand is 21, automatically switch to second hand
           this.handleSplitHandSwitch('second');
-          // Send updated allowed actions for the second hand
-          this.sendAllowedActions();
-        } else {
-          // First hand is still playable, send updated allowed actions
-          this.sendAllowedActions();
         }
       } 
       else {
         // Hit the split hand
         cardDealt = this.game.hitSplitHand('second');
         
-        // Send card dealt notification
+        // Send card dealt notification - simplified format with just target and card
         this.sendToClient({
           type: MessageType.CARD_DEALT,
           data: {
@@ -1232,9 +1399,6 @@ export class GameSession {
           // When second hand is 21, automatically proceed to dealer turn
           this.game.setGamePhase('dealer_turn');
           this.processDealerTurn();
-        } else {
-          // Second hand is still playable, send updated allowed actions
-          this.sendAllowedActions();
         }
       }
     } 
@@ -1243,7 +1407,7 @@ export class GameSession {
       console.log('Processing regular hit for non-split hand');
       cardDealt = this.game.hit();
       
-      // Send card dealt notification
+      // Send card dealt notification - simplified format with just target and card
       this.sendToClient({
         type: MessageType.CARD_DEALT,
         data: {
@@ -1265,11 +1429,8 @@ export class GameSession {
       }
       else if (playerHand.value === 21) {
         console.log('Player has 21, automatically standing');
-        // If player has 21, automatically stand
+        // If player has 21, automatically stand (new automatic behavior)
         this.handleStand();
-      } else {
-        // Hand is still playable, send updated allowed actions
-        this.sendAllowedActions();
       }
     }
   }
@@ -1485,11 +1646,11 @@ export class GameSession {
     console.log(`Player surrender request in session ${this.clientId}`);
     
     if (this.game.getGamePhase() !== 'player_turn') {
-      throw new Error('Cannot surrender - not in player turn phase');
+        throw new Error('Cannot surrender - not in player turn phase');
     }
     
     if (!this.game.canSurrender()) {
-      throw new Error('Cannot surrender - not eligible');
+        throw new Error('Cannot surrender - not eligible');
     }
     
     // Execute surrender in game logic and get half the bet back
@@ -1498,21 +1659,24 @@ export class GameSession {
 
     // Send HAND_UPDATED message with empty allowed actions
     this.sendToClient({
-      type: MessageType.HAND_UPDATED,
-      data: {
-        playerHand: this.game.getGameState().playerHand,
-        dealerHand: this.game.getGameState().dealerHand,
-        splitHand: null,
-        activeSplitHand: null,
-        playerBalance: this.playerBalance,
-        currentBet: this.game.getCurrentBet(),
-        insuranceBet: this.game.getInsuranceBet(),
-        gamePhase: 'complete',
-        allowedActions: []
-      }
+        type: MessageType.HAND_UPDATED,
+        data: {
+            playerHand: this.game.getGameState().playerHand,
+            dealerHand: this.game.getGameState().dealerHand,
+            splitHand: null,
+            activeSplitHand: null,
+            playerBalance: this.playerBalance,
+            currentBet: this.game.getCurrentBet(),
+            insuranceBet: this.game.getInsuranceBet(),
+            gamePhase: 'complete',
+            allowedActions: []
+        }
     });
     
-    // End the game with surrender outcome
+    // Set game phase to complete
+    this.game.setGamePhase('complete');
+    
+    // End the game with surrender outcome through GAME_END
     this.endGame();
   }
   
@@ -1526,171 +1690,140 @@ export class GameSession {
     
     // Insurance validation should use our canTakeInsurance method
     if (!this.canTakeInsurance()) {
-      throw new Error('Cannot take insurance - not eligible');
+        throw new Error('Cannot take insurance - not eligible');
     }
+    
+    // Mark insurance as decided as soon as the player makes a choice
+    this.insuranceDecided = true;
     
     // Handle insurance decision
     if (takeInsurance) {
-      // Player accepts insurance
-      const insuranceAmount = this.game.getCurrentBet() / 2;
-      
-      if (this.playerBalance < insuranceAmount) {
-        throw new Error('Insufficient balance for insurance');
-      }
-      
-      this.playerBalance -= insuranceAmount;
-      const insuranceResult = this.game.takeInsurance(insuranceAmount);
-      
-      console.log(`Insurance taken: ${insuranceAmount} chips`);
-      
-      // Send balance update
-      this.sendToClient({
-        type: MessageType.BALANCE_UPDATE,
-        data: {
-          balance: this.playerBalance,
-          insuranceBet: insuranceAmount,
-        }
-      });
-      
-      // Send action result for insurance
-      this.sendToClient({
-        type: MessageType.ACTION_RESULT,
-        data: {
-          success: true,
-          action: MessageType.INSURANCE,
-          message: `Insurance taken for ${insuranceAmount} chips`,
-          phase: this.game.getGamePhase()
-        }
-      });
-
-      // Check if dealer has blackjack and handle accordingly
-      if (insuranceResult.outcome === 'insurance_win') {
-        console.log("Dealer has blackjack - revealing card and ending game");
+        // Player accepts insurance
+        const insuranceAmount = this.game.getCurrentBet() / 2;
         
-        // Reveal dealer's hole card
-        this.game.revealDealerCard();
-        const dealerHoleCard = this.game.getDealerCards()[1];
-        
-        // Send card dealt for dealer's hole card with isHoleCard flag
-        if (dealerHoleCard) {
-          this.sendToClient({
-            type: MessageType.CARD_DEALT,
-            data: {
-              card: dealerHoleCard,
-              target: 'dealer',
-              isHoleCard: true
-            }
-          });
+        if (this.playerBalance < insuranceAmount) {
+            throw new Error('Insufficient balance for insurance');
         }
         
-        // Use the centralized game result system
-        const gameResult = this.game.getFinalGameResult();
+        this.playerBalance -= insuranceAmount;
+        const insuranceResult = this.game.takeInsurance(insuranceAmount);
         
-        // Process insurance payout
-        const insurancePayout = gameResult.insurance?.payout || 0;
-        this.playerBalance += insurancePayout;
+        console.log(`Insurance taken: ${insuranceAmount} chips`);
         
         // Send balance update
         this.sendToClient({
-          type: MessageType.BALANCE_UPDATE,
-          data: {
-            balance: this.playerBalance,
-            insurancePayout: insurancePayout,
-            message: "Insurance paid 2:1"
-          }
-        });
-        
-        // Create outcome data
-        const outcomeData = {
-          outcome: gameResult.finalOutcomeString,
-          message: gameResult.message,
-          playerBalance: this.playerBalance,
-          payout: insurancePayout,
-          gamePhase: 'complete',
-          allowedActions: ['place_bet', 'rebet']
-        };
-        
-        // Store this as the game data to prevent a second outcome message
-        this.gameData = outcomeData;
-        
-        // Send the game outcome
-        this.sendToClient({
-          type: MessageType.GAME_OUTCOME,
-          data: outcomeData
-        });
-        
-        // Set game phase to complete
-        this.game.setGamePhase('complete');
-        
-        // End the game - but it will early-return since we have set insurance_won outcome
-        this.endGame();
-      } else {
-        // Dealer doesn't have blackjack - player loses insurance bet
-        console.log("Dealer doesn't have blackjack - player loses insurance bet");
-        
-        // Send insurance loss outcome
-        this.sendToClient({
-          type: MessageType.SPECIAL_CASE,
-          data: {
-            type: 'insurance_lost',
-            message: "Dealer doesn't have blackjack. Insurance bet lost.",
-            outcome: 'insurance_lost',
-            allowedActions: this.determineAllowedActions()
-          }
-        });
-        
-        // Allow player to continue with regular actions
-        this.sendAllowedActions();
-      }
-    } else {
-      // Player declines insurance
-      console.log("Player declined insurance");
-      this.game.declineInsurance();
-      
-      // Send action result for declining insurance
-      this.sendToClient({
-        type: MessageType.ACTION_RESULT,
-        data: {
-          success: true,
-          action: MessageType.INSURANCE,
-          message: "Insurance declined",
-          phase: this.game.getGamePhase()
-        }
-      });
-      
-      // Check if dealer has blackjack after insurance is declined
-      if (this.game.checkDealerHasBlackjack()) {
-        // Dealer has blackjack - end the game immediately
-        console.log("Dealer has blackjack after insurance declined - ending game");
-        
-        // Set game phase to complete
-        this.game.setGamePhase('complete');
-        
-        // Reveal dealer's hole card
-        this.game.revealDealerCard();
-        const dealerHoleCard = this.game.getDealerCards()[1];
-        
-        // Send card dealt for dealer's hole card with isHoleCard flag
-        if (dealerHoleCard) {
-          this.sendToClient({
-            type: MessageType.CARD_DEALT,
+            type: MessageType.BALANCE_UPDATE,
             data: {
-              card: dealerHoleCard,
-              target: 'dealer',
-              isHoleCard: true
+                balance: this.playerBalance,
+                insuranceBet: insuranceAmount,
             }
-          });
+        });
+        
+        // Send action result for insurance
+        this.sendToClient({
+            type: MessageType.ACTION_RESULT,
+            data: {
+                success: true,
+                action: MessageType.INSURANCE,
+                message: `Insurance taken for ${insuranceAmount} chips`,
+                phase: this.game.getGamePhase()
+            }
+        });
+
+        // Check if dealer has blackjack and handle accordingly
+        if (insuranceResult.outcome === 'insurance_win') {
+            console.log("Dealer has blackjack - revealing card and ending game");
+            
+            // Reveal dealer's hole card
+            this.game.revealDealerCard();
+            const dealerHoleCard = this.game.getDealerCards()[1];
+            
+            // Send card dealt for dealer's hole card with isHoleCard flag
+            if (dealerHoleCard) {
+                this.sendToClient({
+                    type: MessageType.CARD_DEALT,
+                    data: {
+                        card: dealerHoleCard,
+                        target: 'dealer',
+                        isHoleCard: true
+                    }
+                });
+            }
+            
+            // Set game phase to complete
+            this.game.setGamePhase('complete');
+            
+            // End the game with insurance win outcome through GAME_END
+            this.endGame();
+        } else {
+            // Dealer doesn't have blackjack - player loses insurance bet
+            console.log("Dealer doesn't have blackjack - player loses insurance bet");
+            
+            // Send insurance loss outcome as ACTION_RESULT
+            this.sendToClient({
+                type: MessageType.ACTION_RESULT,
+                data: {
+                    success: true,
+                    action: MessageType.INSURANCE,
+                    outcome: 'insurance_lost', // Use GameOutcome.INSURANCE_LOST value
+                    message: "Dealer doesn't have blackjack. Insurance bet lost.",
+                    allowedActions: this.determineAllowedActions(),
+                    phase: this.game.getGamePhase()
+                }
+            });
+            
+            // Allow player to continue with regular actions
+            this.sendAllowedActions();
         }
+    } else {
+        // Player declines insurance
+        console.log("Player declined insurance");
+        this.game.declineInsurance();
         
-        // End the game which will determine the outcome and send the message
-        this.endGame();
-      } else {
-        // Dealer doesn't have blackjack, continue normal gameplay
-        console.log("Dealer doesn't have blackjack after insurance declined - continuing game");
+        // Send action result for declining insurance
+        this.sendToClient({
+            type: MessageType.ACTION_RESULT,
+            data: {
+                success: true,
+                action: MessageType.INSURANCE,
+                message: "Insurance declined",
+                phase: this.game.getGamePhase()
+            }
+        });
         
-        // Allow player to continue with regular actions
-        this.sendAllowedActions();
-      }
+        // Check if dealer has blackjack after insurance is declined
+        if (this.game.checkDealerHasBlackjack()) {
+            // Dealer has blackjack - end the game immediately
+            console.log("Dealer has blackjack after insurance declined - ending game");
+            
+            // Set game phase to complete
+            this.game.setGamePhase('complete');
+            
+            // Reveal dealer's hole card
+            this.game.revealDealerCard();
+            const dealerHoleCard = this.game.getDealerCards()[1];
+            
+            // Send card dealt for dealer's hole card with isHoleCard flag
+            if (dealerHoleCard) {
+                this.sendToClient({
+                    type: MessageType.CARD_DEALT,
+                    data: {
+                        card: dealerHoleCard,
+                        target: 'dealer',
+                        isHoleCard: true
+                    }
+                });
+            }
+            
+            // End the game which will determine the outcome and send GAME_END message
+            this.endGame();
+        } else {
+            // Dealer doesn't have blackjack, continue normal gameplay
+            console.log("Dealer doesn't have blackjack after insurance declined - continuing game");
+            
+            // Allow player to continue with regular actions
+            this.sendAllowedActions();
+        }
     }
   }
   
@@ -1821,5 +1954,127 @@ export class GameSession {
     if (this.game.getGamePhase() !== 'complete') {
       this.game.setGamePhase('player_turn');
     }
+  }
+
+  /**
+   * Authenticate a player with the API
+   */
+  public async authenticatePlayer(loginData: string): Promise<boolean> {
+    if (!loginData) {
+      console.error(`Authentication failed for client ${this.clientId}: No login data provided`);
+      this.sendToClient({
+        type: MessageType.AUTH_ERROR,
+        data: { message: 'Login data is required' }
+      });
+      return false;
+    }
+
+    console.log(`Authenticating player for client ${this.clientId} with login data: ${loginData}`);
+
+    try {
+      // Get user data from API
+      const response = await this.apiService.getUserData(loginData);
+      
+      if (response.success && response.data) {
+        // Update player auth data
+        this.playerAuth = {
+          loginData,
+          userId: response.data.userId,
+          chips: response.data.chips || 1000,
+          isAuthenticated: true
+        };
+        
+        // Update player balance
+        this.playerBalance = this.playerAuth.chips;
+        
+        // Send success message
+        this.sendToClient({
+          type: MessageType.AUTH_SUCCESS,
+          data: {
+            message: 'Authentication successful',
+            balance: this.playerBalance
+          }
+        });
+        
+        console.log(`Player ${this.clientId} authenticated successfully with balance: ${this.playerBalance}`);
+        return true;
+      } else {
+        // Handle authentication failure
+        const errorMessage = response.error || 'Authentication failed';
+        console.error(`Authentication failed for client ${this.clientId}:`, {
+          error: errorMessage,
+          response: response
+        });
+        
+        this.sendToClient({
+          type: MessageType.AUTH_ERROR,
+          data: { message: errorMessage }
+        });
+        
+        // Reset auth data
+        this.playerAuth = {
+          loginData: '',
+          userId: '',
+          chips: 0,
+          isAuthenticated: false
+        };
+        
+        return false;
+      }
+    } catch (error) {
+      console.error(`Authentication error for client ${this.clientId}:`, error);
+      
+      this.sendToClient({
+        type: MessageType.AUTH_ERROR,
+        data: { message: 'Authentication failed due to an error' }
+      });
+      
+      return false;
+    }
+  }
+
+  /**
+   * Record a bet result with the API
+   */
+  private async recordBetResult(betAmount: number, chipsWon: number): Promise<void> {
+    if (!this.playerAuth.isAuthenticated || !this.playerAuth.userId) {
+      console.warn('Cannot record bet result: Player not authenticated');
+      return;
+    }
+
+    try {
+      const betResult: BetResult = {
+        userId: this.playerAuth.userId,
+        betAmount,
+        chipsWon
+      };
+
+      const response = await this.apiService.recordBetResult(betResult);
+      
+      if (response.success) {
+        // Update local balance
+        this.playerBalance += chipsWon;
+        this.playerAuth.chips = this.playerBalance;
+        
+        // Send balance update to client
+        this.sendPlayerBalanceUpdate();
+      } else {
+        console.error('Failed to record bet result:', response.error);
+      }
+    } catch (error) {
+      console.error('Error recording bet result:', error);
+    }
+  }
+
+  /**
+   * Reset the game state for a new round
+   */
+  public reset(): void {
+    // Reset game state
+    this.game.reset();
+    
+    // Reset session flags
+    this.insuranceOffered = false;
+    this.insuranceDecided = false;
   }
 } 

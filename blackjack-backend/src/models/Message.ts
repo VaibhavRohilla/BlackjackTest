@@ -4,7 +4,6 @@
 export enum MessageType {
   // Connection related
   CONNECTED = 'connected',
-  DISCONNECTED = 'disconnected',
   ERROR = 'error',
   
   // Core game flow
@@ -47,7 +46,10 @@ export enum MessageType {
   GET_GAME_STATE = 'get_game_state',
   
   // Authentication
-  AUTHENTICATE = 'authenticate'
+  AUTHENTICATE = 'authenticate',
+  AUTH_SUCCESS = 'auth_success',
+  AUTH_ERROR = 'auth_error',
+  JOIN_SESSION = "JOIN_SESSION"
 }
 
 /**
@@ -153,4 +155,17 @@ export function createErrorMessage(message: string): ServerMessage {
     data: { message },
     error: message
   };
-} 
+}
+
+/**
+ * Create a standardized success message
+ */
+export function createSuccessMessage(message: string): ServerMessage {
+  return {
+    type: MessageType.ACTION_RESULT,
+    data: { 
+      success: true,
+      message 
+    }
+  };
+}

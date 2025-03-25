@@ -1,6 +1,6 @@
 import { WebSocket, WebSocketServer } from 'ws';
 import { GameSession } from '../game/gamesession';
-import { MessageHandler } from './messagehandler';
+import { MessageHandler } from '../server/messagehandler';
 import { ClientMessage, ServerMessage, MessageType } from '../models/message';
 
 /**
@@ -110,6 +110,24 @@ export class BlackjackServer {
   }
 
   /**
+   * Create a new game session for a client
+   */
+  public createGameForClient(clientId: string): GameSession {
+    // Check if a game already exists for this client
+    const existingGame = this.gameSessions.get(clientId);
+    if (existingGame) {
+      console.log(`Game already exists for client ${clientId}, returning existing game`);
+      return existingGame;
+    }
+
+    // Create a new game session
+    console.log(`Creating new game for client ${clientId}`);
+    const gameSession = new GameSession(clientId, '', this);
+    this.gameSessions.set(clientId, gameSession);
+    return gameSession;
+  }
+
+  /**
    * Handle client disconnection
    */
   public handleClientDisconnect(clientId: string): void {
@@ -118,5 +136,31 @@ export class BlackjackServer {
       gameSession.cleanup();
       this.gameSessions.delete(clientId);
     }
+  }
+
+  /**
+   * Shutdown the server and clean up resources
+   */
+  public shutdown(): void {
+    console.log('Shutting down BlackjackServer...');
+    
+    // Clean up all game sessions
+    for (const [clientId, gameSession] of this.gameSessions.entries()) {
+      gameSession.cleanup();
+    }
+    
+    // Clear the game sessions map
+    this.gameSessions.clear();
+    
+    // Terminate all WebSocket connections
+    this.wss.clients.forEach((client) => {
+      try {
+        client.terminate();
+      } catch (error) {
+        console.error('Error terminating client connection:', error);
+      }
+    });
+    
+    console.log('BlackjackServer shutdown complete');
   }
 } 

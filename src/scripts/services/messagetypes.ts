@@ -14,6 +14,7 @@ export enum MessageType {
   GAME_STATE = 'game_state',
   BALANCE_UPDATE = 'balance_update',
   GAME_OUTCOME = 'game_outcome',
+  GAME_END = 'game_end',
   
   // Player actions
   PLACE_BET = 'place_bet',
@@ -44,7 +45,8 @@ export enum MessageType {
   
   // Utility
   GET_PLAYER_DATA = 'get_player_data',
-  GET_GAME_STATE = 'get_game_state'
+  GET_GAME_STATE = 'get_game_state',
+  END_GAME = "game_end"
 } 
 
 export enum CardSuit {

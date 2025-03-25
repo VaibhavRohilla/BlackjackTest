@@ -1022,7 +1022,7 @@ export class BlackjackGame {
 
   /**
    * Check if the player can take insurance
-   * Player can take insurance if dealer's up card is an Ace and insurance hasn't been taken yet
+   * Player can take insurance if dealer's up card is an Ace
    */
   public canTakeInsurance(): boolean {
     if (this.gamePhase !== 'player_turn' || this.insuranceBet > 0) {
