@@ -29,8 +29,9 @@ export class BlackjackDealer extends Container {
     private readonly FINAL_SPLIT_X = -220; // Left position - second hand
     private readonly PLAYER_Y_OFFSET = 0.40; // Player hands at 40% from top
     private readonly DEALER_Y_OFFSET = -0.25; // Dealer hand at 25% from top
-    private readonly SPLIT_ANIMATION_DURATION = 400; // Duration for split animations
-    private readonly CARD_DEAL_DELAY = 200; // Delay between dealing cards
+    public readonly SPLIT_ANIMATION_DURATION = 400; // Duration for split animations
+    public readonly CARD_DEAL_DELAY = 1500; // Delay between dealing cards
+    private readonly SPLIT_HAND_SPACING = 220; // Total space between split hands
 
     /**
      * Create a new blackjack dealer
@@ -72,37 +73,19 @@ export class BlackjackDealer extends Container {
         const playerY = screenHeight * this.PLAYER_Y_OFFSET;
     
         try {
-    
-            // Immediately create split hand object before animation
+            // Create split hand object
             this.splitHand = new Hand('split');
             this.cardContainer.addChild(this.splitHand);
-    
-            // Take the second card from the player hand and give it to the split hand
-            const cardToMove = this.playerHand.cards.pop();
-            
-            if (cardToMove) {
-                this.splitHand.cards.push(cardToMove);
-                console.log("Card moved to split hand:", cardToMove);
-            }
-    
-            // // Set initial positions of hands before animation
-            // this.playerHand.x = window.innerWidth / 4;  // Centered
-            // this.splitHand.x = -window.innerWidth / 4;    // Centered
             this.splitHand.y = playerY;
-    
-            // // Animate the hands to their respective positions
-            // new Tween(this.playerHand,Globals.sceneManager?.tweenGroup)
-            //     .to({ x: this.FINAL_PLAYER_X, y: playerY }, this.SPLIT_ANIMATION_DURATION)
-            //     .easing(Easing.Back.Out)
-            //     .start();
-    
-            new Tween(this.splitHand,Globals.sceneManager?.tweenGroup)
-                .to({ x: this.FINAL_SPLIT_X, y: playerY }, this.SPLIT_ANIMATION_DURATION)
-                .easing(Easing.Back.Out)
+            
+            // Set initial alpha to 0
+            this.splitHand.alpha = 0;
+            
+            // Fade in the split hand smoothly
+            new Tween(this.splitHand, Globals.sceneManager?.tweenGroup)
+                .to({ alpha: 1 }, 300)
+                .easing(Easing.Cubic.Out)
                 .start();
-    
-            // Trigger resize to update their final positions
-            this.resize();
     
         } catch (error) {
             console.error("Error during split animation:", error);
@@ -119,21 +102,27 @@ export class BlackjackDealer extends Container {
     
         const screenHeight = window.innerHeight;
         const playerY = screenHeight * this.PLAYER_Y_OFFSET;
-
-        // Animate player hand to the right
-        new Tween(this.playerHand,Globals.sceneManager?.tweenGroup)
-            .to({ x:  this.playerHand.width, y: playerY }, 300)
+        console.log("Positioning split hands with animation");
+        
+        // Calculate final positions based on screen width
+        const finalPlayerX = this.SPLIT_HAND_SPACING / 2;
+        const finalSplitX = -this.SPLIT_HAND_SPACING / 2;
+        
+        // Create a smooth transition for both hands
+        new Tween(this.playerHand.position, Globals.sceneManager?.tweenGroup)
+            .to({ x: finalPlayerX, y: playerY }, this.SPLIT_ANIMATION_DURATION)
             .easing(Easing.Cubic.Out)
             .start();
     
-        // Animate split hand to the left
-        new Tween(this.splitHand,Globals.sceneManager?.tweenGroup)
-            .to({ x:  - this.playerHand.width, y: playerY }, 300)
+        new Tween(this.splitHand.position, Globals.sceneManager?.tweenGroup)
+            .to({ x: finalSplitX, y: playerY }, this.SPLIT_ANIMATION_DURATION)
             .easing(Easing.Cubic.Out)
             .start();
     
-        // Ensure bust status is updated
-        this.updateBustStatus();
+        // Ensure bust status is updated after animation
+        setTimeout(() => {
+            this.updateBustStatus();
+        }, this.SPLIT_ANIMATION_DURATION);
     }
     
     
@@ -147,11 +136,14 @@ export class BlackjackDealer extends Container {
         // Deal the cards in the proper sequence with animations
         // This creates the initial dealing animation when starting a game
         await this.playerHand.dealCards(playerHand.cards[0]);
+        await new Promise(resolve => setTimeout(resolve, this.CARD_DEAL_DELAY));
         await this.dealerHand.dealCards(dealerHand.cards[0]);
+        await new Promise(resolve => setTimeout(resolve, this.CARD_DEAL_DELAY));
         await this.playerHand.dealCards(playerHand.cards[1]);
+        await new Promise(resolve => setTimeout(resolve, this.CARD_DEAL_DELAY));
         await this.dealerHand.dealCards(dealerHand.cards[1]);
 
-        // Update card values display
+        // Update card values display after all cards are dealt
         this.playerHand.updatePointsDisplay?.(true);
         this.dealerHand.updatePointsDisplay?.(true);
     }
@@ -207,10 +199,17 @@ export class BlackjackDealer extends Container {
         this.dealerHand.y = dealerY;
     
         if (this.splitHand) {
-            // If split hand exists, do not reset positions to zero
+            // If split hand exists, position both hands
             this.playerHand.y = playerY;
             this.splitHand.y = playerY;
-            this.positionSplitHands();
+            
+            // Calculate final positions based on screen width
+            const finalPlayerX = this.SPLIT_HAND_SPACING / 2;
+            const finalSplitX = -this.SPLIT_HAND_SPACING / 2;
+            
+            // Set positions directly without animation for resize
+            this.playerHand.x = finalPlayerX;
+            this.splitHand.x = finalSplitX;
         } else {
             this.playerHand.x = 0;  // Default position if no split
             this.playerHand.y = playerY;

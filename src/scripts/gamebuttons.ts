@@ -1286,6 +1286,16 @@ export class GameButtonContainer extends Container {
             button.setActive(true);
         });
     }
+
+    /**
+     * Get all currently visible buttons
+     * @returns Array of GameButtonType that are currently visible
+     */
+    public getVisibleButtons(): GameButtonType[] {
+        return Array.from(this.buttons.entries())
+            .filter(([_, btn]) => btn.visible)
+            .map(([type]) => type);
+    }
 }
 
 // Extended options for game buttons

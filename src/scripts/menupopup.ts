@@ -323,10 +323,7 @@ export class MenuPopup extends Container {
         this.infoOverlay.visible = false;
         this.infoOverlay.eventMode = 'static';
         this.infoOverlay.cursor = 'pointer';
-        // We'll add the event listener dynamically when showing
-        this.infoOverlay.zIndex = Z_INDEX.POPUPS + 20; // Ensure it's above everything else
-        this.addChild(this.infoOverlay);
-        this.addChild(this.infoCapture);
+        this.infoOverlay.zIndex = Z_INDEX.POPUPS + 20;
         
         // Create info overlay background
         this.infoOverlayBg = new Graphics();
@@ -350,7 +347,6 @@ export class MenuPopup extends Container {
         
         // Set the pivot point to top-left for proper scaling
         this.pivot.set(0, 0);
-
         
         // Add default buttons
         this.addButton({1: 'Home', 2: undefined}, 'Home', () => this.onButtonClicked('Home'));
@@ -618,16 +614,13 @@ export class MenuPopup extends Container {
      * @param buttonName - Name of the clicked button
      */
     private onButtonClicked(buttonName: string): void {
-        // Toggle selection state
-        if (this.selectedButton === buttonName) {
-        } 
-        
         // Handle info button specially
         if (buttonName === "Info") {
             this.showInfoOverlay();
+            return; // Return early to prevent other callbacks
         }
         
-        // Call the appropriate callback
+        // Call the appropriate callback for other buttons
         const callback = this.buttonCallbacks.get(buttonName);
         if (callback) {
             callback();
@@ -909,7 +902,9 @@ export class MenuPopup extends Container {
         this.updateInfoOverlaySize();
         
         // Position info overlay in center of screen
-        this.infoOverlay.position.set(window.innerWidth / 2, window.innerHeight / 2);
+        const screenWidth = window.innerWidth;
+        const screenHeight = window.innerHeight;
+        this.infoOverlay.position.set(screenWidth / 2, screenHeight / 2);
         
         // Close the menu popup to prevent conflicts
         this.close();
@@ -920,7 +915,7 @@ export class MenuPopup extends Container {
             if (this.isInfoOpen) return;
             
             // Show the info capture overlay first
-            this.infoCapture.position.set(-window.innerWidth, -window.innerHeight);
+            this.infoCapture.position.set(-screenWidth, -screenHeight);
             this.infoCapture.visible = true;
             this.infoCapture.removeAllListeners();
             this.infoCapture.on('pointerdown', (event) => {
@@ -928,9 +923,19 @@ export class MenuPopup extends Container {
                 this.closeInfoOverlay();
             });
             
-            // Make sure we're at the top of the display list
+            // Add info overlay and capture to the stage (parent of menu popup)
             if (this.parent) {
-                this.parent.addChild(this);
+                // Remove from menu popup if it's there
+                if (this.infoOverlay.parent) {
+                    this.infoOverlay.parent.removeChild(this.infoOverlay);
+                }
+                if (this.infoCapture.parent) {
+                    this.infoCapture.parent.removeChild(this.infoCapture);
+                }
+                
+                // Add to stage
+                this.parent.addChild(this.infoCapture);
+                this.parent.addChild(this.infoOverlay);
             }
             
             // Prepare for animation
@@ -946,7 +951,7 @@ export class MenuPopup extends Container {
             });
             
             // Animate in
-            new Tween(this.infoOverlay)
+            new Tween(this.infoOverlay, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 1, scale: { x: 1, y: 1 } }, 300)
                 .easing(Easing.Back.Out)
                 .start();
@@ -979,7 +984,7 @@ export class MenuPopup extends Container {
         this.infoCapture.visible = false;
         
         // Animate out
-        new Tween(this.infoOverlay)
+        new Tween(this.infoOverlay,Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0, scale: { x: 0.5, y: 0.5 } }, 200)
             .easing(Easing.Back.In)
             .onComplete(() => {

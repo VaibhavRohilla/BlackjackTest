@@ -83,13 +83,12 @@ export interface Card {
           throw new Error('No cards left in the deck');
         }
       }
-      
       const card = this.cards.pop()!;
       card.faceUp = faceUp;
       
       return card;
     }
-    
+
     /**
      * Discard a card
      */

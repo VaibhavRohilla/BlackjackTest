@@ -210,7 +210,7 @@ export class BlackjackGame {
     this.dealerHand.cards.push(dealerCard1);
     
     // Deal second card to player face up
-    const playerCard2 = this.deck.dealCard(true);
+    const playerCard2 =  this.deck.dealCard(true);
     this.playerHand.cards.push(playerCard2);
     
     // Deal second card to dealer face down
