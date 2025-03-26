@@ -73,4 +73,4 @@ export const formatNumber = (num: number): string => {
     }
 
 
-    export const loginData = {"loginMethod":"guest","timestamp":1742810436021,"jwt":"eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJodHRwczovL2Jsb2Nrc3BpbmdhbWluZy5jb20iLCJhdWQiOiJodHRwczovL2Jsb2Nrc3BpbmdhbWluZy5jb20iLCJleHAiOjE3NTA1ODY0MzYuMDIxLCJkYXRhIjp7InVzZXJJZCI6IjY3ZTEyZDQ0ZDIzYmExYmY5MjhlOTFhOCIsImxvZ2luTWV0aG9kIjoiZ3Vlc3QiLCJ0aW1lc3RhbXAiOjE3NDI4MTA0MzYwMjF9fQ.c6Xbx_FpBeCrBGsYVES0m9-VkvJ4QULypnbY6l-Jypd-17NKLLnIntqtdHHvwovGcZ0pb7uJIH9RtC5u2rsbBw","userId":"67e12d44d23ba1bf928e91a8"};
+    export const loginData = {"loginMethod":"google","timestamp":1743010532443,"jwt":"eyJhbGciOiJFZERTQSJ9.eyJpc3MiOiJodHRwczovL2Jsb2Nrc3BpbmdhbWluZy5jb20iLCJhdWQiOiJodHRwczovL2Jsb2Nrc3BpbmdhbWluZy5jb20iLCJleHAiOjE3NTA3ODY1MzIuNDQzLCJkYXRhIjp7InVzZXJJZCI6IjY3ZTQzYWU0YzdhZmFhNDExOTE5YjM1YSIsImxvZ2luTWV0aG9kIjoiZ29vZ2xlIiwidGltZXN0YW1wIjoxNzQzMDEwNTMyNDQzfX0.gG-btoR7W5927g0cDVTme0qq4D83vQbQrSYF0VmHlY0L28oogbeJGUsdZyUDlPQKIT6PhTJ3ru44THmGkli3BA","userId":"67e43ae4c7afaa411919b35a"};
