@@ -72,109 +72,67 @@ export class Table extends Sprite {
         this.chipsContainer.addChild(this.toggleButton);
     }
     
+    private isToggleButtonAnimating: boolean = false; // New flag to prevent rapid clicks
+
     private toggleChipsVisibility() {
-        // If we have a shop button callback, call it to open the shop popup
+        if (this.isToggleButtonAnimating) return; // Prevent click if animation is ongoing
+        this.isToggleButtonAnimating = true; // Block further clicks
+    
         if (this.onShopButtonClick) {
-            // Animate the button
             new TWEEN.Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
                 .to({ alpha: 0.5 }, 150)
                 .yoyo(true)
                 .repeat(1)
                 .onComplete(() => {
-                    // Call the shop button callback to open the popup
-                    if (this.onShopButtonClick) {
-                        this.onShopButtonClick();
-                    }
+                    this.onShopButtonClick?.();
+                    this.isToggleButtonAnimating = false; // Allow interaction again
                 })
                 .start();
             return;
         }
         
-        // If no shop button callback, use the original behavior
-        // Toggle the state
         this.showingAllChips = !this.showingAllChips;
-        
-        // Determine which chips to show/hide
+    
         const visibleChips = this.showingAllChips ? 
-            this.totalChips + this.premiumChips : // Show all chips including premium
-            this.totalChips - 1; // Show basic chips except the last one
-        
-        // Animate the button
+            this.totalChips + this.premiumChips : 
+            this.totalChips - 1; 
+    
         new TWEEN.Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
             .to({ alpha: 0.5 }, 150)
             .yoyo(true)
             .repeat(1)
             .onComplete(() => {
-                // Update the label text
                 this.buttonLabel.updateLabelText(this.showingAllChips ? "-" : "+");
-                
-                // Hide the button completely if showing all chips
                 if (this.showingAllChips) {
-                    // Fade out the button
                     new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
                         .to({ alpha: 0 }, 300)
                         .easing(Easing.Cubic.Out)
                         .onComplete(() => {
                             this.toggleButton.visible = false;
+                            this.isToggleButtonAnimating = false; // Interaction restored
                         })
                         .start();
+                } else {
+                    this.isToggleButtonAnimating = false; // Interaction restored
                 }
             })
             .start();
-        
-        // Animate chips appearing/disappearing
+    
         this.chips.forEach((chip, i) => {
-            if (this.showingAllChips) {
-                // Show all chips
-                if (i < visibleChips) {
-                    chip.visible = true;
-                    
-                    // If it's a premium chip, animate it appearing
-                    if (i >= this.totalChips - 1) {
-                        chip.alpha = 0;
-                        chip.scale.set(0.2);
-                        
-                        // Animate fade in
-                        new Tween(chip, Globals.sceneManager?.tweenGroup)
-                            .to({ alpha: 1 }, 500)
-                            .easing(Easing.Cubic.Out)
-                            .start();
-                        
-                        // Animate scale up
-                        new Tween(chip.scale, Globals.sceneManager?.tweenGroup)
-                            .to({ x: 0.3, y: 0.3 }, 500)
-                            .easing(Easing.Back.Out)
-                            .start();
-                    }
-                }
-            } else {
-                // Show the toggle button when hiding chips
-                this.toggleButton.visible = true;
-                this.toggleButton.alpha = 0;
-                
-                // Fade in the button
-                new Tween(this.toggleButton, Globals.sceneManager?.tweenGroup)
-                    .to({ alpha: 0.9 }, 300)
-                    .easing(Easing.Cubic.Out)
+            if (i >= visibleChips) {
+                new Tween(chip, Globals.sceneManager?.tweenGroup)
+                    .to({ alpha: 0 }, 300)
+                    .easing(Easing.Cubic.In)
+                    .onComplete(() => {
+                        chip.visible = false;
+                    })
                     .start();
-                    
-                // Hide premium chips
-                if (i >= visibleChips) {
-                    // Animate fade out
-                    new Tween(chip, Globals.sceneManager?.tweenGroup)
-                        .to({ alpha: 0 }, 300)
-                        .easing(Easing.Cubic.In)
-                        .onComplete(() => {
-                            chip.visible = false;
-                        })
-                        .start();
-                }
             }
         });
-        
-        // Reposition chips to show/hide the premium chips
+    
         this.positionChips(false, true);
     }
+    
     
     /**
      * Unlock premium chips (2K, 5K, 10K)
@@ -978,7 +936,8 @@ export class Chips extends Sprite {
         
         if (!this.isActive) return;
         
-        if (this.value > Globals.balance) {
+        if (this.value >= Globals.balance) {
+            this.interactive = false;
             this.isActive = false;
             
             // Simple, elegant animation for insufficient balance
@@ -991,6 +950,8 @@ export class Chips extends Sprite {
                 .yoyo(true)
                 .repeat(1)
                 .onComplete(() => {
+            this.interactive = true;
+
                     this.position.x = originalX;
                     this.isActive = true;
                     this.activeTween = undefined;

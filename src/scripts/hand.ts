@@ -408,35 +408,9 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
      * @returns The overlap factor to use for card positioning
      */
     getCardOverlapFactor(): number {
-        // Get screen dimensions
-        const screenWidth = window.innerWidth;
-        const screenHeight = window.innerHeight;
-        const isPortrait = screenHeight > screenWidth;
-        
-        // Base overlap factor
-        let baseOverlap = 0.7; // 70% overlap for standard view
-        
-        // Adjust overlap based on screen size and orientation
-        if (isPortrait) {
-            // For portrait mode (mobile), use slightly less overlap
-            baseOverlap = 0.65;
-        } else {
-            // For landscape mode, use slightly more overlap
-            baseOverlap = 0.75;
-        }
-        
-        // Adjust for very small screens
-        if (screenWidth < 600) {
-            baseOverlap = 0.6; // Less overlap on very small screens
-        }
-        
-        // Adjust for very large screens
-        if (screenWidth > 1920) {
-            baseOverlap = 0.8; // More overlap on very large screens
-        }
-        
+  
         // Ensure overlap stays within reasonable bounds
-        return Math.max(0.5, Math.min(0.85, baseOverlap));
+        return 0.7
     }
     
     /**
@@ -501,22 +475,22 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                 };
                 
                 // Animate to the new position
-                new Tween(card.sprite.position)
+                new Tween(card.sprite.position, Globals.sceneManager?.tweenGroup)
                     .to({ x, y }, 300)
-                    .easing(Easing.Cubic.Out)
+                    .easing(Easing.Elastic.Out)
                     .start();
                 
                 // Set z-index based on card position
                 card.sprite.zIndex = index;
                 
                 // Apply a slight rotation for a more natural look
-                if (cardCount > 1) {
-                    const rotationOffset = (index - (cardCount - 1) / 2) * 0.5;
-                    new Tween(card.sprite)
-                        .to({ rotation: rotationOffset * (Math.PI / 180) }, 300)
-                        .easing(Easing.Cubic.Out)
-                        .start();
-                }
+                // if (cardCount > 1) {
+                //     const rotationOffset = (index - (cardCount - 1) / 2) * 0.5;
+                //         new Tween(card.sprite, Globals.sceneManager?.tweenGroup)
+                //         .to({ rotation: rotationOffset * (Math.PI / 180) }, 300)
+                //         .easing(Easing.Cubic.Out)
+                //         .start();
+                // }
             }
         });
         
@@ -788,7 +762,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
             .onComplete(() => {
                 if (!card.sprite) return;
                 
-                new Tween(card.sprite.scale)
+                new Tween(card.sprite.scale, Globals.sceneManager?.tweenGroup)
                     .to({ 
                         x: cardScale * 1.1,
                         y: cardScale * 1.1
@@ -804,7 +778,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                             this.pointsDisplay.alpha = 0;
                             this.pointsDisplay.visible = true;
                             
-                            new Tween(this.pointsDisplay)
+                            new Tween(this.pointsDisplay, Globals.sceneManager?.tweenGroup)
                                 .to({ alpha: 1 }, 300)
                                 .easing(Easing.Cubic.Out)
                                 .start();

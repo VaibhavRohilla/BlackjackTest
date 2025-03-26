@@ -52,7 +52,7 @@ export interface SpecialConditions {
  * Result of insurance
  */
 export interface InsuranceResult {
-  outcome: 'insurance_win' | 'insurance_lose';
+  outcome: 'insurance_won' | 'insurance_lose';
   dealerHasBlackjack: boolean;
   payout: number;
 }
@@ -534,7 +534,7 @@ export class BlackjackGame {
       
       // Insurance pays 2:1
       return {
-        outcome: 'insurance_win',
+        outcome: 'insurance_won',
         dealerHasBlackjack: true,
         payout: this.insuranceBet * 2
       };
@@ -727,7 +727,7 @@ export class BlackjackGame {
     // Both hands won
     if ((handOneOutcome === 'player_win' || handOneOutcome === 'dealer_bust' || handOneOutcome === 'player_blackjack') &&
         (handTwoOutcome === 'split_win' || handTwoOutcome === 'split_blackjack')) {
-      return 'split_win_win';
+      return 'player_win';
     }
     
     // Both hands lost
@@ -749,7 +749,7 @@ export class BlackjackGame {
     
     if ((handOneOutcome === 'dealer_win' || handOneOutcome === 'player_bust') &&
         (handTwoOutcome === 'split_win' || handTwoOutcome === 'split_blackjack')) {
-      return 'dealer_win';
+      return 'split_win';
     }
     
     // One win, one push
@@ -835,7 +835,7 @@ export class BlackjackGame {
   /**
    * Get the current game state message
    */
-  public getGameState(): GameStateMessage {
+  public getGameState(balance : number): GameStateMessage {
     const allowedActions: MessageType[] = [];
     
     // Add allowed actions based on game phase
@@ -869,7 +869,7 @@ export class BlackjackGame {
       }
       
       // Allow insurance if available
-      if (this.isInsuranceAvailable() && this.playerHand.cards.length === 2) {
+      if (this.isInsuranceAvailable() && this.playerHand.cards.length === 2 && balance >= this.currentBet/2 ) {
         allowedActions.push(MessageType.INSURANCE);
       }
     }
@@ -1487,41 +1487,56 @@ export class BlackjackGame {
     }
   }
 
-  /**
-   * Get the final game outcome
-   * @returns The game outcome string
-   */
-  public getGameOutcome(): string {
-    // Handle surrender case first
-    if (this.surrendered) {
-      return 'surrender';
-    }
+/**
+ * Get the final game outcome
+ * @returns The game outcome string
+ */
+public getGameOutcome(): string {
+  // Handle surrender case first
+  if (this.surrendered) {
+    return 'surrender';
+  }
 
-    // Handle blackjack cases
-    if (this.playerHand.blackjack) {
+  // Handle insurance case
+  if (this.insuranceBet > 0) {
+      if (this.dealerHand.blackjack) {  // Only succeed if dealer has blackjack
+          return 'insurance_won';
+      } else {
+          return 'insurance_lose';  // Explicitly mark insurance loss
+      }
+  }
+
+  // Handle blackjack cases
+  if (this.playerHand.blackjack) {
       if (this.dealerHand.blackjack) {
-        return 'push';
+          return 'push';
       }
       return 'blackjack';
-    }
-
-    // Handle bust cases
-    if (this.playerHand.busted) {
-      return 'lose';
-    }
-    if (this.dealerHand.busted) {
-      return 'win';
-    }
-
-    // Compare hand values
-    if (this.playerHand.value > this.dealerHand.value) {
-      return 'win';
-    }
-    if (this.playerHand.value < this.dealerHand.value) {
-      return 'lose';
-    }
-
-    // Must be a push
-    return 'push';
   }
+
+  // Handle bust cases
+  if (this.playerHand.busted) {
+      return 'lose';
+  }
+  if (this.dealerHand.busted) {
+      return 'win';
+  }
+
+  // Compare hand values
+  if (this.playerHand.value > this.dealerHand.value) {
+      return 'win';
+  }
+  if (this.playerHand.value < this.dealerHand.value) {
+      return 'lose';
+  }
+
+  // If it's a tie and insurance is involved but dealer doesn't have blackjack
+  if (this.insuranceBet > 0 && !this.dealerHand.blackjack) {
+      return 'push_with_insurance_loss';
+  }
+
+  // Must be a push
+  return 'push';
+}
+
 } 

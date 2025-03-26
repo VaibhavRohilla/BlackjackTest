@@ -780,85 +780,54 @@ export class GameManager extends Container {
     }
 
     giveCards(cardData: { target: string, card: any, isHoleCard: boolean, isAdditionalCard: boolean }) {
-        // Skip processing if in the middle of a split operation
         if (this._processingSplitResult) return;
-
-        // Set card dealing in progress flag to prevent premature button display
+    
         this.blackjackDealer.isCardDealInProgress = true;
-
-        // Handle dealer cards - special handling for hole card
+    
+        const handleCardDealing = async (hand: Hand) => {
+            await hand.dealCards(cardData.card);
+            hand.updatePointsDisplay?.(true);
+            this.blackjackDealer.positionSplitHands();
+            this.blackjackDealer.isCardDealInProgress = false;
+            this.cardDealComplete();
+            this.checkPendingOutcome();
+        };
+    
         if (cardData.target === 'dealer') {
             if (cardData.isHoleCard) {
-                // Special handling for revealing hole card
-                    this.blackjackDealer.dealerHand.revealDealerCard(cardData.card).then(() => {
-                        setTimeout(() => {
-                            this.blackjackDealer.isCardDealInProgress = false;
-                        this.cardDealComplete(); // Register card deal completion
-                            this.checkPendingOutcome();
-                        }, 200);
-                    });
-            } else {
-                // Regular dealer card
-                this.blackjackDealer.dealerHand.dealCards(cardData.card).then(() => {
-                    setTimeout(() => {
-                        this.blackjackDealer.isCardDealInProgress = false;
-                        this.cardDealComplete(); // Register card deal completion
-                        this.checkPendingOutcome();
-                    }, 200);
+                this.blackjackDealer.dealerHand.revealDealerCard(cardData.card).then(() => {
+                    this.blackjackDealer.isCardDealInProgress = false;
+                    this.cardDealComplete();
+                    this.checkPendingOutcome();
                 });
+            } else {
+                handleCardDealing(this.blackjackDealer.dealerHand);
+            }
+        } 
+        else if (cardData.target === 'player') {
+            if (this.blackjackDealer.splitHand && Globals.activeHand === 'first') {
+                // Handle split hand dealing
+                handleCardDealing(this.blackjackDealer.playerHand);
+            } else if (!this.blackjackDealer.splitHand) {
+                // Regular dealing to player's hand
+                handleCardDealing(this.blackjackDealer.playerHand);
             }
         }
-        // Handle player cards
-        else if (cardData.target === 'player') {
-            this.blackjackDealer.playerHand.dealCards(cardData.card).then(() => {
-                // Update points display
-                this.blackjackDealer.playerHand.updatePointsDisplay?.(true);
-                
-                // Check for bust in split mode
-                if (this.blackjackDealer.splitHand && Globals.activeHand === 'first') {
-                    const playerValue = this.blackjackDealer.calculateHandValue(this.blackjackDealer.playerHand);
-                    if (playerValue > 21) {
-                        // Hand is busted, switch to second hand
-                        this.handleSplitHandSwitch('second');
-                    }
-                }
-                
-                            setTimeout(() => {
-                                this.blackjackDealer.isCardDealInProgress = false;
-                    this.cardDealComplete(); // Register card deal completion
-                    this.checkPendingOutcome();
-                }, 200);
-            });
-        }
-        // Handle split hand cards
         else if (cardData.target === 'split') {
-            // Initialize split hand if needed
             if (!this.blackjackDealer.splitHand) {
+                console.warn("Split hand not created, creating it now...");
                 this.blackjackDealer.initializeSplitHand();
+                this.blackjackDealer.positionSplitHands();
             }
             
-            // Make sure split hand exists now
             if (this.blackjackDealer.splitHand) {
-                this.blackjackDealer.splitHand.dealCards(cardData.card).then(() => {
-                    // Update points display
-                    this.blackjackDealer.splitHand?.updatePointsDisplay?.(true);
-                    
-                    // Maintain split hand positions
-                    this.blackjackDealer.positionSplitHands();
-                    
-                                setTimeout(() => {
-                        this.blackjackDealer.isCardDealInProgress = false;
-                        this.cardDealComplete(); // Register card deal completion
-                        this.checkPendingOutcome();
-                    }, 200);
-                });
+                handleCardDealing(this.blackjackDealer.splitHand);
             } else {
-                console.error("Failed to create split hand");
-                this.blackjackDealer.isCardDealInProgress = false;
-                this.cardDealComplete(); // Register even failed card deals
+                console.error("Failed to create split hand.");
             }
         }
     }
+    
     
     HandleGameInProgress(data: any) {
         // Skip handling during split processing
@@ -1269,31 +1238,19 @@ export class GameManager extends Container {
                 const card2 = this.blackjackDealer.playerHand.cards[1];
                 
                 if (card1 && card2 && card1.value === card2.value) {
-                    // Valid split - set flag to prevent premature button display
-                    this.blackjackDealer.isCardDealInProgress = true;
-                    
-                    // Reset the processing flag in case it was stuck from a previous attempt
-                    this._processingSplitResult = false;
-                    
-                    // Hide all buttons during split operation
+                    // this.blackjackDealer.isCardDealInProgress = true;
+                    // this._processingSplitResult = true;  // Correctly setting the split result flag
                     this.gameButtonsContainer.hideAllButtons(true);
-                    
-                    // Turn off split visual indicator
-                    this.blackjackDealer.setSplitAvailableVisual(false);
-                    
-                    // Initialize active hand tracking
                     Globals.activeHand = 'first';
-                    
-                    // Call backend to perform the split
                     Globals.backendService?.split();
                 } else {
                     console.log("Cannot split: cards must be of the same rank");
                 }
-            } else {
-                console.log("Cannot split: player must have exactly 2 cards");
             }
+            
         }
     }
+    
     onInsuranceClicked() {
         if (Globals.gameState !== 'player_turn' || !this.blackjackDealer.isInsuranceAvailable) return;
         
@@ -1490,7 +1447,7 @@ export class GameManager extends Container {
         this._processingSplitResult = true;
         
         // Hide all buttons during processing
-        this.gameButtonsContainer.hideAllButtons(true);
+        this.gameButtonsContainer.hideAllButtons(false);
         
         // Set card dealing flag to prevent premature button display
         this.blackjackDealer.isCardDealInProgress = true;
@@ -1520,95 +1477,131 @@ export class GameManager extends Container {
     private async setupSplitHandsVisuals(data: any): Promise<void> {
         // Initialize the split hand if it doesn't exist
         if (!this.blackjackDealer.splitHand) {
-            console.log("Initializing split hand for the first time");
-            // The animation starts here and creates the split hand
+            console.log("Initializing split hand for the first time...");
             this.blackjackDealer.initializeSplitHand();
-            
-            // Wait for the animation to complete (approximate timing)
+    
+            // Wait for the animation to complete
             await new Promise(resolve => setTimeout(resolve, 800));
         }
-        
-        // Wait a bit more to ensure the split hand is created and animations are done
+    
+        // Make sure split hand is created
         if (!this.blackjackDealer.splitHand) {
-            // If it's still not created, force creation without animation
-            console.warn("Split hand not created after animation, creating directly");
+            console.warn("Split hand still not created. Creating directly.");
             this.blackjackDealer.splitHand = new Hand('split');
             this.blackjackDealer.cardContainer.addChild(this.blackjackDealer.splitHand);
-            this.blackjackDealer.positionSplitHands();
         }
-        
-        // Always call positionSplitHands before dealing cards to ensure correct starting positions
+    
+        // Always position hands before dealing cards
         this.blackjackDealer.positionSplitHands();
-        
-        // Store original positions to maintain them during card dealing
-        let playerHandX = 0;
-        let splitHandX = 0;
-        
-        if (this.blackjackDealer.playerHand) {
-            playerHandX = this.blackjackDealer.playerHand.x;
-        }
-        
-        if (this.blackjackDealer.splitHand) {
-            splitHandX = this.blackjackDealer.splitHand.x;
-        }
-        
-        // Setup the player's first hand with cards from backend
+    
+        // Update the player's hand with cards from backend
         if (data.playerHand && data.playerHand.cards) {
-            // Reset existing player hand but keep its position
             this.blackjackDealer.playerHand.reset();
-            this.blackjackDealer.playerHand.x = playerHandX; // Restore position
-            
-            // Deal each card to the player's hand
+    
             for (const card of data.playerHand.cards) {
                 await this.blackjackDealer.playerHand.dealCards(card);
-                // Ensure position is maintained after each card deal
-                this.blackjackDealer.playerHand.x = playerHandX;
-                // Small delay between cards for animation
                 await new Promise(resolve => setTimeout(resolve, 200));
             }
         }
-        
-        // Setup the split hand with cards from backend
-        if (data.splitHand && data.splitHand.cards && this.blackjackDealer.splitHand) {
-            // Clear existing split hand cards but keep position
+    
+        // Update the split hand with cards from backend
+        if (data.splitHand && data.splitHand.cards) {
             this.blackjackDealer.splitHand.reset();
-            this.blackjackDealer.splitHand.x = splitHandX; // Restore position
-            
-            // Deal each card to the split hand
+    
             for (const card of data.splitHand.cards) {
                 await this.blackjackDealer.splitHand.dealCards(card);
-                // Ensure position is maintained after each card deal
-                this.blackjackDealer.splitHand.x = splitHandX;
-                // Small delay between cards for animation
                 await new Promise(resolve => setTimeout(resolve, 200));
             }
         }
-        
-        // Make sure points are displayed on both hands
+    
+        // Make sure points are displayed correctly
         this.blackjackDealer.playerHand.updatePointsDisplay?.(true);
         this.blackjackDealer.splitHand?.updatePointsDisplay?.(true);
-        
-        // Update bust status indicators
+    
+        // Update bust status if necessary
         this.blackjackDealer.updateBustStatus?.();
-        
-        // Set the active hand based on backend data
+    
+        // Activate the appropriate hand
         const activeHand = data.activeSplitHand || 'first';
         this.handleSplitHandSwitch(activeHand);
-        
-        // Set global state
         Globals.activeHand = activeHand;
-        
-        // Ensure final positions are correct by calling positionSplitHands again
+    
+        // Ensure everything is positioned correctly
         this.blackjackDealer.positionSplitHands();
-        
-        // Do one final resize to ensure everything is positioned correctly
         this.blackjackDealer.resize();
-        
-        // Log final positions for debugging
-        if (this.blackjackDealer.splitHand) {
-            console.log(`Final split setup positions: player (${this.blackjackDealer.playerHand.x}), split (${this.blackjackDealer.splitHand.x})`);
+    
+        console.log("Split hands setup complete.");
+    }
+    
+    
+    /**
+     * Ensure split hand is initialized properly
+     */
+    private async ensureSplitHandInitialized(): Promise<void> {
+        if (!this.blackjackDealer.splitHand) {
+            console.log("Initializing split hand for the first time");
+            this.blackjackDealer.initializeSplitHand();
+            await this.delay(800);
+    
+            if (!this.blackjackDealer.splitHand) {
+                console.warn("Split hand not created after animation, creating directly");
+                this.blackjackDealer.splitHand = new Hand('split');
+                this.blackjackDealer.cardContainer.addChild(this.blackjackDealer.splitHand);
+            }
+        }
+        this.blackjackDealer.positionSplitHands();
+    }
+    
+    /**
+     * Store original positions of player and split hands
+     */
+    private storeHandPositions() {
+        return {
+            playerHandX: this.blackjackDealer.playerHand?.x || 0,
+            splitHandX: this.blackjackDealer.splitHand?.x || 0
+        };
+    }
+    
+    /**
+     * Setup hand visuals and cards
+     */
+    private async setupHand(hand: Hand, handData: any, originalX: number): Promise<void> {
+        if (!hand || !handData?.cards) return;
+    
+        hand.reset();
+        hand.x = originalX;
+    
+        for (const card of handData.cards) {
+            await hand.dealCards(card);
+            hand.x = originalX; // Ensure position is maintained
+            await this.delay(200); // Add delay for animation effect
         }
     }
+    
+    /**
+     * Update points display for both hands
+     */
+    private updatePointsDisplay(): void {
+        this.blackjackDealer.playerHand.updatePointsDisplay?.(true);
+        this.blackjackDealer.splitHand?.updatePointsDisplay?.(true);
+    }
+    
+    /**
+     * Finalize positions and resize UI
+     */
+    private finalizeHandSetup(): void {
+        this.blackjackDealer.positionSplitHands();
+        this.blackjackDealer.resize();
+        console.log(`Final split setup positions: player (${this.blackjackDealer.playerHand.x}), split (${this.blackjackDealer.splitHand?.x})`);
+    }
+    
+    /**
+     * Helper function for async delays
+     */
+    private delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    
 
     /**
      * Handle a split option special case
@@ -1923,7 +1916,10 @@ export class GameManager extends Container {
         this._processingSplitResult = false;
         
         // Determine buttons to show - default to play again and rebet
-        const outcomeButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
+        let outcomeButtons = [GameButtonType.PLAYON, GameButtonType.REBET];
+        if(Globals.balance < Globals.currentBet) {
+            outcomeButtons = [GameButtonType.PLAYON];
+        }
         
         // Map backend outcome to GameOutcome enum if needed
         let outcomeType = data.outcome;

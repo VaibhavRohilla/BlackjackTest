@@ -1095,173 +1095,113 @@ export class GameButtonContainer extends Container {
     public showSpecificButtons(buttonNames: GameButtonType[], immediate: boolean = false, preventDuplicates: boolean = true): boolean {
         console.log(`Showing specific buttons:`, buttonNames);
 
-        // Check if these exact buttons are already showing (to prevent duplicate animations)
-        if (preventDuplicates && buttonNames.length > 0) {
-            // Only check if we have the same number of active buttons
-            if (this.currentActiveButtons.length === buttonNames.length) {
-                // Get the types of all current active buttons
-                const currentButtonTypes = this.currentActiveButtons
-                    .map(btn => this.getButtonTypeByInstance(btn))
-                    .filter(type => type !== null) as GameButtonType[];
-                
-                // Check if all requested buttons are already shown
-                const allButtonsAlreadyShown = buttonNames.every(type => 
-                    currentButtonTypes.includes(type));
-                
-                if (allButtonsAlreadyShown) {
-                    console.log("These exact buttons are already showing, skipping animation");
-                    return true;
-                }
-            }
+        // Cancel any ongoing animations first
+        this.cancelAllButtonAnimations();
+
+        // Hide all current buttons instantly
+        this.hideAllButtons(true);
+
+        // If no buttons to show, we're done
+        if (buttonNames.length === 0) {
+            return true;
         }
 
-        // Hide all current buttons first
-        this.hideAllButtons(immediate, () => {
-            // Mark as animating
-            this.isAnimating = true;
-            this.pendingAnimations = 0;
-            this.buttonStateVersion++;
-            
-            // Pre-position all buttons first so calculations are correct
-            const buttonsToShow: GameButton[] = [];
-            buttonNames.forEach(buttonType => {
-                const button = this.buttons.get(buttonType);
-                if (button) {
-                    buttonsToShow.push(button);
-                    // Make button active for correct positioning
-                    button.visible = true;
-                    button.alpha = 0;
-                    if (!this.currentActiveButtons.includes(button)) {
-                        this.currentActiveButtons.push(button);
-                    }
-                } else {
-                    console.warn(`Button ${buttonType} not found`);
+        // Mark as animating
+        this.isAnimating = true;
+        this.pendingAnimations = 0;
+        this.buttonStateVersion++;
+
+        // Pre-position all buttons first
+        const buttonsToShow: GameButton[] = [];
+        buttonNames.forEach(buttonType => {
+            const button = this.buttons.get(buttonType);
+            if (button) {
+                buttonsToShow.push(button);
+                button.visible = true;
+                button.alpha = 0;
+                if (!this.currentActiveButtons.includes(button)) {
+                    this.currentActiveButtons.push(button);
                 }
-            });
-            
-            // If no valid buttons found, return early
-            if (buttonsToShow.length === 0) {
-                this.isAnimating = false;
-                return;
             }
-
-            // Now position all buttons
-            buttonsToShow.forEach(button => {
-                this.positionButton(button);
-            });
-
-            // If immediate mode, show all buttons instantly
-            if (immediate) {
-                buttonsToShow.forEach(button => {
-                    button.visible = true;
-                    button.alpha = 1;
-                    button.setActive(true);
-                });
-                this.isAnimating = false;
-                return;
-            }
-
-            // Ensure tweens are properly initialized
-            if (!Globals.sceneManager?.tweenGroup) {
-                console.warn("Tween group is not available, falling back to immediate mode");
-                buttonsToShow.forEach(button => {
-                    button.visible = true;
-                    button.alpha = 1;
-                    button.setActive(true);
-                });
-                this.isAnimating = false;
-                return;
-            }
-
-            // Add a small delay before starting animations to ensure previous animations are complete
-            setTimeout(() => {
-                // Animate each button with staggered timing
-                buttonsToShow.forEach((button, index) => {
-                    // Store final position
-                    const finalPosition = {
-                        x: button.position.x,
-                        y: button.position.y
-                    };
-                    
-                    // Move button off-screen based on its position
-                    const offscreenX = button.options.position === ButtonPosition.LEFT 
-                        ? finalPosition.x - this.OFFSCREEN_OFFSET 
-                        : finalPosition.x + this.OFFSCREEN_OFFSET;
-                    
-                    button.position.set(offscreenX, finalPosition.y);
-                    
-                    // Calculate delay for staggered animation
-                    const delay = index * this.STAGGER_DELAY;
-                    this.pendingAnimations++;
-                    
-                    // Keep track of tweens for this button
-                    let positionTween: any, alphaTween: any;
-                    
-                    try {
-                        // Animate button into position
-                        positionTween = new Tween(button.position, Globals.sceneManager!.tweenGroup)
-                            .to({ x: finalPosition.x }, this.ANIMATION_DURATION)
-                            .easing(Easing.Cubic.Out)
-                            .delay(delay)
-                            .onUpdate(() => {
-                                // Ensure the button is visible during animation
-                                button.visible = true;
-                            })
-                            .start();
-                        
-                        // Fade in
-                        alphaTween = new Tween(button, Globals.sceneManager!.tweenGroup)
-                            .to({ alpha: 1 }, this.ANIMATION_DURATION)
-                            .easing(Easing.Quadratic.Out)
-                            .delay(delay)
-                            .onComplete(() => {
-                                button.setActive(true);
-                                this.pendingAnimations--;
-                                if (this.pendingAnimations <= 0) {
-                                    this.isAnimating = false;
-                                }
-                            })
-                            .start();
-                    } catch (e) {
-                        console.error("Error creating button tween:", e);
-                        // Fallback: set button visible immediately
-                        button.position.x = finalPosition.x;
-                        button.alpha = 1;
-                        button.visible = true;
-                        button.setActive(true);
-                        this.pendingAnimations--;
-                    }
-                    
-                    // Failsafe: ensure button becomes visible even if animation fails
-                    setTimeout(() => {
-                        if (button.alpha < 0.5) {
-                            console.warn(`Button ${index} animation may have failed, forcing visibility`);
-                            button.position.x = finalPosition.x;
-                            button.alpha = 1;
-                            button.visible = true;
-                            button.setActive(true);
-                        }
-                    }, this.ANIMATION_DURATION + delay + 100);
-                });
-                
-                // Failsafe: clear animation state after maximum possible animation time
-                const maxAnimationTime = this.ANIMATION_DURATION + (buttonsToShow.length * this.STAGGER_DELAY) + 200;
-                setTimeout(() => {
-                    if (this.isAnimating) {
-                        console.warn("Animation timeout reached, forcing completion");
-                        this.isAnimating = false;
-                        this.pendingAnimations = 0;
-                        
-                        // Ensure all buttons are visible and active
-                        buttonsToShow.forEach(button => {
-                            button.alpha = 1;
-                            button.visible = true;
-                            button.setActive(true);
-                        });
-                    }
-                }, maxAnimationTime);
-            }, 50); // Small delay before starting new animations
         });
+
+        // Position all buttons
+        buttonsToShow.forEach(button => {
+            this.positionButton(button);
+        });
+
+        // If immediate mode, show all buttons instantly
+        if (immediate) {
+            buttonsToShow.forEach(button => {
+                button.visible = true;
+                button.alpha = 1;
+                button.setActive(true);
+            });
+            this.isAnimating = false;
+            return true;
+        }
+
+        // Animate each button with minimal stagger
+        buttonsToShow.forEach((button, index) => {
+            const finalPosition = {
+                x: button.position.x,
+                y: button.position.y
+            };
+
+            // Move button off-screen based on its position
+            const offscreenX = button.options.position === ButtonPosition.LEFT 
+                ? finalPosition.x - 100  // Reduced offset for faster animation
+                : finalPosition.x + 100;
+
+            button.position.set(offscreenX, finalPosition.y);
+
+            // Shorter delay between buttons
+            const delay = index * 30; // Reduced delay
+            this.pendingAnimations++;
+
+            // Create and store tweens
+            const positionTween = new Tween(button.position, Globals.sceneManager!.tweenGroup)
+                .to({ x: finalPosition.x }, 200) // Faster animation
+                .easing(Easing.Quadratic.Out)
+                .delay(delay)
+                .onStart(() => {
+                    button.visible = true;
+                })
+                .start();
+
+            const alphaTween = new Tween(button, Globals.sceneManager!.tweenGroup)
+                .to({ alpha: 1 }, 200) // Faster animation
+                .easing(Easing.Quadratic.Out)
+                .delay(delay)
+                .onComplete(() => {
+                    button.setActive(true);
+                    this.pendingAnimations--;
+                    if (this.pendingAnimations <= 0) {
+                        this.isAnimating = false;
+                    }
+                })
+                .start();
+
+            // Store tweens for potential cancellation
+            this._activeTweens.push(positionTween, alphaTween);
+        });
+
+        // Failsafe: ensure animation state is cleared after max possible time
+        setTimeout(() => {
+            if (this.isAnimating) {
+                console.log("Forcing animation completion");
+                this.isAnimating = false;
+                this.pendingAnimations = 0;
+                
+                // Ensure all buttons are visible
+                buttonsToShow.forEach(button => {
+                    button.alpha = 1;
+                    button.visible = true;
+                    button.setActive(true);
+                    button.position.x = button.position.x; // Reset to final position
+                });
+            }
+        }, 500); // Short timeout
 
         return true;
     }
@@ -1322,28 +1262,29 @@ export class GameButtonContainer extends Container {
     }
 
     /**
-     * Cancel all active button animations to prevent visual glitches
-     * when multiple animations run simultaneously
+     * Cancel all active button animations
      */
-    cancelAllButtonAnimations(): void {
+     cancelAllButtonAnimations(): void {
         // Stop all active tweens
-        if (this._activeTweens && this._activeTweens.length > 0) {
-            console.log(`Cancelling ${this._activeTweens.length} active button animations`);
-            
-            // Stop each tween
+        if (this._activeTweens.length > 0) {
             this._activeTweens.forEach(tween => {
                 if (tween) {
                     tween.stop();
                 }
             });
-            
-            // Clear the array
             this._activeTweens = [];
         }
+
+        // Reset animation flags
+        this.isAnimating = false;
+        this.pendingAnimations = 0;
         
-        // Reset animation flags to prevent deadlocks
-        this._showButtonsInProgress = false;
-        this._hideButtonsInProgress = false;
+        // Ensure all current buttons are in their final state
+        this.currentActiveButtons.forEach(button => {
+            button.alpha = 1;
+            button.visible = true;
+            button.setActive(true);
+        });
     }
 }
 

@@ -200,7 +200,7 @@ export class GameSession {
     this.game.dealInitialCards();
 
     // Get the initial game state with dealt cards
-    const gameState = this.game.getGameState();
+    const gameState = this.game.getGameState(this.playerBalance);
 
     // Check for special conditions like blackjack
     const specialConditions = this.game.checkSpecialConditions();
@@ -406,7 +406,7 @@ export class GameSession {
                 chipsWon = betAmount / 2;
                 outcomeType = 'surrender'; // Match GameOutcome enum
                 break;
-            case 'insurance_win':
+            case 'insurance_won':
                 // If player won insurance, add the insurance payout
                 const insuranceBet = this.game.getInsuranceBet();
                 chipsWon = insuranceBet * 2; // Insurance pays 2:1
@@ -467,7 +467,7 @@ export class GameSession {
                 chipsWon,
                 playerBalance: this.playerBalance,
                 payout: chipsWon, // Ensure payout field is included for UI display
-                insurancePayout: outcome === 'insurance_win' ? this.game.getInsuranceBet() * 2 : undefined
+                insurancePayout: outcome === 'insurance_won' ? this.game.getInsuranceBet() * 2 : undefined
             }
         });
         
@@ -867,7 +867,7 @@ export class GameSession {
         return `Dealer busts! You win! New balance: ${this.playerBalance}`;
       case 'surrender':
         return `You surrendered. Half your bet is returned. New balance: ${this.playerBalance}`;
-      case 'insurance_win':
+      case 'insurance_won':
         return `Dealer has Blackjack. Insurance pays 2:1! New balance: ${this.playerBalance}`;
       
       // Split outcome messages
@@ -1034,7 +1034,6 @@ export class GameSession {
   private determineAllowedActions(): MessageType[] {
     const allowedActions: MessageType[] = [];
     const gamePhase = this.game.getGamePhase();
-    const gameState = this.game.getGameState();
     
     if (gamePhase === 'betting') {
       allowedActions.push(MessageType.PLACE_BET);
@@ -1187,7 +1186,7 @@ export class GameSession {
    * Send current game state to client
    */
   public sendGameState(targetClientId: string = this.clientId): void {
-    const gameState = this.game.getGameState();
+    const gameState = this.game.getGameState(this.playerBalance);
     const allowedActions = this.determineAllowedActions();
 
     // Create standardized game state message
@@ -1238,7 +1237,7 @@ export class GameSession {
    * Get the active split hand
    */
   private getActiveSplitHand(): 'first' | 'second' | null {
-    const gameState = this.game.getGameState();
+    const gameState = this.game.getGameState(this.playerBalance);
     return gameState.activeSplitHand || null;
   }
   
@@ -1248,7 +1247,7 @@ export class GameSession {
   private handleSplitHandSwitch(hand: 'first' | 'second'): void {
     this.game.setActiveSplitHandUI(hand);
     
-    const gameState = this.game.getGameState();
+    const gameState = this.game.getGameState(this.playerBalance);
     
     // Extract information about each hand to provide more details to the client
     // This helps maintain proper positioning and visual state
@@ -1661,8 +1660,8 @@ export class GameSession {
     this.sendToClient({
         type: MessageType.HAND_UPDATED,
         data: {
-            playerHand: this.game.getGameState().playerHand,
-            dealerHand: this.game.getGameState().dealerHand,
+            playerHand: this.game.getGameState(this.playerBalance).playerHand,
+            dealerHand: this.game.getGameState(this.playerBalance).dealerHand,
             splitHand: null,
             activeSplitHand: null,
             playerBalance: this.playerBalance,
@@ -1731,7 +1730,7 @@ export class GameSession {
         });
 
         // Check if dealer has blackjack and handle accordingly
-        if (insuranceResult.outcome === 'insurance_win') {
+        if (insuranceResult.outcome === 'insurance_won') {
             console.log("Dealer has blackjack - revealing card and ending game");
             
             // Reveal dealer's hole card
