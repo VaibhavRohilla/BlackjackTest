@@ -2,12 +2,9 @@ import express from 'express';
 import http from 'http';
 import WebSocket from 'ws';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import { env } from './config/env';
 import { BlackjackServer } from './server/blackjackserver';
 import { ApiService } from './services/api.service';
-
-// Load environment variables
-dotenv.config();
 
 // Server version
 const SERVER_VERSION = '1.1.0';
@@ -26,7 +23,7 @@ const wss = new WebSocket.Server({ server });
 
 // Initialize API service with environment
 const apiService = ApiService.getInstance();
-apiService.setEnvironment((process.env.NODE_ENV as 'test' | 'prod') || 'test');
+apiService.setEnvironment(env.NODE_ENV);
 
 // Initialize BlackjackServer
 const blackjackServer = new BlackjackServer(wss);
@@ -41,7 +38,7 @@ app.get('/health', (req, res) => {
     version: SERVER_VERSION,
     uptime: `${uptime} seconds`,
     startTime: SERVER_START_TIME.toISOString(),
-    environment: process.env.NODE_ENV || 'test'
+    environment: env.NODE_ENV
   });
 });
 
@@ -56,7 +53,7 @@ app.get('/health/detailed', (req, res) => {
     version: SERVER_VERSION,
     uptime: `${uptime} seconds`,
     startTime: SERVER_START_TIME.toISOString(),
-    environment: process.env.NODE_ENV || 'test',
+    environment: env.NODE_ENV,
     memory: {
       rss: `${Math.round(memoryUsage.rss / 1024 / 1024)} MB`,
       heapTotal: `${Math.round(memoryUsage.heapTotal / 1024 / 1024)} MB`,
@@ -72,7 +69,7 @@ app.get('/', (req, res) => {
     name: 'Blackjack Game API',
     description: 'Backend API for blackjack game',
     version: SERVER_VERSION,
-    environment: process.env.NODE_ENV || 'test',
+    environment: env.NODE_ENV,
     health: {
       '/health': 'Basic health check',
       '/health/detailed': 'Detailed metrics and diagnostics',
@@ -114,7 +111,7 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`🃏 Blackjack server running on port ${PORT}`);
   console.log(`Version: ${SERVER_VERSION}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'test'}`);
+  console.log(`Environment: ${env.NODE_ENV}`);
   console.log(`Started at: ${SERVER_START_TIME.toISOString()}`);
   console.log(`HTTP: http://localhost:${PORT}`);
   console.log(`WebSocket: ws://localhost:${PORT}`);

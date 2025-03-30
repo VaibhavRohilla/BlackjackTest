@@ -1,9 +1,9 @@
 import { Card } from "./deck";
 import { MessageType, ClientMessage, ServerMessage } from "../models/message";
-import { BetResult } from "../server/apicalls";
 import { BlackjackServer } from "../server/blackjackserver";
 import { ApiService } from "../services/api.service";
 import { BlackjackGame } from "./blackjackgame";
+import { LoginData, ExternalApiResponse } from "../types/game.types";
 
 /**
  * Represents a hand in the UI
@@ -21,7 +21,7 @@ interface UIHand {
  * Represents player authentication data
  */
 interface PlayerAuthData {
-  loginData: string;
+  loginData: LoginData;
   userId: string;
   chips: number;
   isAuthenticated: boolean;
@@ -39,7 +39,12 @@ export class GameSession {
   private endGameTimeout: NodeJS.Timeout | null = null; // Timeout for holding game data
   private apiService: ApiService;
   private playerAuth: PlayerAuthData = {
-    loginData: '',
+    loginData: {
+      loginMethod: '',
+      timestamp: 0,
+      jwt: '',
+      userId: ''
+    },
     userId: '',
     chips: 0,
     isAuthenticated: false
@@ -159,22 +164,25 @@ export class GameSession {
       return;
     }
     
-    // Validate bet amount using API if player is authenticated
+    // Validate bet amount using ApiService if player is authenticated
     if (this.playerAuth.isAuthenticated && this.playerAuth.loginData) {
       console.log(`Validating bet with API for authenticated player`);
       try {
-        const isValidBet = await this.apiService.validateBet(betAmount, this.playerAuth.loginData);
+        const response = await this.apiService.checkBet(this.playerAuth.loginData, betAmount);
         
-        if (!isValidBet.success || !isValidBet.data) {
-          console.error(`API bet validation failed:`, isValidBet.error);
+        if (!response.success || !response.data?.isValid) {
+          console.error(`API bet validation failed:`, response.error);
           this.sendToClient({
             type: MessageType.ERROR,
             data: {
-              error: isValidBet.error || 'API validation failed'
+              error: response.error || 'API validation failed'
             }
           });
           return;
         }
+
+        // Update player balance from API response
+        this.playerBalance = response.data.availableChips;
       } catch (error) {
         console.error(`Error during API bet validation:`, error);
         this.sendToClient({
@@ -379,6 +387,10 @@ export class GameSession {
                 chipsWon = betAmount;
                 outcomeType = 'push'; // Match GameOutcome enum
                 break;
+            case 'push_with_insurance_loss':
+                chipsWon = betAmount;
+                outcomeType = 'push'; // Treat insurance loss push as regular push
+                break;
             case 'blackjack':
                 chipsWon = betAmount * 2.5;
                 outcomeType = 'player_blackjack'; // Match GameOutcome enum
@@ -449,33 +461,64 @@ export class GameSession {
                 chipsWon = betAmount; // Lose on one hand, push on other (return 1 bet)
                 outcomeType = 'split_lose_push'; // Same outcome type
                 break;
+            default:
+                // If we get an unrecognized outcome, determine it based on hand values
+                const playerValue = this.game.getDetailedGameResult().playerValue;
+                const dealerValue = this.game.getDetailedGameResult().dealerValue;
+                
+                if (playerValue > 21) {
+                    outcomeType = 'player_bust';
+                } else if (dealerValue > 21) {
+                    outcomeType = 'dealer_bust';
+                } else if (playerValue > dealerValue) {
+                    outcomeType = 'player_win';
+                } else if (playerValue < dealerValue) {
+                    outcomeType = 'dealer_win';
+                } else {
+                    outcomeType = 'push';
+                }
+                break;
         }
         
         // Update player balance
         this.playerBalance += chipsWon;
         
-        // Record bet result if player is authenticated
+        // Save bet outcome using ApiService
         if (this.playerAuth.isAuthenticated) {
-            await this.recordBetResult(betAmount, chipsWon);
+            try {
+                const response = await this.apiService.saveBet(
+                    this.playerAuth.loginData,
+                    betAmount,
+                    chipsWon
+                );
+                
+                if (!response.success) {
+                    console.error('Failed to save bet result:', response.error);
+                }
+            } catch (error) {
+                console.error('Error saving bet outcome:', error);
+                // Continue with game end even if bet saving fails
+            }
         }
         
         // Send game outcome to client via GAME_END
         this.sendToClient({
             type: MessageType.GAME_END,
             data: {
-                outcome: outcomeType, // Use our enhanced outcome type that matches GameOutcome enum
+                outcome: outcomeType,
                 chipsWon,
                 playerBalance: this.playerBalance,
-                payout: chipsWon, // Ensure payout field is included for UI display
+                payout: chipsWon,
                 insurancePayout: outcome === 'insurance_won' ? this.game.getInsuranceBet() * 2 : undefined
             }
         });
         
-        // Reset game state
-        this.game.reset();
         
         // Return to betting phase
         this.returnToBettingPhase();
+        
+        // Send updated game state with allowed actions
+        this.sendGameState();
         
     } catch (error) {
         console.error('Error ending game:', error);
@@ -742,14 +785,15 @@ export class GameSession {
     }
     
     // Execute dealer's turn (draw cards until 17 or higher) after revealing hole card
-    // We're using a delayed approach to ensure cards are processed in sequence
     setTimeout(() => {
       const dealerCards = this.executeDealerTurn();
       console.log(`Dealer's turn complete. Final hand value: ${this.game.getDealerValue()}`);
       
+      // Set game phase to complete first
+      this.game.setGamePhase('complete');
+      
       // End the game with final outcome after a slight delay
       setTimeout(() => {
-        this.game.setGamePhase('complete');
         this.endGame();
       }, 500);
     }, 1000);
@@ -836,16 +880,40 @@ export class GameSession {
       }
     });
     
+    // Store the last bet before resetting
+    const lastBet = this.game.getCurrentBet();
+    
     // 2. Reset the game state for a new round
     this.game.reset();
     
-    // 3. Send updated game state
-    this.sendGameState();
+    // 3. Ensure last bet is properly set for rebet functionality
+    if (lastBet > 0) {
+        this.game.setLastBet(lastBet);
+    }
     
-    // 4. Determine allowed actions for betting phase
-    this.sendAllowedActions();
+    // 4. Determine allowed actions including rebet if applicable
+    const allowedActions = [MessageType.PLACE_BET];
+    if (lastBet > 0 && this.playerBalance >= lastBet) {
+        allowedActions.push(MessageType.REBET);
+    }
     
-    console.log(`Transitioned from ${currentPhase} to Betting phase`);
+    // 5. Send updated game state with correct actions
+    this.sendToClient({
+        type: MessageType.GAME_STATE,
+        data: {
+            playerHand: this.game.getGameState(this.playerBalance).playerHand,
+            dealerHand: this.game.getGameState(this.playerBalance).dealerHand,
+            splitHand: null,
+            activeSplitHand: null,
+            playerBalance: this.playerBalance,
+            currentBet: 0,
+            insuranceBet: 0,
+            gamePhase: 'betting',
+            allowedActions: allowedActions
+        }
+    });
+    
+    console.log(`Transitioned from ${currentPhase} to Betting phase with actions:`, allowedActions);
   }
   
   /**
@@ -1036,55 +1104,67 @@ export class GameSession {
     const gamePhase = this.game.getGamePhase();
     
     if (gamePhase === 'betting') {
-      allowedActions.push(MessageType.PLACE_BET);
-      
-      // Add rebet if there's a previous bet
-      if (this.game.getLastBet() > 0 && this.playerBalance >= this.game.getLastBet()) {
-        allowedActions.push(MessageType.REBET);
-      }
+        allowedActions.push(MessageType.PLACE_BET);
+        
+        // Add rebet if there's a previous bet and enough balance
+        if (this.game.getLastBet() > 0 && this.playerBalance >= this.game.getLastBet()) {
+            allowedActions.push(MessageType.REBET);
+        }
     }
     else if (gamePhase === 'player_turn') {
-      // Check player's hand value
-      const playerHand = this.mapHand(this.game.getPlayerCards());
-      const playerCards = this.game.getPlayerCards();
-      
-      // If player has 21 and more than 2 cards (not blackjack), only allow stand
-      if (playerHand.value === 21 && playerCards.length > 2) {
+        // Check player's hand value
+        const playerHand = this.mapHand(this.game.getPlayerCards());
+        const playerCards = this.game.getPlayerCards();
+        
+        // If player has 21 and more than 2 cards (not blackjack), only allow stand
+        if (playerHand.value === 21 && playerCards.length > 2) {
+            allowedActions.push(MessageType.STAND);
+            return allowedActions;
+        }
+        
+        // Base actions always available during player turn (except when 21)
+        allowedActions.push(MessageType.HIT);
         allowedActions.push(MessageType.STAND);
-        return allowedActions;
-      }
-      
-      // Base actions always available during player turn (except when 21)
-      allowedActions.push(MessageType.HIT);
-      allowedActions.push(MessageType.STAND);
-      
-      // Check if this is the initial phase (only 2 cards)
-      const isInitialPhase = playerCards.length === 2;
-      
-      if (isInitialPhase) {
-        // Surrender and double down only available initially
-        allowedActions.push(MessageType.SURRENDER);
-        if (this.playerBalance >= this.game.getCurrentBet()) {
-          allowedActions.push(MessageType.DOUBLE_DOWN);
-        }
         
-        // Split only available initially with matching cards and sufficient balance
-        if (this.canPlayerSplit() && this.playerBalance >= this.game.getCurrentBet()) {
-          allowedActions.push(MessageType.SPLIT);
-        }
+        // Check if this is the initial phase (only 2 cards)
+        const isInitialPhase = playerCards.length === 2;
         
-        // Insurance check - only available when dealer shows an Ace at the start of hand
-        // AND insurance has not already been decided
-        if (!this.insuranceDecided && 
-            this.canTakeInsurance() && 
-            this.playerBalance >= this.game.getCurrentBet() / 2) {
-          // Only include INSURANCE in allowed actions if the player still has exactly 2 cards
-          // This ensures insurance is removed from options after the first hit
-          if (playerCards.length === 2) {
-            allowedActions.push(MessageType.INSURANCE);
-          }
+        if (isInitialPhase) {
+            // Surrender and double down only available initially
+            allowedActions.push(MessageType.SURRENDER);
+            
+            // Only allow double down if not in split mode and player has enough balance
+            if (!this.game.hasSplit() && this.playerBalance >= this.game.getCurrentBet()) {
+                allowedActions.push(MessageType.DOUBLE_DOWN);
+            }
+            
+            // Split only available initially with matching cards and sufficient balance
+            if (this.canPlayerSplit() && this.playerBalance >= this.game.getCurrentBet()) {
+                allowedActions.push(MessageType.SPLIT);
+            }
+            
+            // Insurance check - only available when dealer shows an Ace at the start of hand
+            // AND insurance has not already been decided
+            if (!this.insuranceDecided && 
+                this.canTakeInsurance() && 
+                this.playerBalance >= this.game.getCurrentBet() / 2) {
+                // Only include INSURANCE in allowed actions if the player still has exactly 2 cards
+                // This ensures insurance is removed from options after the first hit
+                if (playerCards.length === 2) {
+                    allowedActions.push(MessageType.INSURANCE);
+                }
+            }
         }
-      }
+    }
+    else if (gamePhase === 'complete') {
+        // Always add PLACE_BET in complete phase
+        allowedActions.push(MessageType.PLACE_BET);
+        
+        // Add REBET only if there was a previous bet and player has enough balance
+        const lastBet = this.game.getLastBet();
+        if (lastBet > 0 && this.playerBalance >= lastBet) {
+            allowedActions.push(MessageType.REBET);
+        }
     }
     
     return allowedActions;
@@ -1187,25 +1267,24 @@ export class GameSession {
    */
   public sendGameState(targetClientId: string = this.clientId): void {
     const gameState = this.game.getGameState(this.playerBalance);
-    const allowedActions = this.determineAllowedActions();
 
     // Create standardized game state message
     const stateMessage = {
-      playerHand: gameState.playerHand,
-      dealerHand: gameState.dealerHand,
-      splitHand: gameState.splitHand,
-      activeSplitHand: gameState.activeSplitHand,
-      playerBalance: this.playerBalance,
-      currentBet: this.game.getCurrentBet(),
-      insuranceBet: this.game.getInsuranceBet(),
-      gamePhase: gameState.gamePhase,
-      allowedActions: allowedActions
+        playerHand: gameState.playerHand,
+        dealerHand: gameState.dealerHand,
+        splitHand: gameState.splitHand,
+        activeSplitHand: gameState.activeSplitHand,
+        playerBalance: this.playerBalance,
+        currentBet: this.game.getCurrentBet(),
+        insuranceBet: this.game.getInsuranceBet(),
+        gamePhase: gameState.gamePhase,
+        allowedActions: gameState.allowedActions
     };
 
     // Send GAME_STATE for all game state updates
     this.server.sendToClient(targetClientId, {
-      type: MessageType.GAME_STATE,
-      data: stateMessage
+        type: MessageType.GAME_STATE,
+        data: stateMessage
     });
   }
   
@@ -1958,7 +2037,7 @@ export class GameSession {
   /**
    * Authenticate a player with the API
    */
-  public async authenticatePlayer(loginData: string): Promise<boolean> {
+  public async authenticatePlayer(loginData: LoginData): Promise<boolean> {
     if (!loginData) {
       console.error(`Authentication failed for client ${this.clientId}: No login data provided`);
       this.sendToClient({
@@ -1968,30 +2047,32 @@ export class GameSession {
       return false;
     }
 
-    console.log(`Authenticating player for client ${this.clientId} with login data: ${loginData}`);
+    console.log(`Authenticating player for client ${this.clientId} with login data:`, {
+      ...loginData,
+      jwt: loginData.jwt ? '[REDACTED]' : undefined
+    });
 
     try {
-      // Get user data from API
-      const response = await this.apiService.getUserData(loginData);
+      const response = await this.apiService.getUser(loginData);
       
       if (response.success && response.data) {
-        // Update player auth data
+        // Update player auth data with API response
         this.playerAuth = {
           loginData,
           userId: response.data.userId,
-          chips: response.data.chips || 1000,
+          chips: response.data.chips,
           isAuthenticated: true
         };
         
-        // Update player balance
-        this.playerBalance = this.playerAuth.chips;
+        // Update player balance from API response
+        this.playerBalance = response.data.chips;
         
-        // Send success message
+        // Send success message with current balance
         this.sendToClient({
           type: MessageType.AUTH_SUCCESS,
           data: {
             message: 'Authentication successful',
-            balance: this.playerBalance
+            balance:response.data.chips
           }
         });
         
@@ -2012,56 +2093,47 @@ export class GameSession {
         
         // Reset auth data
         this.playerAuth = {
-          loginData: '',
+          loginData: {
+            loginMethod: '',
+            timestamp: 0,
+            jwt: '',
+            userId: ''
+          },
           userId: '',
           chips: 0,
           isAuthenticated: false
         };
         
+        // Reset player balance
+        this.playerBalance = 0;
+        
         return false;
       }
     } catch (error) {
-      console.error(`Authentication error for client ${this.clientId}:`, error);
+      console.error(`Error during authentication for client ${this.clientId}:`, error);
       
       this.sendToClient({
         type: MessageType.AUTH_ERROR,
-        data: { message: 'Authentication failed due to an error' }
+        data: { message: 'Authentication failed due to server error' }
       });
       
-      return false;
-    }
-  }
-
-  /**
-   * Record a bet result with the API
-   */
-  private async recordBetResult(betAmount: number, chipsWon: number): Promise<void> {
-    if (!this.playerAuth.isAuthenticated || !this.playerAuth.userId) {
-      console.warn('Cannot record bet result: Player not authenticated');
-      return;
-    }
-
-    try {
-      const betResult: BetResult = {
-        userId: this.playerAuth.userId,
-        betAmount,
-        chipsWon
+      // Reset auth data
+      this.playerAuth = {
+        loginData: {
+          loginMethod: '',
+          timestamp: 0,
+          jwt: '',
+          userId: ''
+        },
+        userId: '',
+        chips: 0,
+        isAuthenticated: false
       };
-
-      const response = await this.apiService.recordBetResult(betResult);
       
-      if (response.success) {
-        // Update local balance
-        this.playerBalance += chipsWon;
-        this.playerAuth.chips = this.playerBalance;
-        
-        // Send balance update to client
-        this.sendPlayerBalanceUpdate();
-      } else {
-        console.error('Failed to record bet result:', response.error);
-      }
-    } catch (error) {
-      console.error('Error recording bet result:', error);
+      // Reset player balance
+      this.playerBalance = 0;
+      
+      return false;
     }
   }
 
@@ -2075,5 +2147,23 @@ export class GameSession {
     // Reset session flags
     this.insuranceOffered = false;
     this.insuranceDecided = false;
+  }
+
+  /**
+   * Get player data for external access
+   */
+  public getPlayerData(): { username: string; chips: number; userId: string } {
+    return {
+      username: this.playerAuth.userId,
+      chips: this.playerAuth.chips,
+      userId: this.playerAuth.userId
+    };
+  }
+
+  /**
+   * Get the login data for this session
+   */
+  public getLoginData(): LoginData {
+    return this.playerAuth.loginData;
   }
 } 

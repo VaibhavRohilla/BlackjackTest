@@ -46,7 +46,9 @@ export enum MessageType {
   // Utility
   GET_PLAYER_DATA = 'get_player_data',
   GET_GAME_STATE = 'get_game_state',
-  END_GAME = "game_end"
+  END_GAME = "game_end",
+  GET_LEADERBOARD = 'get_leaderboard',
+  LEADERBOARD_DATA = 'leaderboard_data'
 } 
 
 export enum CardSuit {

@@ -3,6 +3,7 @@ import { Globals, formatNumber } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
 import { TextLabel } from "./textlabel";
 import { Z_INDEX } from "./popupmanager";
+import { LeaderboardService, LeaderboardEntry } from "./services/leaderboardservice";
 
 /**
  * Player data for the leaderboard
@@ -20,6 +21,8 @@ interface LeaderboardPlayer {
  * Leaderboard popup component that displays player rankings
  */
 export class LeaderboardPopup extends Container {
+    private leaderboardService: LeaderboardService;
+    
     /** Background overlay */
     private overlay: Graphics;
     
@@ -105,6 +108,8 @@ export class LeaderboardPopup extends Container {
      */
     constructor() {
         super();
+        
+        this.leaderboardService = LeaderboardService.getInstance();
         
         // Set high z-index to ensure it's on top
         this.zIndex = Z_INDEX.POPUPS + 20;
@@ -337,28 +342,48 @@ export class LeaderboardPopup extends Container {
             this.currentPlayerRow = null;
         }
         
-        // Calculate responsive dimensions for consistent formatting
+        // Get current data
+        const leaderboardData = this.leaderboardService.getLeaderboardData();
+        const currentUser = this.leaderboardService.getCurrentUserEntry();
+        
+        // Calculate responsive dimensions
         const containerWidth = this.popupContainer.width || 500;
         const isSmallScreen = containerWidth < 400;
         const contentWidth = Math.min(400, containerWidth * 0.9);
         const rowHeight = isSmallScreen ? 35 : 40;
         const fontSize = isSmallScreen ? 10 : 12;
         
-        // Create player rows
-        this.samplePlayers.forEach((player, index) => {
-            const row = this.createPlayerRow(player, index);
+        // Create player rows from actual data
+        leaderboardData.forEach((player, index) => {
+            const row = this.createPlayerRow({
+                rank: player.rank,
+                name: player.username,
+                avatar: player.avatar,
+                payout: player.chips,
+                prize: player.chips,
+                country: player.country
+            }, index);
             this.playerRows.push(row);
             this.entriesContainer.addChild(row);
         });
         
-        // Create current player row
-        this.currentPlayerRow = this.createPlayerRow(this.currentUser, -1, true);
-        this.entriesContainer.addChild(this.currentPlayerRow);
+        // Create current player row if available
+        if (currentUser) {
+            this.currentPlayerRow = this.createPlayerRow({
+                rank: currentUser.rank,
+                name: currentUser.username,
+                avatar: currentUser.avatar,
+                payout: currentUser.chips,
+                prize: currentUser.chips,
+                country: currentUser.country
+            }, -1, true);
+            this.entriesContainer.addChild(this.currentPlayerRow);
+        }
         
-        // Position rows with responsive dimensions
+        // Position rows
         this.positionRows();
         
-        // Apply responsive formatting to all rows
+        // Apply responsive formatting
         this.updateRowDimensions(contentWidth, rowHeight, fontSize);
     }
     

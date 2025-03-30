@@ -1,41 +1,17 @@
-import { BlockspinAPI } from '../server/apicalls';
-import dotenv from 'dotenv';
+import { ExternalApiResponse, LoginData, BetValidationResponse } from '../types/game.types';
+import { BlockspinAPI, UserData, BetResult } from '../server/apicalls';
+import { Environment } from '../config/env';
 
-dotenv.config();
-
-export interface UserData {
-  username: string;
-  chips: number;
-  userId: string;
-  isAuthenticated: boolean;
-}
-
-export interface BetResult {
-  userId: string;
-  betAmount: number;
-  chipsWon: number;
-}
-
-export interface ApiResponse<T> {
-  success: boolean;
-  data?: T;
-  error?: string;
-}
+type ApiEnvironment = 'test' | 'prod';
 
 export class ApiService {
-  private api: BlockspinAPI;
   private static instance: ApiService;
-  private environment: 'test' | 'prod';
+  private api: BlockspinAPI;
+  private environment: Environment;
 
   private constructor() {
-    const env = process.env.NODE_ENV;
-    if (env === 'test' || env === 'prod') {
-      this.environment = env;
-    } else {
-      this.environment = 'test'; // Fallback to 'test' if not properly defined
-    }
-
-    this.api = new BlockspinAPI(this.environment);
+    this.environment = 'development';
+    this.api = new BlockspinAPI(this.mapEnvironment(this.environment));
   }
 
   public static getInstance(): ApiService {
@@ -45,81 +21,159 @@ export class ApiService {
     return ApiService.instance;
   }
 
-  private handleError(error: unknown): string {
-    if (error instanceof Error) return error.message;
-    if (typeof error === 'string') return error;
-    return 'An unknown error occurred';
+  private mapEnvironment(env: Environment): ApiEnvironment {
+    switch (env) {
+      case 'development':
+      case 'test':
+        return 'test';
+      case 'production':
+        return 'prod';
+      default:
+        return 'test';
+    }
   }
 
-  public async getUserData(loginData: string): Promise<ApiResponse<UserData>> {
-    if (!loginData) {
-      return { success: false, error: 'Login data is required' };
-    }
+  public setEnvironment(env: Environment): void {
+    this.environment = env;
+    this.api = new BlockspinAPI(this.mapEnvironment(env));
+    console.log(`ApiService environment set to: ${env} (mapped to: ${this.mapEnvironment(env)})`);
+  }
 
+  async getUser(loginData: LoginData): Promise<ExternalApiResponse<UserData>> {
     try {
       const response = await this.api.getUserData(loginData);
-
-      if (response.success && response.data) {
-        return {
-          success: true,
-          data: {
-            username: response.data.username,
-            chips: response.data.chips,
-            userId: response.data.userId,
-            isAuthenticated: true
-          }
-        };
-      }
-
-      return { success: false, error: response.error || 'Failed to get user data' };
+      return {
+        success: response.success,
+        data: response.data,
+        error: response.error
+      };
     } catch (error) {
-      console.error('Error getting user data:', error);
-      return { success: false, error: this.handleError(error) };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
     }
   }
 
-  public async recordBetResult(betResult: BetResult): Promise<ApiResponse<void>> {
-    if (!betResult || !betResult.userId || !betResult.betAmount) {
-      return { success: false, error: 'Invalid bet result data' };
-    }
-
-    try {
-      const response = await this.api.recordBetResult(betResult);
-
-      if (response.success) return { success: true };
-
-      return { success: false, error: response.error || 'Failed to record bet result' };
-    } catch (error) {
-      console.error('Error recording bet result:', error);
-      return { success: false, error: this.handleError(error) };
-    }
-  }
-
-  public async validateBet(betAmount: number, loginData: string): Promise<ApiResponse<boolean>> {
-    if (betAmount <= 0) {
-      return { success: false, error: 'Bet amount must be greater than 0' };
-    }
-
+  async validateBet(betAmount: number, loginData: LoginData): Promise<ExternalApiResponse<BetValidationResponse>> {
     try {
       const response = await this.api.validateBet(betAmount, loginData);
-
-      if (response.success) return { success: true, data: response.data };
-
-      return { success: false, error: response.error || 'Failed to validate bet' };
+      const userData = await this.api.getUserData(loginData);
+      return {
+        success: response.success,
+        data: {
+          isValid: response.data || false,
+          availableChips: userData.data?.chips || 0
+        },
+        error: response.error
+      };
     } catch (error) {
-      console.error('Error validating bet:', error);
-      return { success: false, error: this.handleError(error) };
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
     }
   }
 
-  public setEnvironment(environment: 'test' | 'prod'): void {
-    if (environment === 'test' || environment === 'prod') {
-      this.environment = environment;
-      this.api = new BlockspinAPI(environment);
+  async getUserData(loginData: LoginData): Promise<ExternalApiResponse<UserData>> {
+    try {
+      const response = await this.api.getUserData(loginData);
+      return {
+        success: response.success,
+        data: response.data,
+        error: response.error
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
     }
   }
 
-  public getEnvironment(): 'test' | 'prod' {
-    return this.environment;
+  async recordBetResult(betResult: BetResult): Promise<ExternalApiResponse<any>> {
+    try {
+      const response = await this.api.recordBetResult(betResult);
+      return {
+        success: response.success,
+        error: response.error
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
   }
-}
+
+  async checkBet(loginData: LoginData, bet: number): Promise<ExternalApiResponse<BetValidationResponse>> {
+    try {
+      const response = await this.api.validateBet(bet, loginData);
+      const userData = await this.api.getUserData(loginData);
+      return {
+        success: response.success,
+        data: {
+          isValid: response.data || false,
+          availableChips: userData.data?.chips || 0
+        },
+        error: response.error
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+
+  async getRandom(numRandom: number): Promise<ExternalApiResponse<number[]>> {
+    try {
+      const response = await this.api.getRandom(numRandom);
+      return {
+        success: response.success,
+        data: response.data,
+        error: response.error
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+
+  async saveBet(loginData: LoginData, bet: number, chipsWon: number): Promise<ExternalApiResponse<any>> {
+    try {
+      const response = await this.api.recordBetResult({
+        userId: loginData.userId || '',
+        betAmount: bet,
+        chipsWon: chipsWon
+      });
+      return {
+        success: response.success,
+        error: response.error
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+
+  async getLeaderboard(loginData: LoginData): Promise<ExternalApiResponse<any>> {
+    try {
+      const response = await this.api.getLeaderboard(loginData);
+      return {
+        success: response.success,
+        data: response.data,
+        error: response.error
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Unknown error occurred'
+      };
+    }
+  }
+} 

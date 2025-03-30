@@ -1,5 +1,6 @@
 import { BlackjackServer } from './blackjackserver';
 import { ClientMessage, MessageType, createErrorMessage, ServerMessage } from '../models/message';
+import { ApiService } from '../services/api.service';
 
 /**
  * Tracks client message rate for rate limiting
@@ -16,6 +17,7 @@ interface ClientMessageRate {
  */
 export class MessageHandler {
   private server: BlackjackServer;
+  private apiService: ApiService;
   
   // Rate limiting configuration
   private readonly MAX_MESSAGES_PER_MINUTE = 120; // 2 messages per second on average
@@ -24,6 +26,7 @@ export class MessageHandler {
   
   constructor(server: BlackjackServer) {
     this.server = server;
+    this.apiService = ApiService.getInstance();
   }
 
   /**
@@ -46,6 +49,10 @@ export class MessageHandler {
       
       // Route the message based on type
       switch (message.type) {
+        case MessageType.AUTHENTICATE:
+          this.handleAuthenticate(clientId, message);
+          break;
+          
         case MessageType.CREATE_SESSION:
           // Legacy support - just create/reset the game for this client
           this.handleNewGame(clientId);
@@ -79,6 +86,10 @@ export class MessageHandler {
           this.handleStartGame(clientId, message.data.amount);
           break;
           
+        case MessageType.GET_LEADERBOARD:
+          this.handleGetLeaderboard(clientId);
+          break;
+          
         default:
           console.warn(`Unhandled message type: ${message.type}`);
           this.server.sendToClient(clientId, createErrorMessage(`Unsupported message type: ${message.type}`));
@@ -93,7 +104,40 @@ export class MessageHandler {
         error instanceof Error ? error.message : 'Internal server error'));
     }
   }
-  
+
+  private async handleAuthenticate(clientId: string, message: ClientMessage): Promise<void> {
+    try {
+      if (!message.data?.loginData) {
+        this.server.sendToClient(clientId, createErrorMessage('Missing authentication data.'));
+        return;
+      }
+
+      // Get or create game session for this client
+      const gameSession = this.server.getOrCreateGameSession(clientId);
+      
+      // Authenticate the player
+      const authSuccess = await gameSession.authenticatePlayer(message.data.loginData);
+      
+      if (!authSuccess) {
+        console.error(`Authentication failed for client ${clientId}`);
+        return;
+      }
+
+      // Send success message with user data
+      this.server.sendToClient(clientId, {
+        type: MessageType.AUTH_SUCCESS,
+        data: { 
+          message: 'Authentication successful',
+          user: gameSession.getPlayerData()
+        }
+      });
+      
+    } catch (error) {
+      console.error(`Error authenticating client ${clientId}:`, error);
+      this.server.sendToClient(clientId, createErrorMessage('Authentication error.'));
+    }
+  }
+
   /**
    * Check if client's message rate exceeds the limit
    */
@@ -151,7 +195,7 @@ export class MessageHandler {
    */
   private handleNewGame(clientId: string): void {
     try {
-      this.server.createGameForClient(clientId);
+      this.server.getOrCreateGameSession(clientId);
       
       this.server.sendToClient(clientId, {
         type: MessageType.GAME_READY,
@@ -173,7 +217,7 @@ export class MessageHandler {
     if (!game) {
       // No game exists yet, create one
       try {
-        this.server.createGameForClient(clientId);
+        this.server.getOrCreateGameSession(clientId);
         
         // Get the newly created game
         const newGame = this.server.getGameForClient(clientId);
@@ -211,9 +255,9 @@ export class MessageHandler {
    * Handle game-specific action
    */
   private handleGameAction(clientId: string, message: ClientMessage): void {
-    const game = this.server.getGameForClient(clientId);
+    const gameSession = this.server.getGameForClient(clientId);
     
-    if (!game) {
+    if (!gameSession) {
       // No game exists, create one and send game state
       this.server.sendToClient(clientId, createErrorMessage('No active game found. Creating a new game.'));
       this.handleNewGame(clientId);
@@ -222,7 +266,21 @@ export class MessageHandler {
     
     try {
       // Process the game action
-      game.handleAction(message);
+      gameSession.handleAction(message);
+      
+      // After handling the action, ensure we send the complete game state
+      // This is especially important for game-ending actions
+      if (['STAND', 'HIT', 'DOUBLE_DOWN', 'SURRENDER'].includes(message.type)) {
+        // For game-ending actions, ensure we send both the action result and game state
+        gameSession.sendGameState(clientId);
+        
+        // Send a final game state after a short delay to ensure proper transition
+        setTimeout(() => {
+          gameSession.sendGameState(clientId);
+          // After sending final state, return to betting phase if needed
+          gameSession.returnToBettingPhase();
+        }, 500);
+      }
     } catch (error) {
       console.error(`Error processing game action ${message.type} for client ${clientId}:`, error);
       
@@ -233,7 +291,7 @@ export class MessageHandler {
       
       // Ensure game state is sent to keep client and server in sync
       try {
-        game.sendGameState(clientId);
+        gameSession.sendGameState(clientId);
       } catch (stateError) {
         console.error(`Failed to send game state after error:`, stateError);
       }
@@ -251,6 +309,44 @@ export class MessageHandler {
       game.startGame(betAmount);
     } catch (error: unknown) {
       this.server.sendToClient(clientId, createErrorMessage(error instanceof Error ? error.message : 'Unknown error'));
+    }
+  }
+
+  private async handleGetLeaderboard(clientId: string): Promise<void> {
+    try {
+      const gameSession = this.server.getGameForClient(clientId);
+      if (!gameSession) {
+        this.server.sendToClient(clientId, createErrorMessage('No active game session found'));
+        return;
+      }
+
+      const loginData = gameSession.getLoginData();
+      if (!loginData || !loginData.userId) {
+        this.server.sendToClient(clientId, createErrorMessage('Player not authenticated'));
+        return;
+      }
+
+      console.log('Requesting leaderboard data for user:', loginData.userId);
+      const response = await this.apiService.getLeaderboard(loginData);
+      console.log('Leaderboard API response:', JSON.stringify(response, null, 2));
+      
+      if (response.success && response.data) {
+        console.log('Sending leaderboard data to client:', JSON.stringify(response.data, null, 2));
+        this.server.sendToClient(clientId, {
+          type: MessageType.LEADERBOARD_DATA,
+          data: {
+            entries: response.data
+          }
+        });
+      } else {
+        console.error('Failed to get leaderboard data:', response.error);
+        this.server.sendToClient(clientId, createErrorMessage(
+          response.error || 'Failed to get leaderboard data'
+        ));
+      }
+    } catch (error) {
+      console.error(`Error getting leaderboard for client ${clientId}:`, error);
+      this.server.sendToClient(clientId, createErrorMessage('Failed to get leaderboard data'));
     }
   }
 } 

@@ -129,6 +129,7 @@ export const LoaderConfig = {
 export const staticData = {
     logoURL: "./logo.png", // Logo URL
     background: "./background.png", // Updated path with static folder
+    loading: "./loading.png",
 };
 
 export const fontData = ["Lato"];

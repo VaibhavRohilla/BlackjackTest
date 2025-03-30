@@ -1,10 +1,11 @@
-import { Container, Sprite, Texture } from "pixi.js";
+import { Container, Sprite, Texture, Text } from "pixi.js";
 import { TextLabel } from "./textlabel";
 import { config } from "./appconfig";
 import { getSuitPrefix, Globals } from "./globals";
 import { Easing, Tween } from "@tweenjs/tween.js";
 import { log } from "node:console";
 import { promises } from "node:dns";
+import { BlackjackDealer } from "./blackjackdealer";
 
 export class Hand extends Container {
 
@@ -12,8 +13,7 @@ export class Hand extends Container {
     /** Dealer points text */
     pointsText: TextLabel = new TextLabel(0,0,0.5,"",20,0x000000);
     
-    /** Split hand points display */
-    pointsDisplay: Sprite  = new Sprite(Globals.resources.PointsHolder);
+    pointsDisplay : Sprite = new Sprite(Globals.resources.PointsHolder);
 
      points : number = 0;
      
@@ -32,34 +32,81 @@ export class Hand extends Container {
     /** Callback for when card reveal animation completes */
     onCardRevealComplete?: () => void;
 
-    constructor(public type: 'player' | 'dealer' | 'split') {
+    private blackjackDealer: BlackjackDealer | null = null;
+
+    constructor(type: 'player' | 'dealer' | 'split') {
         super();
-        this.initializePointsDisplay();
+        this.type = type;
+        this.setupPointsDisplay();
     }
 
-    initializePointsDisplay() {
-        this.pointsText.style.fontWeight = "bold";
+    /**
+     * Set up the points display
+     */
+    private setupPointsDisplay(): void {
         this.addChild(this.pointsDisplay);
-        this.pointsDisplay.addChild(this.pointsText);
-        this.pointsDisplay.visible = false;
+;        this.pointsDisplay.addChild(this.pointsText);
+        this.pointsDisplay.alpha = 0; // Start with 0 opacity instead of hiding
         this.pointsDisplay.anchor.set(0.5);
+        this.pointsDisplay.visible = false;
     }
   
 /**
      * Reveal dealer's hole card
      * @param holeCardValue Optional explicit value for the hole card
      */
-async revealDealerCard(newTexture: Texture): Promise<void> {
-    // Check if dealer has at least 2 cards
-    if (this.type != 'dealer' || !this.cards || this.cards.length < 2) {
-        console.error("Cannot reveal dealer card: dealer doesn't have enough cards");
+async revealDealerCard(cardData: Card): Promise<void> {
+    // Find the hole card (should be the second card)
+    const holeCard = this.cards.find(card => card.isHoleCard);
+    if (!holeCard || !holeCard.sprite) {
+        console.error("No hole card found to reveal");
         return;
     }
+
+    console.log("Revealing dealer's hole card with data:", cardData);
+
+    // Update the hole card with actual values
+    holeCard.rank = cardData.rank;
+    holeCard.suit = cardData.suit;
+    holeCard.value = cardData.value;
+    holeCard.faceUp = true;
+    holeCard.isHoleCard = false;
+    holeCard.spriteKey = `${getSuitPrefix(cardData.suit)}${cardData.rank}`;
+
+    // Get the face-up texture
+    const faceUpTexture = Globals.resources[holeCard.spriteKey];
+    if (!faceUpTexture) {
+        console.error("Could not find texture for revealed card:", holeCard.spriteKey);
+        return;
+    }
+
+    // Animate the card flip
+    await this.animateCardFlip(holeCard.sprite, faceUpTexture);
     
-    // Use the new revealCardAtIndex method to reveal the hole card (index 1)
-    this.revealCardAtIndex(1, newTexture);
+    // Recalculate hand value with the revealed card
+    const newValue = this.calculateValue();
+    console.log("New hand value after reveal:", newValue);
     
-   
+    // Force points display update
+    this.value = newValue;
+    this.points = newValue;
+    this.pointsText.updateLabelText(newValue.toString());
+    
+    // Ensure points display is visible and updated
+    this.pointsDisplay.visible = true;
+    this.pointsDisplay.alpha = 1;
+    
+    // Log the final state
+    console.log("Final dealer hand state:", {
+        cards: this.cards.map(c => ({
+            rank: c.rank,
+            suit: c.suit,
+            value: c.value,
+            faceUp: c.faceUp
+        })),
+        totalValue: this.value,
+        displayedValue: this.points
+    });
 }
      /**
      * Animate a card flipping over
@@ -156,62 +203,96 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
     }
    
    
-    /**
-     * Deal a card with error handling
-     * @param faceUp - Whether the card should be face up
-     * @returns A promise that resolves with the dealt card
-     */
     dealCards(CardData: Card): Promise<Card | null> {
-        return new Promise((resolve) => {
+        return new Promise(async (resolve) => {
             try {
+                // Force container position first
                 this.setContainerPosition();
+                
                 let placeholderCard: Card;
-                if(CardData) {
+                
+                // Handle dealer's first card and automatically create hole card
+                if (this.type === 'dealer' && this.cards.length === 0) {
+                    // First create the actual first card
                     placeholderCard = {
                         rank: CardData.rank,
                         suit: CardData.suit,
                         value: CardData.value,
-                        faceUp: CardData.faceUp,
+                        faceUp: true,
                         sprite: undefined,
-                        spriteKey: `${getSuitPrefix(CardData.suit)}${CardData.rank}`
+                        spriteKey: `${getSuitPrefix(CardData.suit)}${CardData.rank}`,
+                        isHoleCard: false
                     };
-                } else {
-                    placeholderCard = {
+                    
+                    console.log("Dealing dealer's first card:", placeholderCard);
+                    
+                    // Deal the first card
+                    this.cards.push(placeholderCard);
+                    const sprite = this.createCardSprite(placeholderCard);
+                    if (sprite) {
+                        this.addChild(sprite);
+                        await this.animateCardToHand(placeholderCard, this);
+                    }
+                    
+                    // Automatically create and deal the hole card
+                    const holeCard: Card = {
                         rank: '0',
-                        suit: '0',
+                        suit: 'hearts',
                         value: 0,
                         faceUp: false,
                         sprite: undefined,
-                        spriteKey: 'cardBack'
+                        spriteKey: 'cardBack',
+                        isHoleCard: true
                     };
-                }
-                console.log("Dealing card", this.type, placeholderCard);
-                
-                // Ensure texture is available
-                this.ensureTextureAvailable(placeholderCard);
-                
-                this.cards.push(placeholderCard);
-                
-                // Create sprite for the card
-                const sprite = this.createCardSprite(placeholderCard);
-                if (sprite) {
-                    // Add sprite to container first
-                    this.addChild(sprite);
                     
-                    // Use the animateCardToHand method for the deal animation
-                    // This will create the flying card effect from left side with rotation
-                    this.animateCardToHand(placeholderCard, this);
+                    console.log("Automatically creating hole card");
+                    
+                    // Deal the hole card
+                    this.cards.push(holeCard);
+                    const holeSprite = this.createCardSprite(holeCard);
+                    if (holeSprite) {
+                        this.addChild(holeSprite);
+                        await this.animateCardToHand(holeCard, this);
+                    }
+                    
+                    // Update points display with only first card value
+                    this.updatePointsDisplay(true);
+                    
+                    resolve(placeholderCard);
+                } else if (this.type === 'dealer' && CardData.isHoleCard) {
+                    // This is the actual hole card data being revealed
+                    await this.revealDealerCard(CardData);
+                    resolve(CardData);
+                } else {
+                    // Normal card dealing for all other cases
+                    placeholderCard = {
+                        rank: CardData.rank,
+                        suit: CardData.suit,
+                        value: CardData.value,
+                        faceUp: true,
+                        sprite: undefined,
+                        spriteKey: `${getSuitPrefix(CardData.suit)}${CardData.rank}`,
+                        isHoleCard: false
+                    };
+                    
+                    console.log("Dealing normal card:", placeholderCard);
+                    
+                    this.cards.push(placeholderCard);
+                    const sprite = this.createCardSprite(placeholderCard);
+                    if (sprite) {
+                        this.addChild(sprite);
+                        await this.animateCardToHand(placeholderCard, this);
+                    }
+                    
+                    this.updatePointsDisplay(true);
+                    resolve(placeholderCard);
                 }
-                
-                console.log("Card sprite created successfully for ", placeholderCard.sprite?._texture);
-                resolve(placeholderCard);
             } catch (error) {
                 console.error("Error dealing card:", error);
                 resolve(null);
             }
         });
     }
-    
     /**
      * Ensure the texture for a card is available
      * @param card - The card to ensure texture is available for
@@ -348,12 +429,31 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         return Math.max(cardScale * config.scaleFactor, minScale);
     }
 
-    resize(hasSplit : boolean ) {
-        this.setContainerPosition(hasSplit);
-        this.positionCardsInHand(this);
-        // const playerY = screenHeight * 0.35; // Player hand at 25% from bottom
-        // const dealerY = -screenHeight * 0.25; // Dealer hand at 25% from top
+    resize(hasSplit : boolean = false) {
+        console.log(`Resizing ${this.type} hand, hasSplit: ${hasSplit}`);
         
+        // If this is a player hand in split mode, force position
+        if (this.type === 'player' && (hasSplit || this.blackjackDealer?.splitHand)) {
+            const screenWidth = window.innerWidth;
+            const screenHeight = window.innerHeight;
+            const playerY = screenHeight * 0.40;
+            const playerX = screenWidth * 0.8;
+            
+            console.log(`Forcing player hand position in resize: (${playerX}, ${playerY})`);
+            this.position.set(playerX, playerY);
+            
+            // Lock position
+            if (this.blackjackDealer) {
+                this.blackjackDealer.lockPlayerHandPosition = true;
+                this.blackjackDealer.lockHandPositions = true;
+            }
+        } else {
+            // Normal resize behavior
+            this.setContainerPosition(hasSplit);
+        }
+        
+        // Always position cards
+        this.positionCardsInHand(this);
     }
     /**
      * Get the consistent overlap factor for cards
@@ -398,6 +498,14 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
      * @param hand - The hand to position cards in
      */
     positionCardsInHand(hand: Hand): void {
+        // Fade out points display during card positioning
+        if (this.pointsDisplay) {
+            const tween = new Tween(this.pointsDisplay, Globals.sceneManager?.tweenGroup);
+            tween.to({ alpha: 0 }, 150)
+                .easing(Easing.Cubic.Out)
+                .start();
+        }
+
         const cardCount = hand.cards.length;
         if (cardCount === 0) return;
         
@@ -427,61 +535,102 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                 };
                 
                 // Animate to the new position
-                new Tween(card.sprite.position, Globals.sceneManager?.tweenGroup)
-                    .to({ x, y }, 300)
+                const cardTween = new Tween(card.sprite.position, Globals.sceneManager?.tweenGroup);
+                cardTween.to({ x, y }, 300)
                     .easing(Easing.Sinusoidal.Out)
                     .start();
                 
                 // Set z-index based on card position
                 card.sprite.zIndex = index;
-                
-                // Apply a slight rotation for a more natural look
-                // if (cardCount > 1) {
-                //     const rotationOffset = (index - (cardCount - 1) / 2) * 0.5;
-                //         new Tween(card.sprite, Globals.sceneManager?.tweenGroup)
-                //         .to({ rotation: rotationOffset * (Math.PI / 180) }, 300)
-                //         .easing(Easing.Cubic.Out)
-                //         .start();
-                // }
             }
         });
         
-        // Position the points display after cards are positioned
-        this.positionPointsDisplay();
-        
-        // After positioning the points display, adjust card positions to ensure
-        // the points display is centered relative to the cards
-        this.adjustCardsForCenteredPointsDisplay(cardWidth);
+        // Only show points display after all cards are positioned
+        if (this.cards.length === hand.cards.length) {
+            // Position the points display after cards are positioned
+            this.positionPointsDisplay();
+            
+            // After positioning the points display, adjust card positions to ensure
+            // the points display is centered relative to the cards
+            this.adjustCardsForCenteredPointsDisplay(cardWidth);
+            
+            // Fade in points display with a slight delay
+            setTimeout(() => {
+                if (this.pointsDisplay) {
+                    const fadeInTween = new Tween(this.pointsDisplay, Globals.sceneManager?.tweenGroup);
+                    fadeInTween.to({ alpha: 1 }, 300)
+                        .easing(Easing.Cubic.In)
+                        .start();
+                }
+            }, 300);
+        }
     }
 
     /**
      * Set container position with smooth animation
      */
     setContainerPosition(hasSplit: boolean = false) {
+        // Skip positioning if we're in a split hand
+        if (this.type === 'split') {
+            console.log(`Skipping position for split hand`);
+            return;
+        }
+
+        // Skip positioning if positions are locked and we're not in split mode
+        if (this.blackjackDealer?.lockHandPositions && !hasSplit) {
+            console.log(`Skipping position - positions locked and not in split mode`);
+            return;
+        }
+
+        // Skip positioning if we're in player hand and the position is locked for split
+        if (this.type === 'player' && this.blackjackDealer?.lockPlayerHandPosition) {
+            console.log(`Skipping player hand position - locked for split`);
+            return;
+        }
+
         const playerY = window.innerHeight * 0.40; // Player hand at 40% from top
         const dealerY = -window.innerHeight * 0.25; // Dealer hand at 25% from top
-        const { Tween, Easing } = require("@tweenjs/tween.js");
 
         let targetX = 0;
         let targetY = 0;
 
         if(this.type === 'player') {
             targetY = playerY;
-            if(hasSplit) {
-                targetX = window.innerWidth * 0.2;
+            // If in split mode, offset the player's main hand to the right
+            if(hasSplit || this.blackjackDealer?.splitHand) {
+                console.log("Setting player hand position for split mode");
+                targetX = window.innerWidth * 0.8; // 80% from center
+                console.log(`Player hand target position: ${targetX}, ${targetY}`);
+            } else {
+                targetX = 0; // Centered if not in split mode
+                console.log(`Player hand centered position: ${targetX}, ${targetY}`);
             }
         } else if(this.type === 'dealer') {
             targetY = dealerY;
-        } else if(this.type === 'split') {
-            targetY = playerY;
-            targetX = -window.innerWidth * 0.2;
+            console.log(`Dealer hand position: ${targetX}, ${targetY}`);
         }
 
-        // Animate to new position
-        new Tween(this.position)
-            .to({ x: targetX, y: targetY }, 300)
-            .easing(Easing.Cubic.Out)
-            .start();
+        // Set position immediately without animation for split mode
+        if (hasSplit || this.blackjackDealer?.splitHand) {
+            console.log(`Setting ${this.type} hand position immediately for split mode: (${targetX}, ${targetY})`);
+            this.position.set(targetX, targetY);
+            if (this.blackjackDealer) {
+                this.blackjackDealer.lockPlayerHandPosition = true;
+            }
+        } else {
+            // Only animate if position actually changed
+            if (this.position.x !== targetX || this.position.y !== targetY) {
+                console.log(`Moving ${this.type} hand from (${this.position.x}, ${this.position.y}) to (${targetX}, ${targetY}) with animation`);
+                new Tween(this.position, Globals.sceneManager?.tweenGroup)
+                    .to({ x: targetX, y: targetY }, 300)
+                    .easing(Easing.Cubic.Out)
+                    .start();
+            } else {
+                // If position hasn't changed, just set it directly
+                console.log(`${this.type} hand position unchanged, setting directly to (${targetX}, ${targetY})`);
+                this.position.set(targetX, targetY);
+            }
+        }
     }
 
     /**
@@ -496,22 +645,14 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         if (cardCount === 0) return { positions: [], cardWidth: 0, cardHeight: 0 };
         
         // Calculate card dimensions based on scale
-        const cardWidth = 225 * cardScale; // Assuming card texture width is 225px
-        const cardHeight = cardWidth * 1.4; // Standard card ratio
+        const cardWidth = 225 * cardScale;
+        const cardHeight = cardWidth * 1.4;
         
         // Use the consistent overlap factor
         const overlapFactor = this.getCardOverlapFactor();
         
-        // Get screen dimensions
-        const screenWidth = window.innerWidth;
-      
-        
-        // Calculate available width for cards (consistent percentage of screen width)
-        const availableWidth = screenWidth * 0.85; // Use 85% of screen width for all orientations
-        
-       
         // Calculate the effective width of each card after overlap
-        const effectiveCardWidth = cardWidth/2 * (1 - overlapFactor) ;
+        const effectiveCardWidth = cardWidth/2 * (1 - overlapFactor);
         
         // Calculate the total width needed for all cards with overlap
         const totalWidth = cardCount > 1 ? effectiveCardWidth * (cardCount - 1) + cardWidth : cardWidth;
@@ -520,7 +661,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         const startX = -totalWidth / 2 + cardWidth / 2;
         
         // Calculate positions for each card
-        const positions: {x: number, y: number}[] = [];
+        const positions: {x: number, y: number}[] = []
         
         for (let index = 0; index < cardCount; index++) {
             // Calculate position with overlap - always centered
@@ -529,8 +670,6 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
             
             positions.push({ x, y });
         }
-        
-        console.log(`Calculated ${positions.length} card positions with cardWidth: ${cardWidth}, overlap: ${overlapFactor}, totalWidth: ${totalWidth}`);
         
         return { positions, cardWidth, cardHeight };
     }
@@ -635,6 +774,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
     animateCardToHand(card: Card, hand: Hand): void {
         if (!card.sprite) return;
         
+        
         // Get screen dimensions
         const screenWidth = window.innerWidth;
         const screenHeight = window.innerHeight;
@@ -692,8 +832,6 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         
         // Create a progress tween from 0 to 1
         const progress = { value: 0 };
-        const { Tween, Easing } = require("@tweenjs/tween.js");
-        
         // Adjust animation duration based on hand type
         const animationDuration = hand.type === 'split' ? 
             this.dealAnimationSpeed * 1.2 : // Slightly longer for split hands
@@ -741,17 +879,28 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
                         // Position all cards in hand
                         this.positionCardsInHand(this);
                         
-                        // Position points display
-                        this.positionPointsDisplay();
-                        
-                        // Update points display
-                        this.updatePointsDisplay(true);
-                        
-                        // Ensure points display is visible and on top
-                        if (this.pointsDisplay) {
-                            this.pointsDisplay.visible = true;
-                            this.pointsDisplay.zIndex = 1000; // Ensure it's above cards
-                            this.pointsDisplay.alpha = 1;
+                        // Only show points display after all cards are dealt and positioned
+                        if (this.cards.length === hand.cards.length) {
+                            // Calculate value first
+                            this.calculateValue();
+                            
+                            // Position points display
+                            this.positionPointsDisplay();
+                            
+                            // Update points display with calculated value
+                            this.updatePointsDisplay(true);
+                            
+                            // Fade in points display with a slight delay
+                            setTimeout(() => {
+                                if (this.pointsDisplay) {
+                                    new Tween(this.pointsDisplay, Globals.sceneManager?.tweenGroup)
+                                        .to({ alpha: 1 }, 300)
+                                        .easing(Easing.Cubic.In)
+                                        .start();
+                                    this.pointsDisplay.zIndex = 1000; // Ensure it's above cards
+                                    this.pointsDisplay.visible = true; // Ensure visibility is set
+                                }
+                            }, 300);
                         }
                     })
                     .start();
@@ -771,17 +920,18 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
 
     
     updatePointsDisplay(animate: boolean = true): void {
-        // Make sure points display is visible
+        let displayValue: number;
         
-        // Update points text to show hand value
-        let points = 0;
+        if (this.type === 'dealer' && this.cards.some(card => card.isHoleCard)) {
+            // If dealer has a hole card, only show visible value
+            displayValue = this.calculateVisibleValue();
+        } else {
+            // Otherwise show total value
+            displayValue = this.calculateValue();
+        }
         
-     
-        points = this.calculateValue();
-        
-        
-        this.points = points;
-        this.pointsText.updateLabelText(points.toString());
+        this.points = displayValue;
+        this.pointsText.updateLabelText(displayValue.toString());
         
         if (animate) {
             this.animatePointsDisplay();
@@ -818,7 +968,7 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         // Clear all sprites and reset display
         this.clearSprites();
         this.pointsDisplay.tint = 0xFFFFFF;
-        
+        this.pointsDisplay.visible = false;
         // Reset hand state
         this.cards = [];
         this.value = 0;
@@ -978,6 +1128,9 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         
         // First sum up all non-ace cards
         for (const card of this.cards) {
+            // Skip hole cards that haven't been revealed
+            if (card.isHoleCard) continue;
+            
             if (card.rank === 'A') {
                 aces++;
             } else {
@@ -1020,6 +1173,50 @@ async revealDealerCard(newTexture: Texture): Promise<void> {
         // Only count face-up cards
         for (const card of this.cards) {
             if (!card.faceUp) continue;
+            
+            if (card.rank === 'A') {
+                aces++;
+            } else {
+                value += card.value;
+            }
+        }
+        
+        // Handle aces optimally
+        for (let i = 0; i < aces; i++) {
+            if (value + 11 <= 21) {
+                value += 11;
+            } else {
+                value += 1;
+            }
+        }
+        
+        return value;
+    }
+
+    /**
+     * Set the blackjack dealer reference
+     */
+    public setBlackjackDealer(dealer: BlackjackDealer): void {
+        this.blackjackDealer = dealer;
+    }
+
+    /**
+     * Update card positions within the hand
+     */
+    private updateCardPositions(): void {
+        // ... existing card positioning code ...
+    }
+
+    /**
+     * Calculate the visible value of the hand (excluding hole card)
+     */
+    calculateVisibleValue(): number {
+        let value = 0;
+        let aces = 0;
+        
+        // Only count face-up cards and non-hole cards
+        for (const card of this.cards) {
+            if (card.isHoleCard || !card.faceUp) continue;
             
             if (card.rank === 'A') {
                 aces++;
@@ -1136,6 +1333,9 @@ export interface Card {
         y: number;
         index: number; // Index in the hand
     };
+    
+    /** Whether this is a dealer's hole card */
+    isHoleCard?: boolean;
 }
     
 

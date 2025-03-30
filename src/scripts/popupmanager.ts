@@ -91,7 +91,7 @@ export class PopupManager extends Container {
      * @param outcome - The game outcome
      * @param payout - The payout amount
      */
-    showOutcomePopup(outcome: GameOutcome, payout: number): void {
+    public showOutcomePopup(outcome: string, payout: number = 0): void {
         console.log(`Showing outcome popup for: ${outcome} with payout: ${payout}`);
         
         // Check if we're already showing this exact outcome - avoid flashing
@@ -101,7 +101,7 @@ export class PopupManager extends Container {
         }
         
         // Store current outcome
-        this.currentOutcome = outcome;
+        this.currentOutcome = outcome as GameOutcome;
         
         let popupTexture;
         let tint = 0xFFFFFF; // Default white (no tint)
@@ -149,7 +149,7 @@ export class PopupManager extends Container {
                 this.isGameEndPopup = false;
                 break;
             default:
-                console.log(`No popup defined for outcome: ${outcome}`);
+                console.warn(`No popup defined for outcome: ${outcome}`);
                 this.currentOutcome = null; // Reset outcome tracking
                 return;
         }

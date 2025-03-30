@@ -110,6 +110,7 @@ export class BlackjackGame {
   
   private currentBet: number = 0;
   private lastBet: number = 0;
+  private originalBetBeforeDouble: number = 0;
   private insuranceBet: number = 0;
   
   private gamePhase: 'betting' | 'dealing' | 'player_turn' | 'dealer_turn' | 'complete' = 'betting';
@@ -143,23 +144,23 @@ export class BlackjackGame {
    * Reset the game state for a new round
    */
   public reset(): void {
-    // Create a new deck if less than 25% of cards remain
-    if (this.deck.getCardsRemaining() < (52 * this.numDecks * 0.25)) {
-      this.deck = new Deck(this.numDecks);
+    // Store the last bet amount before resetting current bet
+    if (this.doubledDown && this.originalBetBeforeDouble > 0) {
+        this.lastBet = this.originalBetBeforeDouble;
+    } else if (this.currentBet > 0) {
+        this.lastBet = this.currentBet;
     }
     
-    // Reset hands
+    this.currentBet = 0;
+    this.originalBetBeforeDouble = 0;
     this.playerHand = this.createHand('player');
     this.dealerHand = this.createHand('dealer');
     this.splitHand = null;
+    this.gamePhase = 'betting';
     this.activeSplitHand = null;
-    
-    // Reset state
-    this.currentBet = 0;
     this.insuranceBet = 0;
     this.doubledDown = false;
     this.surrendered = false;
-    this.gamePhase = 'betting';
   }
   
   /**
@@ -203,21 +204,21 @@ export class BlackjackGame {
     
     // Deal first card to player face up
     const playerCard1 = this.deck.dealCard(true);
-    this.playerHand.cards.push(playerCard1);
+      this.playerHand.cards.push(playerCard1);
     
     // Deal first card to dealer face up
     const dealerCard1 = this.deck.dealCard(true);
     this.dealerHand.cards.push(dealerCard1);
     
     // Deal second card to player face up
-    const playerCard2 =  this.deck.dealCard(true);
+    const playerCard2 = this.deck.dealCard(true);
     this.playerHand.cards.push(playerCard2);
     
     // Deal second card to dealer face down
     const dealerCard2 = this.deck.dealCard(false);
     this.dealerHand.cards.push(dealerCard2);
     
-    console.log(`Dealt initial cards: Player [${playerCard1.rank}${playerCard1.suit[0]}, ${playerCard2.rank}${playerCard2.suit[0]}], Dealer [${dealerCard1.rank}${dealerCard1.suit[0]}, ${dealerCard2.rank}${dealerCard2.suit[0]}]`);
+    // console.log(`Dealt initial cards: Player [${playerCard1.rank}${playerCard1.suit[0]}, ${playerCard2.rank}${playerCard2.suit[0]}], Dealer [${dealerCard1.rank}${dealerCard1.suit[0]}, ${dealerCard2.rank}${dealerCard2.suit[0]}]`);
     
     // Calculate hand values
     this.calculateHandValues();
@@ -378,6 +379,9 @@ export class BlackjackGame {
     if (!this.canDoubleDown()) {
       throw new Error('Cannot double down - not eligible (must have exactly 2 cards)');
     }
+    
+    // Store the original bet before doubling
+    this.originalBetBeforeDouble = this.currentBet;
     
     // Double the bet
     this.currentBet *= 2;
@@ -749,7 +753,7 @@ export class BlackjackGame {
     
     if ((handOneOutcome === 'dealer_win' || handOneOutcome === 'player_bust') &&
         (handTwoOutcome === 'split_win' || handTwoOutcome === 'split_blackjack')) {
-      return 'split_win';
+      return 'player_win';
     }
     
     // One win, one push
@@ -775,7 +779,7 @@ export class BlackjackGame {
     }
     
     // Default case (should never happen but needed for compiler)
-    return 'split_result';
+    return 'dealer_win';
   }
   
   /**
@@ -790,6 +794,13 @@ export class BlackjackGame {
    */
   public getLastBet(): number {
     return this.lastBet;
+  }
+  
+  /**
+   * Set the last bet amount
+   */
+  public setLastBet(amount: number): void {
+    this.lastBet = amount;
   }
   
   /**
@@ -840,73 +851,65 @@ export class BlackjackGame {
     
     // Add allowed actions based on game phase
     if (this.gamePhase === 'betting') {
-      allowedActions.push(MessageType.PLACE_BET);
-      
-      if (this.currentBet > 0) {
-        allowedActions.push(MessageType.DEAL_CARDS);
-        allowedActions.push(MessageType.CLEAR_BET);
-      }
-      
-      if (this.lastBet > 0) {
-        allowedActions.push(MessageType.REBET);
-      }
+          // Always include both PLACE_BET and REBET in complete phase
+          allowedActions.push(MessageType.PLACE_BET);
+          // Only add REBET if there was a previous bet
+          if (this.lastBet > 0 && balance >= this.lastBet) {
+              allowedActions.push(MessageType.REBET);
+          }
     } 
-    // Add dealing phase handling to ensure buttons show up right after dealing
-    else if (this.gamePhase === 'dealing') {
-      // In the dealing phase, we should prepare the same actions as player_turn
-      // since we'll transition to player_turn immediately after dealing
-      allowedActions.push(MessageType.HIT);
-      allowedActions.push(MessageType.STAND);
-      
-      // Only allow double down on initial two cards
-      if (this.playerHand.cards.length === 2 && !this.hasSplit()) {
-        allowedActions.push(MessageType.DOUBLE_DOWN, MessageType.SURRENDER);
-      }
-      
-      // Allow split if possible
-      if (this.canSplit() && this.playerHand.cards.length === 2) {
-        allowedActions.push(MessageType.SPLIT);
-      }
-      
-      // Allow insurance if available
-      if (this.isInsuranceAvailable() && this.playerHand.cards.length === 2 && balance >= this.currentBet/2 ) {
-        allowedActions.push(MessageType.INSURANCE);
-      }
-    }
-    else if (this.gamePhase === 'player_turn') {
-      allowedActions.push(MessageType.HIT);
-      allowedActions.push(MessageType.STAND);
-      
-      // Only allow double down on initial two cards
-      if (this.playerHand.cards.length === 2 && !this.hasSplit()) {
-        allowedActions.push(MessageType.DOUBLE_DOWN, MessageType.SURRENDER);
-      }
-      
-      // Allow split if possible
-      if (this.canSplit()) {
-        allowedActions.push(MessageType.SPLIT);
-      }
-      
-      // Allow insurance if available
-      if (this.isInsuranceAvailable()) {
-        allowedActions.push(MessageType.INSURANCE);
-      }
-    } else if (this.gamePhase === 'complete') {
-      allowedActions.push(MessageType.PLACE_BET);
-      allowedActions.push(MessageType.REBET);
+    else if (this.gamePhase === 'dealing' || this.gamePhase === 'player_turn') {
+        // Basic actions always available during player turn
+        allowedActions.push(MessageType.HIT);
+        allowedActions.push(MessageType.STAND);
+        
+        // Only allow these actions on initial two cards
+        if (this.playerHand.cards.length === 2) {
+            // Allow double down if not split
+            if (!this.hasSplit()) {
+                allowedActions.push(MessageType.DOUBLE_DOWN);
+                allowedActions.push(MessageType.SURRENDER);
+            }
+            
+            // Allow split if possible
+            if (this.canSplit()) {
+                allowedActions.push(MessageType.SPLIT);
+            }
+            
+            // Allow insurance only during initial dealing phase
+            if (this.gamePhase === 'dealing' && this.isInsuranceAvailable() && balance >= this.currentBet/2) {
+                allowedActions.push(MessageType.INSURANCE);
+            }
+        }
+        
+        // For split hands, handle each hand separately
+        if (this.hasSplit()) {
+            const activeHand = this.activeSplitHand === 'first' ? this.playerHand : this.splitHand!;
+            if (activeHand.cards.length === 2) {
+                allowedActions.push(MessageType.DOUBLE_DOWN);
+            }
+        }
+    } 
+    else if (this.gamePhase === 'complete') {
+        // Always include both PLACE_BET and REBET in complete phase
+        allowedActions.push(MessageType.PLACE_BET);
+        // Only add REBET if there was a previous bet
+        if (this.lastBet > 0 && balance >= this.lastBet) {
+            allowedActions.push(MessageType.REBET);
+        }
     }
     
     // Create game state message
     return {
-      playerHand: this.handToMessage(this.playerHand),
-      dealerHand: this.handToMessage(this.dealerHand),
-      splitHand: this.splitHand ? this.handToMessage(this.splitHand) : undefined,
-      activeSplitHand: this.activeSplitHand,
-      playerBalance: 0, // To be filled by GameSession
-      currentBet: this.currentBet,
-      insuranceBet: this.insuranceBet,
-      gamePhase: this.gamePhase,
-      allowedActions
+        playerHand: this.handToMessage(this.playerHand),
+        dealerHand: this.handToMessage(this.dealerHand),
+        splitHand: this.splitHand ? this.handToMessage(this.splitHand) : undefined,
+        activeSplitHand: this.activeSplitHand,
+        playerBalance: 0, // To be filled by GameSession
+        currentBet: this.currentBet,
+        insuranceBet: this.insuranceBet,
+        gamePhase: this.gamePhase,
+        allowedActions
     };
   }
 
@@ -1395,14 +1398,20 @@ export class BlackjackGame {
     result.payout = this.calculatePayoutForOutcome(standardOutcome);
     result.message = this.getOutcomeMessage(standardOutcome);
     
-    // If player lost and had insurance (but dealer didn't have blackjack)
+    // If player has insurance (but dealer doesn't have blackjack)
     if (this.insuranceBet > 0) {
       result.insurance = {
         bet: this.insuranceBet,
         payout: 0, // No payout for losing insurance
         won: false
       };
-      // Note: We still use the normal game outcome, just tracking insurance info
+      
+      // If dealer busts, ensure we show both outcomes
+      if (this.dealerHand.busted) {
+        result.finalOutcomeString = 'dealer_bust';
+        result.message = 'Dealer busts! You win!';
+        result.payout = this.currentBet * 2; // Win main bet
+      }
     }
     
     return result;
@@ -1516,18 +1525,20 @@ public getGameOutcome(): string {
 
   // Handle bust cases
   if (this.playerHand.busted) {
-      return 'lose';
+      return 'player_bust';
   }
   if (this.dealerHand.busted) {
-      return 'win';
+      // If dealer busts and player has insurance, return dealer_bust
+      // This ensures the dealer bust outcome is shown even with insurance
+      return 'dealer_bust';
   }
 
   // Compare hand values
   if (this.playerHand.value > this.dealerHand.value) {
-      return 'win';
+      return 'player_win';
   }
   if (this.playerHand.value < this.dealerHand.value) {
-      return 'lose';
+      return 'dealer_win';
   }
 
   // If it's a tie and insurance is involved but dealer doesn't have blackjack

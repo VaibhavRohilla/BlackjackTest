@@ -110,9 +110,9 @@ export class BlackjackServer {
   }
 
   /**
-   * Create a new game session for a client
+   * Get or create a game session for a client
    */
-  public createGameForClient(clientId: string): GameSession {
+  public getOrCreateGameSession(clientId: string): GameSession {
     // Check if a game already exists for this client
     const existingGame = this.gameSessions.get(clientId);
     if (existingGame) {

@@ -49,7 +49,13 @@ export enum MessageType {
   AUTHENTICATE = 'authenticate',
   AUTH_SUCCESS = 'auth_success',
   AUTH_ERROR = 'auth_error',
-  JOIN_SESSION = "JOIN_SESSION"
+  JOIN_SESSION = "JOIN_SESSION",
+  BET_VALIDATED = "BET_VALIDATED",
+  RANDOM_NUMBERS = "RANDOM_NUMBERS",
+  LEADERBOARD = "LEADERBOARD",
+  BET_SAVED = "BET_SAVED",
+  GET_LEADERBOARD = "get_leaderboard",
+  LEADERBOARD_DATA = "leaderboard_data"
 }
 
 /**

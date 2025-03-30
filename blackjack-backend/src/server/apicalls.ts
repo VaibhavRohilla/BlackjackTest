@@ -1,6 +1,7 @@
 import axios, { AxiosError, AxiosInstance } from 'axios';
 import dotenv from 'dotenv';
 import { env } from 'process';
+import { LoginData } from '../types/game.types';
 dotenv.config();
 
 // Environment and Configuration Types
@@ -21,7 +22,7 @@ interface BaseRequest {
 }
 
 interface UserRequest extends BaseRequest {
-  loginData: string;
+  loginData: LoginData;
 }
 
 interface BetRequest extends UserRequest {
@@ -52,7 +53,7 @@ interface RawUserResponse {
 }
 
 export interface UserData {
-  username: string;
+  username: string | undefined;
   chips: number;
   userId: string;
 }
@@ -61,6 +62,8 @@ export interface LeaderboardEntry {
   username: string;
   chips: number;
   rank: number;
+  avatar: string;
+  country: string;
 }
 
 export interface BetResult {
@@ -89,8 +92,8 @@ export class BlockspinAPI {
   constructor(environment: Environment = 'test') {
     this.config = {
       baseUrl: environment === 'test' 
-        ? 'https://apitest.blockspingaming.com'
-        : 'https://apit.blockspingaming.com',
+        ? process.env.TEST_API_URL || 'https://apitest.blockspingaming.com'
+        : process.env.PROD_API_URL || 'https://api.blockspingaming.com',
       gamePassword: process.env.GAME_PASSWORD || '',
       game: 'blackjack',
       cacheDuration: 5 * 60 * 1000 // 5 minutes
@@ -139,11 +142,19 @@ export class BlockspinAPI {
     try {
       const cleanEndpoint = endpoint.startsWith('/') ? endpoint.substring(1) : endpoint;
       
-      // Add game password to all requests
+      // Add game password and authentication headers
       const requestData = {
         ...(typeof data === 'object' ? data : {}),
         gamePassword: this.config.gamePassword
       };
+
+      // Add authentication headers if loginData is present
+      if (data && typeof data === 'object' && 'loginData' in data) {
+        const loginData = (data as any).loginData;
+        if (typeof loginData === 'string' && loginData.startsWith('ey')) {
+          this.axiosInstance.defaults.headers.common['Authorization'] = `Bearer ${loginData}`;
+        }
+      }
 
       // Log request details
       console.log(`Making API request to ${cleanEndpoint}:`, {
@@ -180,50 +191,54 @@ export class BlockspinAPI {
   }
 
   // Public API Methods
-  public async getUserData(loginData: string): Promise<ApiResponse<UserData>> {
-    if (!loginData) {
-      return {
-        success: false,
-        error: 'Login data is required'
-      };
-    }
-
+  public async getUserData(loginData: LoginData): Promise<ApiResponse<UserData>> {
     try {
-      const request = {
+      const requestData: UserRequest = {
         ...this.getBaseRequest(),
         loginData
       };
-      console.log('Getting user data with request:', request);
-      
-      const response = await this.makeRequest<RawUserResponse>('externalgame/getuser', request);
-      
-      // The API returns the user data directly
-      if (response && response._id) {
-        // Map the API response to our UserData interface
+
+      console.log('Making API request with data:', {
+        ...requestData,
+        loginData: loginData// Log only part of the token
+      });
+
+      const response = await this.axiosInstance.post('/externalgame/getuser', requestData);
+      console.log('API Response:', response.data);
+
+      if (response.data.error) {
         return {
-          success: true,
-          data: {
-            username: response.username || loginData,
-            chips: response.chips || 0,
-            userId: response._id
-          }
+          success: false,
+          error: response.data.error
         };
       }
-      
+
+      const userData: UserData = {
+        username: response.data.username || '',
+        chips: response.data.chips || 0,
+        userId: response.data._id || loginData // Use _id from response or fallback to loginData
+      };
+
       return {
-        success: false,
-        error: 'Invalid user data received from API'
+        success: true,
+        data: userData
       };
     } catch (error) {
-      console.error('Error in getUserData:', error);
+      console.error('API Error:', error);
+      if (axios.isAxiosError(error)) {
+        return {
+          success: false,
+          error: error.response?.data?.error || error.message
+        };
+      }
       return {
         success: false,
-        error: error instanceof Error ? error.message : 'Failed to get user data'
+        error: 'Failed to get user data'
       };
     }
   }
 
-  public async validateBet(betAmount: number, loginData: string): Promise<ApiResponse<boolean>> {
+  public async validateBet(betAmount: number, loginData: LoginData): Promise<ApiResponse<boolean>> {
     if (!loginData) {
       return {
         success: false,
@@ -296,7 +311,7 @@ export class BlockspinAPI {
     }
   }
 
-  public async getLeaderboard(loginData: string): Promise<ApiResponse<LeaderboardEntry[]>> {
+  public async getLeaderboard(loginData: LoginData): Promise<ApiResponse<LeaderboardEntry[]>> {
     try {
       const cacheKey = this.getCacheKey('leaderboard', loginData);
       const cached = this.getCached<LeaderboardEntry[]>(cacheKey);
@@ -341,9 +356,4 @@ export class BlockspinAPI {
 // Export a default instance for convenience
 export const defaultApi = new BlockspinAPI('test');
 
-// Example Usage:
-const api = new BlockspinAPI('test');
 
-api.getUserData('LOGIN_DATA').then(response => {
-  console.log('User Data:', response.data);
-});

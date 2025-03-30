@@ -78,16 +78,51 @@ export interface Card {
       if (this.cards.length === 0) {
         // If deck is empty, shuffle discard pile back in
         if (this.discardPile.length > 0) {
+          console.log('Deck empty, shuffling discard pile back in...');
           this.shuffle();
         } else {
           throw new Error('No cards left in the deck');
         }
       }
-      const card = this.cards.pop()!;
+      
+      // Get random index from remaining cards
+      const randomIndex = Math.floor(Math.random() * this.cards.length);
+      console.log(`Dealing card: Random index ${randomIndex} from ${this.cards.length} remaining cards`);
+      
+      // Remove and return the card at random index
+      const card = this.cards.splice(randomIndex, 1)[0];
       card.faceUp = faceUp;
       
+      console.log(`Dealt card: ${card.rank} of ${card.suit} (value: ${card.value})`);
       return card;
     }
+    /**
+     * Deal a card of value 10 from the deck
+     * @returns {Card | null} - The dealt card if successful, null if no card of value 10 is available
+     */
+    public dealCardOfValueTen(): Card | null {
+        // Find all cards with value 10
+        const tenValueCards = this.cards.filter(card => card.value === 10);
+        
+        // If there are no cards of value 10, return null
+        if (tenValueCards.length === 0) {
+            console.log('No cards of value 10 available to deal.');
+            return null;
+        }
+        
+        // Get a random card from the available ten value cards
+        const randomIndex = Math.floor(Math.random() * tenValueCards.length);
+        const cardToDeal = tenValueCards[randomIndex];
+        
+        // Remove the card from the deck
+        this.cards = this.cards.filter(card => card !== cardToDeal);
+        
+        console.log(`Dealt card: ${cardToDeal.rank} of ${cardToDeal.suit} (value: ${cardToDeal.value})`);
+        return cardToDeal;
+    }
+
+
+
 
     /**
      * Discard a card

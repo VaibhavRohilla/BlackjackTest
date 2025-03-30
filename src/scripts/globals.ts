@@ -24,6 +24,7 @@ export interface globalDataType {
   gameState:"betting" | "dealing" | "player_turn" | "dealer_turn" | "complete" | undefined;
   lastWin: number;
   activeHand: 'first' | 'second' | null;
+  userId: string;
 }
 
 export const Globals: globalDataType = {
@@ -39,12 +40,13 @@ export const Globals: globalDataType = {
   backendService: undefined,
   soundResources: {},
   isVisible: true,
-  balance : 200000,
+  balance : 0,
   currentBet : 0,
   gameState: "betting",
   Manager : undefined,
   lastWin: 0,
-  activeHand: null
+  activeHand: null,
+  userId: ''
 };
 
 export const formatNumber = (num: number): string => {

@@ -70,10 +70,8 @@ export class CenterChip extends Sprite {
         // Format the amount for display
         const formattedAmount = this.formatBetAmount(amount);
         
-        // Update the text
+        // Update the text and ensure visibility
         this.betHolder.middleChipsCountTxt.updateLabelText(`${formattedAmount} Chips`);
-        
-        // Make sure it's visible and reset alpha/scale
         this.betHolder.isVisible(true);
         this.betHolder.alpha = 1;
         this.betHolder.scale.set(1 * config.scaleFactor);
@@ -82,7 +80,7 @@ export class CenterChip extends Sprite {
         this.resize();
         
         // Log visibility state for debugging
-        console.log("Bet holder visibility:", this.betHolder.visible, "Alpha:", this.betHolder.alpha);
+        console.log("Bet holder visibility:", this.betHolder.visible, "Alpha:", this.betHolder.alpha, "Amount:", formattedAmount);
         
         // Add a small animation to draw attention
         const originalScale = this.betHolder.scale.clone();
@@ -100,11 +98,17 @@ export class CenterChip extends Sprite {
                 // Reset to original scale
                 this.betHolder.scale.copyFrom(originalScale);
                 
-                // Double-check visibility after animation
+                // Double-check visibility and text after animation
                 if (!this.betHolder.visible) {
                     console.log("Bet holder not visible after animation, forcing visibility");
                     this.betHolder.isVisible(true);
                     this.betHolder.alpha = 1;
+                }
+                
+                // Verify text is correct
+                if (this.betHolder.middleChipsCountTxt.text !== `${formattedAmount} Chips`) {
+                    console.log("Bet text mismatch after animation, correcting");
+                    this.betHolder.middleChipsCountTxt.updateLabelText(`${formattedAmount} Chips`);
                 }
             })
             .start();
@@ -444,7 +448,13 @@ export class CenterChipHolder extends Sprite {
         
         // Format the bet amount for display
         const formattedBet = this.formatBetAmount(Globals.currentBet);
+        
+        // Update text and ensure visibility
         this.middleChipsCountTxt.updateLabelText(`${formattedBet} Chips`);
+        this.isVisible(Globals.currentBet > 0);
+        
+        // Log for debugging
+        console.log(`Updated bet text to: ${formattedBet} Chips (currentBet: ${Globals.currentBet})`);
     }
     
     /**

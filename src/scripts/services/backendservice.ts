@@ -1,5 +1,6 @@
 import { Globals, loginData } from "../globals";
 import { MessageType } from "./messagetypes";
+import { LeaderboardEntry } from "./leaderboardservice";
 
 /**
  * Handles communication with the backend WebSocket server with simplified event handling
@@ -19,7 +20,19 @@ export class BackendService {
   private _isConnected: boolean = false;
   private _connectionPromiseResolve: ((value: {connected: boolean, playerId?: string}) => void) | null = null;
   private _playerDataPromiseResolve: ((value: any) => void) | null = null;
-  private _authPromiseResolve: ((value: {success: boolean, error?: string, data?: {playerBalance: number}}) => void) | null = null;
+  private _authPromiseResolve: ((value: {
+    success: boolean, 
+    error?: string, 
+    data?: {
+      message: string,
+      balance?: number,
+      user?: {
+        username: string,
+        chips: number,
+        userId: string
+      }
+    }
+  }) => void) | null = null;
   
   // Server URLs to try
   private serverUrls: string[] = [
@@ -158,9 +171,7 @@ export class BackendService {
           this._authPromiseResolve = null;
           resolveFunc({
             success: true, 
-            data: {
-              playerBalance: message.data?.balance || 1000
-            }
+            data: message.data
           });
         }
       } else if (messageType === 'auth_error' || messageType === 'auth_error') {
@@ -170,9 +181,7 @@ export class BackendService {
           resolveFunc({
             success: false, 
             error: message.data?.message || "Authentication failed",
-            data: {
-              playerBalance: message.data?.balance || 1000
-            }
+            data: message.data
           });
         }
       }
@@ -476,24 +485,130 @@ export class BackendService {
    * Wait for authentication to complete
    * @returns Promise that resolves with authentication result
    */
-  public async waitForAuthentication(): Promise<{success: boolean, error?: string, data?: {playerBalance: number}}> {
-    return new Promise((resolve) => {
-      if (!this.isConnectedToBackend()) {
-        resolve({success: false, error: "Not connected to backend", data: {playerBalance: 1000}});
-        return;
+  public async waitForAuthentication(): Promise<{
+    success: boolean, 
+    error?: string, 
+    data?: {
+      message: string,
+      balance?: number,
+      user?: {
+        username: string,
+        chips: number,
+        userId: string
       }
-      
+    }
+  }> {
+    return new Promise((resolve) => {
       this._authPromiseResolve = resolve;
-      
-      // Set timeout for authentication
-      setTimeout(() => {
-        if (this._authPromiseResolve) {
-          console.error("Authentication timed out");
-          const resolveFunc = this._authPromiseResolve;
-          this._authPromiseResolve = null;
-          resolveFunc({success: false, error: "Authentication timed out", data: {playerBalance: 1000}});
+    });
+  }
+
+  /**
+   * Get leaderboard data
+   */
+  public async getLeaderboard(): Promise<{
+    success: boolean;
+    data?: {
+      entries: {
+        externalLeaderboard: {
+          current: {
+            hourly: {
+              users: LeaderboardEntry[];
+              myPoints: number;
+              myPrize: number;
+              myTokenPrize: number | null;
+              timestamp: number;
+              prizePool: number;
+              tokenPrizePool: number | null;
+            };
+            daily: {
+              users: LeaderboardEntry[];
+              myPoints: number;
+              myPrize: number;
+              myTokenPrize: number | null;
+              timestamp: number;
+              prizePool: number;
+              tokenPrizePool: number | null;
+            };
+            weekly: {
+              users: LeaderboardEntry[];
+              myPoints: number;
+              myPrize: number;
+              myTokenPrize: number | null;
+              timestamp: number;
+              prizePool: number;
+              tokenPrizePool: number | null;
+            };
+          };
+          previous: {
+            hourly: {
+              users: LeaderboardEntry[];
+              myPoints: number;
+              myPrize: number;
+              myTokenPrize: number | null;
+              timestamp: number;
+              prizePool: number;
+              tokenPrizePool: number | null;
+            };
+            daily: {
+              users: LeaderboardEntry[];
+              myPoints: number;
+              myPrize: number;
+              myTokenPrize: number | null;
+              timestamp: number;
+              prizePool: number;
+              tokenPrizePool: number | null;
+            };
+            weekly: {
+              users: LeaderboardEntry[];
+              myPoints: number;
+              myPrize: number;
+              myTokenPrize: number | null;
+              timestamp: number;
+              prizePool: number;
+              tokenPrizePool: number | null;
+            };
+          };
+        };
+      };
+    };
+    error?: string;
+  }> {
+    return new Promise((resolve) => {
+      // Format the message to match backend expectations
+      const message = {
+        type: MessageType.GET_LEADERBOARD,
+        data: {
+          playerId: this.playerId || 'default'
         }
-      }, 10000); // 10 second timeout
+      };
+      
+      console.log('Sending leaderboard request:', JSON.stringify(message, null, 2));
+      this.sendMessage(message);
+
+      // Set up a one-time listener for the leaderboard response
+      const listener = (type: string, data: any) => {
+        if (type === MessageType.LEADERBOARD_DATA) {
+          console.log('Received leaderboard data:', JSON.stringify(data, null, 2));
+          this.removeMessageListener(listener);
+          resolve({
+            success: true,
+            data: data
+          });
+        }
+      };
+
+      this.addMessageListener(listener);
+
+      // Set timeout for the request
+      setTimeout(() => {
+        console.error('Leaderboard request timed out');
+        this.removeMessageListener(listener);
+        resolve({
+          success: false,
+          error: 'Leaderboard request timed out'
+        });
+      }, 5000);
     });
   }
 } 

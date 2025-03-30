@@ -19,7 +19,7 @@ export class App {
 		(async () => {
 			// Create a new application
 			await this.app.init({
-				backgroundColor: 0x191c28,
+				backgroundColor: 0x000000,
 				resolution: window.devicePixelRatio || 1,
 				autoDensity: true,
 				antialias: true,
@@ -96,7 +96,6 @@ export class App {
 		this.app.ticker.add((dt) => {
 			// Update scene
 			SceneManager.instance!.update(dt.deltaTime);
-			
 		});
 
 		// Initialize loader
@@ -117,70 +116,72 @@ export class App {
 				const connectionResult = await this.backendService.connect();
 				
 				if (!connectionResult.connected) {
-					// If connection fails, show error but continue loading
-					this.showStatusMessage("Failed to connect to server. Running in limited mode.", true);
-					console.error("WebSocket connection failed. Continuing without backend functionality.");
+					// If connection fails, show error and stop initialization
+					this.showStatusMessage("Failed to connect to server. Please refresh the page.", true);
+					console.error("WebSocket connection failed. Cannot proceed without backend connection.");
+					return;
+				}
+				
+				this.showStatusMessage("Connected to server", 2000, true);
+				
+				// Wait for authentication to complete
+				console.log("Waiting for authentication...");
+				this.showStatusMessage("Authenticating...");
+				
+				try {
+					// Wait for authentication response with retries
+					let authResult = await this.backendService.waitForAuthentication();
 					
-					// Use default balance when offline
-					Globals.balance = 1000;
-				} else {
-					this.showStatusMessage("Connected to server", 2000, true);
-					
-					// Wait for authentication to complete
-					console.log("Waiting for authentication...");
-					this.showStatusMessage("Authenticating...");
-					
-					try {
-						// Wait for authentication response
-						const authResult = await this.backendService.waitForAuthentication();
+					// If authentication failed, try to reconnect and retry
+					while (!authResult.success && this.connectionAttempts < this.maxConnectionAttempts) {
+						this.connectionAttempts++;
+						console.log(`Authentication failed, attempt ${this.connectionAttempts} of ${this.maxConnectionAttempts}`);
 						
-						if (!authResult.success) {
-							console.error("Authentication failed:", authResult.error);
-							this.showStatusMessage("Authentication failed. Running in limited mode.", true);
-							Globals.balance = authResult.data?.playerBalance || 1000;
-						} else {
-							this.showStatusMessage("Authentication successful", 1000, true);
-							
-							// Set the player balance from auth response
-							console.log(`Player balance received: ${authResult.data?.playerBalance}`);
-							Globals.balance = authResult.data?.playerBalance || 1000;
+						// Wait before retrying
+						await new Promise(resolve => setTimeout(resolve, this.connectionRetryDelay));
+						
+						// Try to reconnect
+						const reconnectResult = await this.backendService.connect();
+						if (!reconnectResult.connected) {
+							throw new Error("Failed to reconnect to server");
 						}
 						
-						// Show loading message
-						this.showStatusMessage("Loading assets...");
-						
-						// Load assets
-						await loader.preload();
-						await new Promise<void>((resolve) => {
-							loader.preloadSounds(() => {
-								console.log("Asset preload complete");
-								resolve();
-							});
-						});
-						
-						// Start the main scene
-						SceneManager.instance!.start(new MainScene());
-						window.dispatchEvent(new Event('resize'));
-						
-					} catch (error) {
-						console.error("Error during authentication:", error);
-						this.showStatusMessage("Authentication error. Running in limited mode.", true);
-						Globals.balance = 1000;
-						
-						// Still load assets and start game in offline mode
-						this.showStatusMessage("Loading assets...");
-						await loader.preload();
-						await new Promise<void>((resolve) => {
-							loader.preloadSounds(() => {
-								console.log("Asset preload complete");
-								resolve();
-							});
-						});
-						
-						// Start the main scene
-						SceneManager.instance!.start(new MainScene());
-						window.dispatchEvent(new Event('resize'));
+						// Try authentication again
+						authResult = await this.backendService.waitForAuthentication();
 					}
+					
+					if (!authResult.success) {
+						throw new Error(authResult.error || "Authentication failed after multiple attempts");
+					}
+					
+					// Authentication successful
+					this.showStatusMessage("Authentication successful", 1000, true);
+					
+					// Set the player balance from auth response
+					const balance = authResult.data?.user?.chips || authResult.data?.balance || 1000;
+					console.log(`Player balance received: ${balance}`);
+					Globals.balance = balance;
+					
+					// Show loading message
+					this.showStatusMessage("Loading assets...");
+					
+					// Load assets
+					await loader.preload();
+					await new Promise<void>((resolve) => {
+						loader.preloadSounds(() => {
+							console.log("Asset preload complete");
+							resolve();
+						});
+					});
+					
+					// Start the main scene
+					SceneManager.instance!.start(new MainScene());
+					window.dispatchEvent(new Event('resize'));
+					
+				} catch (error) {
+					console.error("Error during authentication:", error);
+					this.showStatusMessage("Authentication failed. Please refresh the page.", true);
+					return; // Stop initialization if authentication fails
 				}
 				
 			} catch (error) {
