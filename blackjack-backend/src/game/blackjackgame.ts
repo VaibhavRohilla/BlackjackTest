@@ -144,6 +144,13 @@ export class BlackjackGame {
    * Reset the game state for a new round
    */
   public reset(): void {
+    // Debug logging before reset
+    console.log(`[RESET DEBUG] Starting reset with phase=${this.gamePhase}, bet=${this.currentBet}`);
+    
+    // Store the current bet and phase
+    const currentBet = this.currentBet;
+    const currentPhase = this.gamePhase;
+    
     // Store the last bet amount before resetting current bet
     if (this.doubledDown && this.originalBetBeforeDouble > 0) {
         this.lastBet = this.originalBetBeforeDouble;
@@ -151,16 +158,31 @@ export class BlackjackGame {
         this.lastBet = this.currentBet;
     }
     
-    this.currentBet = 0;
+    // Only reset the current bet if not in dealer_turn or complete phases
+    // This ensures bet amount is preserved during payout calculation
+    if (currentPhase !== 'dealer_turn' && currentPhase !== 'complete') {
+        this.currentBet = 0;
+        console.log(`[RESET DEBUG] Reset currentBet to 0. Phase=${currentPhase}`);
+    } else {
+        console.log(`[RESET DEBUG] Preserved currentBet=${this.currentBet} during ${currentPhase} phase`);
+    }
+    
     this.originalBetBeforeDouble = 0;
     this.playerHand = this.createHand('player');
     this.dealerHand = this.createHand('dealer');
     this.splitHand = null;
-    this.gamePhase = 'betting';
     this.activeSplitHand = null;
     this.insuranceBet = 0;
     this.doubledDown = false;
     this.surrendered = false;
+    
+    // Only change phase to betting if not in a critical phase
+    if (currentPhase !== 'dealer_turn' && currentPhase !== 'complete') {
+        this.gamePhase = 'betting';
+    }
+    
+    // Debug logging after reset
+    console.log(`[RESET DEBUG] Finished reset with phase=${this.gamePhase}, bet=${this.currentBet}`);
   }
   
   /**
@@ -924,7 +946,25 @@ export class BlackjackGame {
    * Set the game phase
    */
   public setGamePhase(phase: 'betting' | 'dealing' | 'player_turn' | 'dealer_turn' | 'complete'): void {
+    // Debug logging for phase transition
+    console.log(`[PHASE DEBUG] Changing phase from ${this.gamePhase} to ${phase}, current bet before change: ${this.currentBet}`);
+    
+    // Save the bet amount before phase transition
+    const savedBet = this.currentBet;
+    
+    // Set the new phase
     this.gamePhase = phase;
+    
+    // For specific phases, ensure the bet is preserved
+    if (phase === 'dealer_turn' || phase === 'complete') {
+      if (savedBet > 0 && this.currentBet !== savedBet) {
+        console.log(`[BET FIXED] Restoring bet amount from ${this.currentBet} to ${savedBet} after phase change to ${phase}`);
+        this.currentBet = savedBet;
+      }
+    }
+    
+    // More debug logging after phase transition
+    console.log(`[PHASE DEBUG] Phase changed to ${phase}, current bet after change: ${this.currentBet}`);
   }
 
   /**
@@ -1548,6 +1588,20 @@ public getGameOutcome(): string {
 
   // Must be a push
   return 'push';
+}
+
+/**
+ * Set the current bet amount directly
+ * This is used in special cases to preserve bet amounts during game phases
+ */
+public setCurrentBet(amount: number): void {
+  if (amount <= 0) {
+    console.warn(`[WARNING] Attempted to set bet to invalid amount: ${amount}`);
+    return;
+  }
+  
+  console.log(`[BET SET] Current bet amount changed from ${this.currentBet} to ${amount}`);
+  this.currentBet = amount;
 }
 
 } 

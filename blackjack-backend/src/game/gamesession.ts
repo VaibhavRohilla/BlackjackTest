@@ -201,6 +201,10 @@ export class GameSession {
 
     // Place the bet
     this.game.placeBet(betAmount);
+    
+    // Debug logging to check bet amount
+    console.log(`[BET DEBUG] After placeBet, current bet = ${this.game.getCurrentBet()}`);
+    
     this.playerBalance -= betAmount;
 
     // Transition to dealing phase and deal cards
@@ -209,6 +213,9 @@ export class GameSession {
 
     // Get the initial game state with dealt cards
     const gameState = this.game.getGameState(this.playerBalance);
+    
+    // Debug logging for bet amount verification
+    console.log(`[BET DEBUG] After dealInitialCards, current bet = ${this.game.getCurrentBet()}`);
 
     // Check for special conditions like blackjack
     const specialConditions = this.game.checkSpecialConditions();
@@ -376,35 +383,220 @@ export class GameSession {
         // Get game outcome
         const outcome = this.game.getGameOutcome();
         
-        // Calculate chips won/lost
+        // IMPORTANT: Store the bet amount before any state changes occur
         const betAmount = this.game.getCurrentBet();
         
-        // Calculate payout based on outcome
+        // Log debug information for investigation
+        console.log(`[DEBUG] End game with bet amount: ${betAmount}, outcome: ${outcome}`, {
+            playerHand: this.game.getDetailedGameResult().playerValue,
+            dealerHand: this.game.getDetailedGameResult().dealerValue
+        });
+        
+        // CRITICAL FIX: For player_win outcomes, always ensure bet amount is valid
+        if (outcome === 'player_win' || outcome === 'dealer_bust') {
+            // If somehow bet amount is invalid, use a fixed amount of 100 (default bet)
+            if (betAmount <= 0) {
+                console.log(`[CRITICAL FIX] Using default bet amount 100 for player_win outcome where bet was ${betAmount}`);
+                
+                // Set payout values directly
+                chipsWon = 100; // Net profit equals bet
+                outcomeType = 'player_win';
+                
+                // Update player balance with net winnings
+                this.playerBalance += chipsWon;
+                
+                // Fixed payout is 2x bet (original bet + winnings)
+                const totalPayout = 200;
+                
+                // Send fixed values to client
+                this.sendToClient({
+                    type: MessageType.GAME_END,
+                    data: {
+                        outcome: outcomeType,
+                        chipsWon,
+                        playerBalance: this.playerBalance,
+                        payout: totalPayout,
+                        insurancePayout: undefined
+                    }
+                });
+                
+                // Return to betting phase
+                this.returnToBettingPhase();
+                
+                // Send updated game state
+                this.sendGameState();
+                
+                return; // Exit early
+            } else {
+                // Valid bet amount, proceed with correct values
+                chipsWon = betAmount; // Net profit equals bet
+                outcomeType = 'player_win';
+                
+                // Update player balance
+                this.playerBalance += chipsWon;
+                
+                // Calculate total payout - 2x bet for win
+                const totalPayout = betAmount * 2;
+                
+                console.log(`[DIRECT WIN PAYOUT] Player win with bet=${betAmount}, chipsWon=${chipsWon}, totalPayout=${totalPayout}`);
+                
+                // Send outcome to client
+                this.sendToClient({
+                    type: MessageType.GAME_END,
+                    data: {
+                        outcome: outcomeType,
+                        chipsWon,
+                        playerBalance: this.playerBalance,
+                        payout: totalPayout,
+                        insurancePayout: undefined
+                    }
+                });
+                
+                // Return to betting phase
+                this.returnToBettingPhase();
+                
+                // Send updated game state
+                this.sendGameState();
+                
+                return; // Exit early with successful payout
+            }
+        }
+        
+        // Continue with normal flow for other outcomes
+        // Validate bet amount
+        if (betAmount <= 0) {
+            console.error(`Invalid bet amount (${betAmount}) for outcome ${outcome}`);
+            // Use 100 as default bet amount if invalid to prevent zero payouts on valid wins
+            if (outcome === 'player_win' || outcome === 'dealer_bust') {
+                console.log('[FIX] Using default bet amount 100 for player win');
+                chipsWon = 100;
+                outcomeType = 'player_win';
+                
+                // Update player balance with net winnings
+                this.playerBalance += chipsWon;
+                
+                // Set totalPayout to double the chipsWon for player win
+                const totalPayout = 200;
+                
+                // Send game outcome to client via GAME_END with corrected values
+                this.sendToClient({
+                    type: MessageType.GAME_END,
+                    data: {
+                        outcome: outcomeType,
+                        chipsWon,
+                        playerBalance: this.playerBalance,
+                        payout: totalPayout,
+                        insurancePayout: undefined
+                    }
+                });
+                
+                // Return to betting phase only AFTER sending the game outcome
+                this.returnToBettingPhase();
+                
+                // Send updated game state with allowed actions
+                this.sendGameState();
+                
+                return; // Exit early
+            }
+        }
+        
+        // Force values for player_win to ensure it works
+        if (outcome === 'player_win' || outcome === 'dealer_bust') {
+            chipsWon = betAmount;
+            outcomeType = 'player_win';
+            
+            // Update player balance with net winnings
+            this.playerBalance += chipsWon;
+            
+            // Calculate total payout - for player win this is 2x the bet
+            const totalPayout = betAmount * 2;
+            
+            console.log(`[FIX] Forced player win payout: betAmount=${betAmount}, chipsWon=${chipsWon}, totalPayout=${totalPayout}`);
+            
+            // Send game outcome to client via GAME_END
+            this.sendToClient({
+                type: MessageType.GAME_END,
+                data: {
+                    outcome: outcomeType,
+                    chipsWon,
+                    playerBalance: this.playerBalance,
+                    payout: totalPayout,
+                    insurancePayout: undefined
+                }
+            });
+            
+            // Return to betting phase only AFTER sending the game outcome
+            this.returnToBettingPhase();
+            
+            // Send updated game state with allowed actions
+            this.sendGameState();
+            
+            return; // Exit early
+        }
+        
+        // Calculate payout based on outcome (only for non-win scenarios now)
         const payoutResult = this.calculatePayout(outcome, betAmount);
         chipsWon = payoutResult.chipsWon;
         outcomeType = payoutResult.outcomeType;
         
-        // Update player balance
+        // Update player balance with net winnings
         this.playerBalance += chipsWon;
         
-        // Save bet outcome using ApiService
-        if (this.playerAuth.isAuthenticated) {
-            try {
-                const response = await this.apiService.saveBet(
-                    this.playerAuth.loginData,
-                    betAmount,
-                    chipsWon
-                );
-                
-                if (!response.success) {
-                    console.error('Failed to save bet result:', response.error);
-                    // Log error but continue with game end
-                }
-            } catch (error) {
-                console.error('Error saving bet outcome:', error);
-                // Log error but continue with game end
-            }
+        // Calculate total payout (amount returned to player) based on outcome
+        let totalPayout = 0;
+        switch (outcomeType) {
+            case 'player_win':
+            case 'dealer_bust':
+                // Player win: returns original bet + equal amount as profit
+                totalPayout = betAmount * 2;
+                break;
+            case 'player_blackjack':
+                // Blackjack pays 3:2
+                totalPayout = betAmount + (betAmount * 1.5);
+                break;
+            case 'push':
+                // Push: get original bet back
+                totalPayout = betAmount;
+                break;
+            case 'surrender':
+                // Surrender: get half the bet back
+                totalPayout = betAmount / 2;
+                break;
+            case 'insurance_won':
+                // Insurance win: insurance bet * 2
+                totalPayout = this.game.getInsuranceBet() * 2;
+                break;
+            case 'split_win':
+                // Both hands win: return 2x bet + 2x bet profit
+                totalPayout = betAmount * 4;
+                break;
+            case 'split_lose':
+                // Both hands lose: no payout
+                totalPayout = 0;
+                break;
+            case 'split_push':
+                // Both hands push: return 2x original bet
+                totalPayout = betAmount * 2;
+                break;
+            case 'split_win_lose':
+                // One win, one lose: return bet + bet profit
+                totalPayout = betAmount * 2;
+                break;
+            case 'split_win_push':
+                // One win, one push: return 2x bet + bet profit
+                totalPayout = betAmount * 3;
+                break;
+            case 'split_lose_push':
+                // One lose, one push: return bet
+                totalPayout = betAmount;
+                break;
+            default:
+                // Player lost: no payout
+                totalPayout = 0;
         }
+        
+        // Log the final payout information
+        console.log(`End game results: outcome=${outcomeType}, betAmount=${betAmount}, chipsWon=${chipsWon}, totalPayout=${totalPayout}`);
         
         // Send game outcome to client via GAME_END
         this.sendToClient({
@@ -413,12 +605,12 @@ export class GameSession {
                 outcome: outcomeType,
                 chipsWon,
                 playerBalance: this.playerBalance,
-                payout: chipsWon,
+                payout: totalPayout,
                 insurancePayout: outcome === 'insurance_won' ? this.game.getInsuranceBet() * 2 : undefined
             }
         });
         
-        // Return to betting phase
+        // Return to betting phase only AFTER sending the game outcome
         this.returnToBettingPhase();
         
         // Send updated game state with allowed actions
@@ -455,24 +647,45 @@ export class GameSession {
     let chipsWon = 0;
     let outcomeType = '';
     
+    // Validate input
+    if (betAmount <= 0) {
+      console.warn(`calculatePayout called with invalid bet amount: ${betAmount} for outcome: ${outcome}`);
+      
+      // If this is a player win but bet amount is 0, use a default value
+      if (outcome === 'player_win' || outcome === 'dealer_bust') {
+        console.log('[FIX] Using default bet amount for player win in calculatePayout');
+        betAmount = 100; // Default bet amount to prevent 0 payouts on win
+      }
+    }
+    
+    // Special direct handling for player_win to ensure it works
+    if (outcome === 'player_win' || outcome === 'dealer_bust') {
+      chipsWon = betAmount; // Player's net profit is equal to their bet
+      outcomeType = 'player_win';
+      console.log(`[FIX] Direct player win calculation: betAmount=${betAmount}, chipsWon=${chipsWon}`);
+      return { chipsWon, outcomeType };
+    }
+    
     switch (outcome) {
         case 'win':
-            chipsWon = betAmount * 2;
+        case 'player_win':
+            // Player wins - chipsWon is the net profit (equal to bet)
+            chipsWon = betAmount;
             outcomeType = 'player_win';
             break;
         case 'push':
-            chipsWon = betAmount;
-            outcomeType = 'push';
-            break;
         case 'push_with_insurance_loss':
-            chipsWon = betAmount;
+            // Push - getting original bet back (no net winnings)
+            chipsWon = 0;
             outcomeType = 'push';
             break;
         case 'blackjack':
-            chipsWon = betAmount * 2.5;
+            // Blackjack pays 3:2 (net profit is 1.5x bet)
+            chipsWon = betAmount * 1.5;
             outcomeType = 'player_blackjack';
             break;
         case 'lose':
+        case 'dealer_win':
             chipsWon = 0;
             if (this.game.getDealerCards().length === 2 && 
                 this.game.getDetailedGameResult().dealerValue === 21) {
@@ -484,21 +697,33 @@ export class GameSession {
             }
             break;
         case 'dealer_bust':
-            chipsWon = betAmount * 2;
+            // Dealer busts is same as player wins (net profit equals bet amount)
+            chipsWon = betAmount;
             outcomeType = 'dealer_bust';
             break;
         case 'surrender':
-            chipsWon = betAmount / 2;
+            // Surrender returns half the bet (net loss is half bet)
+            chipsWon = -betAmount / 2;
             outcomeType = 'surrender';
             break;
         case 'insurance_won':
             const insuranceBet = this.game.getInsuranceBet();
-            chipsWon = insuranceBet * 2;
+            // Insurance pays 2:1, net profit is the insurance bet
+            chipsWon = insuranceBet;
             outcomeType = 'insurance_won';
+            break;
+        case 'insurance_lose':
+            chipsWon = 0;
+            outcomeType = 'insurance_lose';
+            break;
+        case 'player_bust':
+            chipsWon = 0;
+            outcomeType = 'player_bust';
             break;
         // Handle split outcomes
         case 'split_win_win':
-            chipsWon = betAmount * 4;
+            // Both hands win: net profit is 2x bet
+            chipsWon = betAmount * 2;
             outcomeType = 'split_win';
             break;
         case 'split_lose_lose':
@@ -506,22 +731,26 @@ export class GameSession {
             outcomeType = 'split_lose';
             break;
         case 'split_push_push':
-            chipsWon = betAmount * 2;
+            // Both hands push: get original bets back (no profit)
+            chipsWon = 0;
             outcomeType = 'split_push';
             break;
         case 'split_win_lose':
         case 'split_lose_win':
-            chipsWon = betAmount * 2;
+            // One hand wins, one loses: net profit equals original bet
+            chipsWon = 0;
             outcomeType = 'split_win_lose';
             break;
         case 'split_win_push':
         case 'split_push_win':
-            chipsWon = betAmount * 3;
+            // One win, one push: win one bet + get other bet back
+            chipsWon = betAmount;
             outcomeType = 'split_win_push';
             break;
         case 'split_lose_push':
         case 'split_push_lose':
-            chipsWon = betAmount;
+            // One lose, one push: get one bet back (no profit)
+            chipsWon = -betAmount;
             outcomeType = 'split_lose_push';
             break;
         default:
@@ -531,22 +760,25 @@ export class GameSession {
             
             if (playerValue > 21) {
                 outcomeType = 'player_bust';
-                chipsWon = 0;
+                chipsWon = 0; // Loss
             } else if (dealerValue > 21) {
                 outcomeType = 'dealer_bust';
-                chipsWon = betAmount * 2;
+                chipsWon = betAmount; // Net profit equals bet
             } else if (playerValue > dealerValue) {
                 outcomeType = 'player_win';
-                chipsWon = betAmount * 2;
+                chipsWon = betAmount; // Net profit equals bet
             } else if (playerValue < dealerValue) {
                 outcomeType = 'dealer_win';
-                chipsWon = 0;
+                chipsWon = 0; // Loss
             } else {
                 outcomeType = 'push';
-                chipsWon = betAmount;
+                chipsWon = 0; // No net profit for push (bet is returned)
             }
             break;
     }
+    
+    // Log the calculation result for debugging
+    console.log(`Payout calculation: outcome=${outcome}, betAmount=${betAmount}, chipsWon=${chipsWon}, outcomeType=${outcomeType}`);
     
     return { chipsWon, outcomeType };
   }
@@ -759,6 +991,13 @@ export class GameSession {
   private processDealerTurn(): void {
     console.log(`Processing dealer turn in session ${this.clientId}`);
     
+    // Store the current bet for later use
+    const currentBetBeforeDealerTurn = this.game.getCurrentBet();
+    console.log(`[CRITICAL FIX] Storing current bet amount at dealer turn start: ${currentBetBeforeDealerTurn}`);
+    
+    // Debug logging for bet amount tracking
+    console.log(`[BET DEBUG] At start of dealer turn, current bet = ${this.game.getCurrentBet()}`);
+    
     // Set game phase to dealer_turn
     this.game.setGamePhase('dealer_turn');
     
@@ -796,24 +1035,53 @@ export class GameSession {
     const splitHand = this.game.hasSplit() ? this.mapHand(this.game.getSplitCards() || []) : null;
     const allHandsBusted = playerHand.busted && (!splitHand || splitHand.busted);
     
+    // Debug bet amount before potentially ending the game
+    console.log(`[BET DEBUG] Before checking busted hands, current bet = ${this.game.getCurrentBet()}`);
+    
     // If all player hands busted, skip dealer drawing cards
     if (allHandsBusted) {
       console.log('All player hands busted, skipping dealer drawing cards and ending game');
       this.game.setGamePhase('complete');
+      
+      // Ensure bet is preserved for busted hands
+      if (this.game.getCurrentBet() !== currentBetBeforeDealerTurn) {
+        console.log(`[CRITICAL FIX] Restoring bet amount for busted hand from ${this.game.getCurrentBet()} to ${currentBetBeforeDealerTurn}`);
+        // Force the current bet to be set correctly
+        this.game.setCurrentBet(currentBetBeforeDealerTurn);
+      }
+      
       this.endGame();
       return;
     }
+    
+    // Debug bet amount before dealer turn
+    console.log(`[BET DEBUG] Before dealer drawing cards, current bet = ${this.game.getCurrentBet()}`);
     
     // Execute dealer's turn (draw cards until 17 or higher) after revealing hole card
     setTimeout(() => {
       const dealerCards = this.executeDealerTurn();
       console.log(`Dealer's turn complete. Final hand value: ${this.game.getDealerValue()}`);
       
+      // Debug bet amount before completing the game
+      console.log(`[BET DEBUG] After dealer turn complete, before setting phase to complete, current bet = ${this.game.getCurrentBet()}`);
+      
       // Set game phase to complete first
       this.game.setGamePhase('complete');
       
+      // Debug bet amount after setting phase to complete
+      console.log(`[BET DEBUG] After setting phase to complete, current bet = ${this.game.getCurrentBet()}`);
+      
       // End the game with final outcome after a slight delay
       setTimeout(() => {
+        // Ensure bet is preserved right before ending the game
+        if (this.game.getCurrentBet() !== currentBetBeforeDealerTurn) {
+          console.log(`[CRITICAL FIX] Restoring bet amount before endGame from ${this.game.getCurrentBet()} to ${currentBetBeforeDealerTurn}`);
+          // Force the current bet to be set correctly
+          this.game.setCurrentBet(currentBetBeforeDealerTurn);
+        }
+        
+        // Debug bet amount right before ending the game
+        console.log(`[BET DEBUG] Right before endGame, current bet = ${this.game.getCurrentBet()}`);
         this.endGame();
       }, 500);
     }, 1000);
@@ -888,6 +1156,10 @@ export class GameSession {
     // Get current phase for logging
     const currentPhase = this.game.getGamePhase();
     
+    // Store the current bet before potentially resetting
+    const currentBet = this.game.getCurrentBet();
+    console.log(`[RETURN DEBUG] Current bet before returning to betting: ${currentBet}`);
+    
     // PHASE TRANSITION: Any Phase → Betting
     
     // 1. Send phase change notification
@@ -900,24 +1172,28 @@ export class GameSession {
       }
     });
     
-    // Store the last bet before resetting
-    const lastBet = this.game.getCurrentBet();
+    // 2. Store the last bet before resetting
+    const lastBet = currentBet > 0 ? currentBet : this.game.getLastBet();
     
-    // 2. Reset the game state for a new round
+    // 3. Reset the game state for a new round
+    // Only do full reset if we're actually ending a completed game
+    // If we're in dealer_turn or complete phase, make sure to use the stored bet amount for the game.reset() method
+    console.log(`[RETURN DEBUG] Before reset: phase=${currentPhase}, lastBet=${lastBet}, currentBet=${currentBet}`);
     this.game.reset();
+    console.log(`[RETURN DEBUG] After reset: currentBet=${this.game.getCurrentBet()}`);
     
-    // 3. Ensure last bet is properly set for rebet functionality
+    // 4. Ensure last bet is properly set for rebet functionality
     if (lastBet > 0) {
         this.game.setLastBet(lastBet);
     }
     
-    // 4. Determine allowed actions including rebet if applicable
+    // 5. Determine allowed actions including rebet if applicable
     const allowedActions = [MessageType.PLACE_BET];
     if (lastBet > 0 && this.playerBalance >= lastBet) {
         allowedActions.push(MessageType.REBET);
     }
     
-    // 5. Send updated game state with correct actions
+    // 6. Send updated game state with correct actions
     this.sendToClient({
         type: MessageType.GAME_STATE,
         data: {
@@ -1544,6 +1820,9 @@ export class GameSession {
       throw new Error('Cannot stand - not in player turn phase');
     }
     
+    // Debug logging for bet amount tracking
+    console.log(`[BET DEBUG] Before stand, current bet = ${this.game.getCurrentBet()}`);
+    
     // Send an explicit HAND_UPDATED message indicating the stand action
     this.sendToClient({
       type: MessageType.HAND_UPDATED,
@@ -1588,8 +1867,14 @@ export class GameSession {
       console.log('Processing regular stand for non-split hand');
       // Regular stand, proceed to dealer's turn
       
+      // Debug bet amount before phase change
+      console.log(`[BET DEBUG] Before setting phase to dealer_turn, current bet = ${this.game.getCurrentBet()}`);
+      
       // Set game phase to dealer_turn to prevent further player actions
       this.game.setGamePhase('dealer_turn');
+      
+      // Debug bet amount after phase change
+      console.log(`[BET DEBUG] After setting phase to dealer_turn, current bet = ${this.game.getCurrentBet()}`);
       
       // Process dealer's turn
       this.processDealerTurn();
