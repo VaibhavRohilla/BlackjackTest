@@ -97,8 +97,21 @@ export interface Card {
       return card;
     }
 
- 
-
+    /**
+     * Deal a card with value 10 (10, J, Q, K)
+     */
+    public dealCardOfValueTen(): Card | null {
+      const tenValueCards = this.cards.filter(card => card.value === 10);
+      if (tenValueCards.length === 0) {
+        console.log('No cards of value 10 available to deal.');
+        return null;
+      }
+      const randomIndex = Math.floor(Math.random() * tenValueCards.length);
+      const cardToDeal = tenValueCards[randomIndex];
+      this.cards = this.cards.filter(card => card !== cardToDeal);
+      console.log(`Dealt card: ${cardToDeal.rank} of ${cardToDeal.suit} (value: ${cardToDeal.value})`);
+      return cardToDeal;
+    }
 
     /**
      * Discard a card

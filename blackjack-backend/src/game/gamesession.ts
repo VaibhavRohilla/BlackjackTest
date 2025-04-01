@@ -369,116 +369,20 @@ export class GameSession {
    * End the game and record results
    */
   public async endGame(): Promise<void> {
+    let chipsWon = 0;
+    let outcomeType = '';
+    
     try {
         // Get game outcome
         const outcome = this.game.getGameOutcome();
         
         // Calculate chips won/lost
         const betAmount = this.game.getCurrentBet();
-        let chipsWon = 0;
-        let outcomeType = ''; // For frontend display using GameOutcome enum
         
-        switch (outcome) {
-            case 'win':
-                chipsWon = betAmount * 2;
-                outcomeType = 'player_win'; // Match GameOutcome enum
-                break;
-            case 'push':
-                chipsWon = betAmount;
-                outcomeType = 'push'; // Match GameOutcome enum
-                break;
-            case 'push_with_insurance_loss':
-                chipsWon = betAmount;
-                outcomeType = 'push'; // Treat insurance loss push as regular push
-                break;
-            case 'blackjack':
-                chipsWon = betAmount * 2.5;
-                outcomeType = 'player_blackjack'; // Match GameOutcome enum
-                break;
-            case 'lose':
-                chipsWon = 0;
-                // Check for dealer blackjack (two cards with value 21)
-                if (this.game.getDealerCards().length === 2 && 
-                    this.game.getDetailedGameResult().dealerValue === 21) {
-                    outcomeType = 'dealer_win'; // Specific case for dealer blackjack
-                } 
-                // Check if player busted (went over 21)
-                else if (this.game.getDetailedGameResult().playerValue > 21) {
-                    outcomeType = 'player_bust'; // Player busted
-                } 
-                else {
-                    outcomeType = 'dealer_win'; // Regular dealer win
-                }
-                break;
-            case 'dealer_bust':
-                chipsWon = betAmount * 2;
-                outcomeType = 'dealer_bust'; // Match GameOutcome enum
-                break;
-            case 'surrender':
-                chipsWon = betAmount / 2;
-                outcomeType = 'surrender'; // Match GameOutcome enum
-                break;
-            case 'insurance_won':
-                // If player won insurance, add the insurance payout
-                const insuranceBet = this.game.getInsuranceBet();
-                chipsWon = insuranceBet * 2; // Insurance pays 2:1
-                outcomeType = 'insurance_won'; // Match GameOutcome enum
-                break;
-            // Handle split outcomes
-            case 'split_win_win':
-                chipsWon = betAmount * 4; // Win on both hands (2x bet * 2)
-                outcomeType = 'split_win';
-                break;
-            case 'split_lose_lose':
-                chipsWon = 0;
-                outcomeType = 'split_lose';
-                break;
-            case 'split_push_push':
-                chipsWon = betAmount * 2; // Return both original bets
-                outcomeType = 'split_push';
-                break;
-            case 'split_win_lose':
-                chipsWon = betAmount * 2; // Win on one hand (bet * 2), lose on other
-                outcomeType = 'split_win_lose';
-                break;
-            case 'split_lose_win':
-                chipsWon = betAmount * 2; // Win on one hand (bet * 2), lose on other
-                outcomeType = 'split_win_lose'; // Same outcome type
-                break;
-            case 'split_win_push':
-                chipsWon = betAmount * 3; // Win on one hand (bet * 2) + push bet return
-                outcomeType = 'split_win_push';
-                break;
-            case 'split_push_win':
-                chipsWon = betAmount * 3; // Win on one hand (bet * 2) + push bet return
-                outcomeType = 'split_win_push'; // Same outcome type
-                break;
-            case 'split_lose_push':
-                chipsWon = betAmount; // Lose on one hand, push on other (return 1 bet)
-                outcomeType = 'split_lose_push';
-                break;
-            case 'split_push_lose':
-                chipsWon = betAmount; // Lose on one hand, push on other (return 1 bet)
-                outcomeType = 'split_lose_push'; // Same outcome type
-                break;
-            default:
-                // If we get an unrecognized outcome, determine it based on hand values
-                const playerValue = this.game.getDetailedGameResult().playerValue;
-                const dealerValue = this.game.getDetailedGameResult().dealerValue;
-                
-                if (playerValue > 21) {
-                    outcomeType = 'player_bust';
-                } else if (dealerValue > 21) {
-                    outcomeType = 'dealer_bust';
-                } else if (playerValue > dealerValue) {
-                    outcomeType = 'player_win';
-                } else if (playerValue < dealerValue) {
-                    outcomeType = 'dealer_win';
-                } else {
-                    outcomeType = 'push';
-                }
-                break;
-        }
+        // Calculate payout based on outcome
+        const payoutResult = this.calculatePayout(outcome, betAmount);
+        chipsWon = payoutResult.chipsWon;
+        outcomeType = payoutResult.outcomeType;
         
         // Update player balance
         this.playerBalance += chipsWon;
@@ -494,10 +398,11 @@ export class GameSession {
                 
                 if (!response.success) {
                     console.error('Failed to save bet result:', response.error);
+                    // Log error but continue with game end
                 }
             } catch (error) {
                 console.error('Error saving bet outcome:', error);
-                // Continue with game end even if bet saving fails
+                // Log error but continue with game end
             }
         }
         
@@ -513,7 +418,6 @@ export class GameSession {
             }
         });
         
-        
         // Return to betting phase
         this.returnToBettingPhase();
         
@@ -522,13 +426,129 @@ export class GameSession {
         
     } catch (error) {
         console.error('Error ending game:', error);
-        this.sendToClient({
-            type: MessageType.ERROR,
-            data: {
-                error: 'Error ending game'
-            }
-        });
+        
+        // Even if there's an error, try to send a basic game end message
+        try {
+            this.sendToClient({
+                type: MessageType.GAME_END,
+                data: {
+                    outcome: 'error',
+                    chipsWon: 0,
+                    playerBalance: this.playerBalance,
+                    payout: 0,
+                    error: 'Error ending game'
+                }
+            });
+        } catch (sendError) {
+            console.error('Failed to send error game end message:', sendError);
+        }
+        
+        // Force return to betting phase
+        this.returnToBettingPhase();
     }
+  }
+  
+  /**
+   * Calculate payout based on game outcome
+   */
+  private calculatePayout(outcome: string, betAmount: number): { chipsWon: number; outcomeType: string } {
+    let chipsWon = 0;
+    let outcomeType = '';
+    
+    switch (outcome) {
+        case 'win':
+            chipsWon = betAmount * 2;
+            outcomeType = 'player_win';
+            break;
+        case 'push':
+            chipsWon = betAmount;
+            outcomeType = 'push';
+            break;
+        case 'push_with_insurance_loss':
+            chipsWon = betAmount;
+            outcomeType = 'push';
+            break;
+        case 'blackjack':
+            chipsWon = betAmount * 2.5;
+            outcomeType = 'player_blackjack';
+            break;
+        case 'lose':
+            chipsWon = 0;
+            if (this.game.getDealerCards().length === 2 && 
+                this.game.getDetailedGameResult().dealerValue === 21) {
+                outcomeType = 'dealer_win';
+            } else if (this.game.getDetailedGameResult().playerValue > 21) {
+                outcomeType = 'player_bust';
+            } else {
+                outcomeType = 'dealer_win';
+            }
+            break;
+        case 'dealer_bust':
+            chipsWon = betAmount * 2;
+            outcomeType = 'dealer_bust';
+            break;
+        case 'surrender':
+            chipsWon = betAmount / 2;
+            outcomeType = 'surrender';
+            break;
+        case 'insurance_won':
+            const insuranceBet = this.game.getInsuranceBet();
+            chipsWon = insuranceBet * 2;
+            outcomeType = 'insurance_won';
+            break;
+        // Handle split outcomes
+        case 'split_win_win':
+            chipsWon = betAmount * 4;
+            outcomeType = 'split_win';
+            break;
+        case 'split_lose_lose':
+            chipsWon = 0;
+            outcomeType = 'split_lose';
+            break;
+        case 'split_push_push':
+            chipsWon = betAmount * 2;
+            outcomeType = 'split_push';
+            break;
+        case 'split_win_lose':
+        case 'split_lose_win':
+            chipsWon = betAmount * 2;
+            outcomeType = 'split_win_lose';
+            break;
+        case 'split_win_push':
+        case 'split_push_win':
+            chipsWon = betAmount * 3;
+            outcomeType = 'split_win_push';
+            break;
+        case 'split_lose_push':
+        case 'split_push_lose':
+            chipsWon = betAmount;
+            outcomeType = 'split_lose_push';
+            break;
+        default:
+            // If we get an unrecognized outcome, determine it based on hand values
+            const playerValue = this.game.getDetailedGameResult().playerValue;
+            const dealerValue = this.game.getDetailedGameResult().dealerValue;
+            
+            if (playerValue > 21) {
+                outcomeType = 'player_bust';
+                chipsWon = 0;
+            } else if (dealerValue > 21) {
+                outcomeType = 'dealer_bust';
+                chipsWon = betAmount * 2;
+            } else if (playerValue > dealerValue) {
+                outcomeType = 'player_win';
+                chipsWon = betAmount * 2;
+            } else if (playerValue < dealerValue) {
+                outcomeType = 'dealer_win';
+                chipsWon = 0;
+            } else {
+                outcomeType = 'push';
+                chipsWon = betAmount;
+            }
+            break;
+    }
+    
+    return { chipsWon, outcomeType };
   }
   
   /**
@@ -1153,21 +1173,6 @@ export class GameSession {
                 if (playerCards.length === 2) {
                     allowedActions.push(MessageType.INSURANCE);
                 }
-            }
-        }
-        
-        // Handle split hands
-        if (this.game.hasSplit()) {
-            const activeSplitHand = this.game.getActiveSplitHandForUI();
-            if (!activeSplitHand) return allowedActions;
-            
-            const activeHand = activeSplitHand === 'first' ? 
-                this.game.getPlayerCards() : 
-                this.game.getSplitCards();
-            
-            // Allow double down on split hands if they have exactly 2 cards and enough balance
-            if (activeHand && activeHand.length === 2 && this.playerBalance >= this.game.getCurrentBet()) {
-                allowedActions.push(MessageType.DOUBLE_DOWN);
             }
         }
     }

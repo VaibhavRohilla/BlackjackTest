@@ -412,11 +412,7 @@ export class BlackjackGame {
     if (!this.canSplit()) {
       throw new Error('Cannot split - cards must be of the same value');
     }
-
-    // Double the bet for the split hand
-    // Note: Balance check should happen before calling this method
-    this.currentBet *= 2;
-
+    
     // Create split hand if it doesn't exist
     if (!this.splitHand) {
       this.splitHand = this.createHand('split');
@@ -571,11 +567,11 @@ export class BlackjackGame {
     if (this.gamePhase !== 'player_turn') {
       throw new Error('Cannot surrender - not player\'s turn');
     }
-
-    if (!this.canSurrender()) { // Use canSurrender which includes dealer BJ check
-        throw new Error('Surrender is not allowed under current conditions (initial 2 cards, no dealer BJ)');
+    
+    if (this.playerHand.cards.length !== 2) {
+      throw new Error('Can only surrender on initial two cards');
     }
-
+    
     // Mark as surrendered
     this.surrendered = true;
     this.gamePhase = 'complete';
@@ -863,43 +859,37 @@ export class BlackjackGame {
           }
     } 
     else if (this.gamePhase === 'dealing' || this.gamePhase === 'player_turn') {
-        // Basic actions always available during player turn if not split
-        // Or if split, check the active hand is not busted or 21
-        const activeHand = this.activeSplitHand === 'second' ? this.splitHand! : this.playerHand;
-        if (!activeHand.busted && activeHand.value < 21) {
-            allowedActions.push(MessageType.HIT);
-            allowedActions.push(MessageType.STAND);
-        }
-
-        // Only allow these actions on initial two cards AND if not split
-        if (this.playerHand.cards.length === 2 && !this.hasSplit()) {
-            // Allow double down if balance permits and not split
-            if (balance >= this.currentBet) { // Check balance for doubling the bet
+        // Basic actions always available during player turn
+        allowedActions.push(MessageType.HIT);
+        allowedActions.push(MessageType.STAND);
+        
+        // Only allow these actions on initial two cards
+        if (this.playerHand.cards.length === 2) {
+            // Allow double down if not split
+            if (!this.hasSplit()) {
                 allowedActions.push(MessageType.DOUBLE_DOWN);
+                allowedActions.push(MessageType.SURRENDER);
             }
-             // Allow surrender if balance permits and not split (dealer blackjack check is handled in canSurrender)
-             if (this.canSurrender()) { // canSurrender now includes dealer BJ check
-                 allowedActions.push(MessageType.SURRENDER);
-             }
-
-            // Allow split if possible and balance permits
-            if (this.canSplit() && balance >= this.currentBet) { // Check balance for doubling the bet
+            
+            // Allow split if possible
+            if (this.canSplit()) {
                 allowedActions.push(MessageType.SPLIT);
             }
-
+            
             // Allow insurance only during initial dealing phase
             if (this.gamePhase === 'dealing' && this.isInsuranceAvailable() && balance >= this.currentBet/2) {
                 allowedActions.push(MessageType.INSURANCE);
             }
         }
-
-        // Double down on split hands is NOT allowed in this ruleset.
-        // The check `!this.hasSplit()` above prevents DOUBLE_DOWN in the initial check.
-
-        // Handle actions for split hands specifically (Hit/Stand already covered above)
-        // No special actions like double/surrender allowed on split hands here.
-
-    }
+        
+        // For split hands, handle each hand separately
+        if (this.hasSplit()) {
+            const activeHand = this.activeSplitHand === 'first' ? this.playerHand : this.splitHand!;
+            if (activeHand.cards.length === 2) {
+                allowedActions.push(MessageType.DOUBLE_DOWN);
+            }
+        }
+    } 
     else if (this.gamePhase === 'complete') {
         // Always include both PLACE_BET and REBET in complete phase
         allowedActions.push(MessageType.PLACE_BET);
@@ -1017,10 +1007,9 @@ export class BlackjackGame {
    * Player can double down if they have only 2 cards
    */
   public canDoubleDown(): boolean {
-    return this.gamePhase === 'player_turn' &&
-           this.playerHand.cards.length === 2 &&
-           !this.doubledDown &&
-           !this.hasSplit(); // Cannot double down after splitting
+    return this.gamePhase === 'player_turn' && 
+           this.playerHand.cards.length === 2 && 
+           !this.doubledDown;
   }
 
   /**
@@ -1028,11 +1017,10 @@ export class BlackjackGame {
    * Player can surrender on their first action if they have only 2 cards
    */
   public canSurrender(): boolean {
-    return this.gamePhase === 'player_turn' &&
-           this.playerHand.cards.length === 2 &&
-           !this.doubledDown &&
-           !this.splitHand &&
-           !this.checkDealerHasBlackjack(); // Cannot surrender if dealer has Blackjack
+    return this.gamePhase === 'player_turn' && 
+           this.playerHand.cards.length === 2 && 
+           !this.doubledDown && 
+           !this.splitHand;
   }
 
   /**
@@ -1183,12 +1171,8 @@ export class BlackjackGame {
     if (this.playerHand.cards.length !== 2) {
       return false;
     }
-    // Cannot split if already split
-    if (this.hasSplit()) {
-        return false;
-    }
-
-    // Cards must be of the same rank value (e.g., 10, J, Q, K all have value 10)
+    
+    // Cards must be of the same rank
     const [card1, card2] = this.playerHand.cards;
     return card1.value === card2.value;
   }
