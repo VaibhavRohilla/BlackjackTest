@@ -115,7 +115,7 @@ export class BlockspinAPI {
     return {
       env: this.config.baseUrl.includes('apitest') ? 'test' : 'prod',
       game: this.config.game,
-      gamePassword: this.config.gamePassword
+      gamePassword: this.config.gamePassword,
     };
   }
 
@@ -160,7 +160,7 @@ export class BlockspinAPI {
       console.log(`Making API request to ${cleanEndpoint}:`, {
         url: `${this.config.baseUrl}/${cleanEndpoint}`,
         data: requestData,
-        environment: this.config.baseUrl.includes('apitest') ? 'test' : 'prod'
+        // environment: this.config.baseUrl.includes('apitest') ? 'test' : 'prod'
       });
 
       const response = await this.axiosInstance.post<T>(cleanEndpoint, requestData);

@@ -27,6 +27,15 @@ interface PlayerAuthData {
   isAuthenticated: boolean;
 }
 
+// Define game phase type
+export enum GamePhase {
+    BETTING = 'betting',
+    DEALING = 'dealing',
+    PLAYER_TURN = 'player_turn',
+    DEALER_TURN = 'dealer_turn',
+    COMPLETE = 'complete'
+}
+
 /**
  * Manages a single game for a client
  */
@@ -196,6 +205,36 @@ export class GameSession {
     } else {
       console.log(`Skipping API validation for unauthenticated player`);
     }
+
+
+    // try{
+    //   const response  = await this.apiService.getRandom(36);
+    //   if (!response.success || !response.data?.length) {
+    //     console.error(`API bet validation failed:`, response.error);
+    //     this.sendToClient({
+    //       type: MessageType.ERROR,
+    //       data: {
+    //         error: response.error || 'API validation failed'
+    //       }
+    //     });
+    //     return;
+    //   }
+    //   console.log(`API response for random number:`, response.data);
+      
+    //   // Update player balance from API response
+    //   // this.playerBalance = response.data.randomNumber;
+    // }
+    // catch(error){
+    //   console.error(`Error during API bet validation:`, error);
+    //   this.sendToClient({
+    //     type: MessageType.ERROR,
+    //     data: {
+    //       error: 'Failed to validate bet with API'
+    //     }
+    //   });
+    //   return;
+    // }
+
     
     console.log("---------STARTING GAME---------", betAmount);
 
@@ -544,6 +583,8 @@ export class GameSession {
         
         // Calculate total payout (amount returned to player) based on outcome
         let totalPayout = 0;
+        let insurancePayout = undefined;
+        
         switch (outcomeType) {
             case 'player_win':
             case 'dealer_bust':
@@ -563,8 +604,11 @@ export class GameSession {
                 totalPayout = betAmount / 2;
                 break;
             case 'insurance_won':
-                // Insurance win: insurance bet * 2
-                totalPayout = this.game.getInsuranceBet() * 2;
+                // Insurance win: insurance bet * 2 (but player loses main bet)
+                const insuranceBet = this.game.getInsuranceBet();
+                totalPayout = insuranceBet * 2;
+                insurancePayout = insuranceBet * 2;
+                console.log(`Insurance win total payout: ${totalPayout}, original bet lost`);
                 break;
             case 'split_win':
                 // Both hands win: return 2x bet + 2x bet profit
@@ -606,7 +650,7 @@ export class GameSession {
                 chipsWon,
                 playerBalance: this.playerBalance,
                 payout: totalPayout,
-                insurancePayout: outcome === 'insurance_won' ? this.game.getInsuranceBet() * 2 : undefined
+                insurancePayout: insurancePayout
             }
         });
         
@@ -708,9 +752,11 @@ export class GameSession {
             break;
         case 'insurance_won':
             const insuranceBet = this.game.getInsuranceBet();
-            // Insurance pays 2:1, net profit is the insurance bet
-            chipsWon = insuranceBet;
+            // Insurance pays 2:1, player gets insurance payout but loses main bet
+            // The net result should just be the insurance win
+            chipsWon = insuranceBet; // This is the net profit from insurance
             outcomeType = 'insurance_won';
+            console.log(`Insurance win: insuranceBet=${insuranceBet}, chipsWon=${chipsWon}`);
             break;
         case 'insurance_lose':
             chipsWon = 0;
@@ -1232,7 +1278,7 @@ export class GameSession {
       case 'surrender':
         return `You surrendered. Half your bet is returned. New balance: ${this.playerBalance}`;
       case 'insurance_won':
-        return `Dealer has Blackjack. Insurance pays 2:1! New balance: ${this.playerBalance}`;
+        return `Insurance won! Dealer has Blackjack. Insurance pays 2:1! New balance: ${this.playerBalance}`;
       
       // Split outcome messages
       case 'split_win_win':
@@ -1368,6 +1414,11 @@ export class GameSession {
     
     // Insurance is only available in player turn phase
     if (gamePhase !== 'player_turn') {
+      return false;
+    }
+    
+    // Don't allow insurance if it's already been decided
+    if (this.insuranceDecided) {
       return false;
     }
     
@@ -1563,8 +1614,15 @@ export class GameSession {
    */
   public sendGameState(targetClientId: string = this.clientId): void {
     const gameState = this.game.getGameState(this.playerBalance);
-
-    // Create standardized game state message
+    
+    // Add validation and error checking
+    if (!gameState) {
+        console.error('Invalid game state detected');
+        this.forceBettingPhase();
+        return;
+    }
+    
+    // Ensure all required fields are present
     const stateMessage = {
         playerHand: gameState.playerHand,
         dealerHand: gameState.dealerHand,
@@ -1574,10 +1632,12 @@ export class GameSession {
         currentBet: this.game.getCurrentBet(),
         insuranceBet: this.game.getInsuranceBet(),
         gamePhase: gameState.gamePhase,
-        allowedActions: gameState.allowedActions
+        allowedActions: gameState.allowedActions,
+        // Add outcome information if game is complete
+        outcome: this.game.getGamePhase() === 'complete' ? this.game.getGameOutcome() : undefined,
+        message: this.game.getGamePhase() === 'complete' ? this.game.getFinalGameResult().message : undefined
     };
 
-    // Send GAME_STATE for all game state updates
     this.server.sendToClient(targetClientId, {
         type: MessageType.GAME_STATE,
         data: stateMessage
@@ -2470,5 +2530,59 @@ export class GameSession {
    */
   public getLoginData(): LoginData {
     return this.playerAuth.loginData;
+  }
+
+  private handlePhaseTransition(fromPhase: GamePhase, toPhase: GamePhase): void {
+    console.log(`Phase transition: ${fromPhase} -> ${toPhase}`);
+    
+    // Validate phase transition
+    if (!this.isValidPhaseTransition(fromPhase, toPhase)) {
+        console.error(`Invalid phase transition: ${fromPhase} -> ${toPhase}`);
+        this.forceBettingPhase();
+        return;
+    }
+    
+    // Update game phase
+    this.game.setGamePhase(toPhase);
+    
+    // Send phase change notification
+    this.sendToClient({
+        type: MessageType.PHASE_CHANGE,
+        data: {
+            from: fromPhase,
+            to: toPhase,
+            message: this.getPhaseTransitionMessage(toPhase)
+        }
+    });
+    
+    // Update game state
+    this.sendGameState();
+  }
+
+  private isValidPhaseTransition(fromPhase: GamePhase, toPhase: GamePhase): boolean {
+    const validTransitions: Record<GamePhase, GamePhase[]> = {
+        [GamePhase.BETTING]: [GamePhase.DEALING],
+        [GamePhase.DEALING]: [GamePhase.PLAYER_TURN, GamePhase.COMPLETE],
+        [GamePhase.PLAYER_TURN]: [GamePhase.DEALER_TURN, GamePhase.COMPLETE],
+        [GamePhase.DEALER_TURN]: [GamePhase.COMPLETE],
+        [GamePhase.COMPLETE]: [GamePhase.BETTING]
+    };
+    
+    return validTransitions[fromPhase]?.includes(toPhase) || false;
+  }
+
+  private getPhaseTransitionMessage(toPhase: GamePhase): string {
+    switch (toPhase) {
+        case GamePhase.DEALING:
+            return "Dealing cards...";
+        case GamePhase.PLAYER_TURN:
+            return "Your turn to play";
+        case GamePhase.DEALER_TURN:
+            return "Dealer's turn";
+        case GamePhase.COMPLETE:
+            return "Game complete";
+        case GamePhase.BETTING:
+            return "Place your bet";
+    }
   }
 } 

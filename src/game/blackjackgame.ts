@@ -116,6 +116,7 @@ export class BlackjackGame {
   private gamePhase: 'betting' | 'dealing' | 'player_turn' | 'dealer_turn' | 'complete' = 'betting';
   private doubledDown: boolean = false;
   private surrendered: boolean = false;
+  public randomNumbers : number[] = [];
   
   // Number of decks to use
   private numDecks: number = 6;
@@ -189,7 +190,9 @@ export class BlackjackGame {
    * Place a bet
    */
   public placeBet(amount: number): boolean {
-    if (this.gamePhase !== 'betting') {
+    console.log(`[PLACE BET DEBUG] Placing bet of ${amount} with phase=${this.gamePhase}`);
+    
+    if (this.gamePhase !== 'betting' &&  this.gamePhase !== 'complete') {
       throw new Error('Cannot place bet - game already in progress');
     }
     
@@ -903,14 +906,6 @@ export class BlackjackGame {
                 allowedActions.push(MessageType.INSURANCE);
             }
         }
-        
-        // For split hands, handle each hand separately
-        if (this.hasSplit()) {
-            const activeHand = this.activeSplitHand === 'first' ? this.playerHand : this.splitHand!;
-            if (activeHand.cards.length === 2) {
-                allowedActions.push(MessageType.DOUBLE_DOWN);
-            }
-        }
     } 
     else if (this.gamePhase === 'complete') {
         // Always include both PLACE_BET and REBET in complete phase
@@ -1361,78 +1356,71 @@ export class BlackjackGame {
    * This centralizes all outcome determination logic in one place
    */
   public getFinalGameResult(): CompleteGameResult {
-    // Initialize the result with default values
+    // Add validation for game state
+    if (this.gamePhase !== 'complete' && this.gamePhase !== 'dealer_turn') {
+        console.warn('Getting final result before game is complete');
+    }
+    
     const result: CompleteGameResult = {
-      outcomeType: 'normal',
-      finalOutcomeString: '',
-      payout: 0,
-      message: ''
+        outcomeType: 'normal',
+        finalOutcomeString: '',
+        payout: 0,
+        message: ''
     };
     
-    // --- Check for insurance outcome first ---
-    if (this.insuranceBet > 0 && this.dealerHand.blackjack) {
-      // Insurance win case - dealer has blackjack and player took insurance
-      result.outcomeType = 'insurance';
-      result.finalOutcomeString = 'insurance_won';
-      
-      // Calculate insurance payout (2:1)
-      const insurancePayout = this.insuranceBet * 2;
-      
-      result.insurance = {
-        bet: this.insuranceBet,
-        payout: insurancePayout,
-        won: true
-      };
-      
-      // Total payout is just the insurance payout (player loses main bet)
-      result.payout = insurancePayout;
-      result.message = 'Dealer has blackjack! Insurance pays 2:1';
-      
-      return result; // Early return for insurance win
-    }
-    
-    // --- Handle split hand outcomes ---
-    if (this.hasSplit()) {
-      result.outcomeType = 'split';
-      
-      // Determine outcome for each hand
-      const handOneOutcome = this.determineHandOutcome(this.playerHand);
-      const handTwoOutcome = this.determineHandOutcome(this.splitHand!);
-      
-      // Calculate payouts for each hand
-      const handOnePayout = this.calculatePayoutForOutcome(handOneOutcome);
-      const handTwoPayout = this.calculatePayoutForOutcome(handTwoOutcome);
-      
-      // Store split-specific info
-      result.split = {
-        handOneOutcome,
-        handTwoOutcome,
-        handOnePayout,
-        handTwoPayout
-      };
-      
-      // Total payout is the sum of both hands
-      result.payout = handOnePayout + handTwoPayout;
-      
-      // Use combined outcome for the final outcome string
-      result.finalOutcomeString = this.determineCombinedSplitOutcome(handOneOutcome, handTwoOutcome);
-      
-      // Set appropriate message
-      result.message = this.getSplitOutcomeMessage(handOneOutcome, handTwoOutcome);
-      
-      return result;
-    }
-    
-    // --- Handle normal game outcomes ---
-    // Check for surrender first
+    // Handle surrender first
     if (this.surrendered) {
-      result.finalOutcomeString = 'surrender';
-      result.payout = this.currentBet / 2; // Half bet returned
-      result.message = 'You surrendered. Half your bet is returned.';
-      return result;
+        result.outcomeType = 'normal';
+        result.finalOutcomeString = 'surrender';
+        result.payout = this.currentBet / 2;
+        result.message = 'You surrendered. Half your bet is returned.';
+        return result;
     }
     
-    // Get standard outcome
+    // Handle insurance first
+    if (this.insuranceBet > 0) {
+        result.outcomeType = 'insurance';
+        if (this.dealerHand.blackjack) {
+            result.finalOutcomeString = 'insurance_won';
+            result.insurance = {
+                bet: this.insuranceBet,
+                payout: this.insuranceBet * 2,
+                won: true
+            };
+            result.payout = this.insuranceBet * 2;
+            result.message = 'Dealer has blackjack! Insurance pays 2:1';
+            return result;
+        } else {
+            result.finalOutcomeString = 'insurance_lose';
+            result.insurance = {
+                bet: this.insuranceBet,
+                payout: 0,
+                won: false
+            };
+            result.message = 'Insurance lost - dealer does not have blackjack';
+        }
+    }
+    
+    // Handle split hands
+    if (this.hasSplit()) {
+        result.outcomeType = 'split';
+        const handOneOutcome = this.determineHandOutcome(this.playerHand);
+        const handTwoOutcome = this.determineHandOutcome(this.splitHand!);
+        
+        result.split = {
+            handOneOutcome,
+            handTwoOutcome,
+            handOnePayout: this.calculatePayoutForOutcome(handOneOutcome),
+            handTwoPayout: this.calculatePayoutForOutcome(handTwoOutcome)
+        };
+        
+        result.payout = result.split.handOnePayout + result.split.handTwoPayout;
+        result.finalOutcomeString = this.determineCombinedSplitOutcome(handOneOutcome, handTwoOutcome);
+        result.message = this.getSplitOutcomeMessage(handOneOutcome, handTwoOutcome);
+        return result;
+    }
+    
+    // Handle regular game outcomes
     const standardOutcome = this.determineHandOutcome(this.playerHand);
     result.finalOutcomeString = standardOutcome;
     result.payout = this.calculatePayoutForOutcome(standardOutcome);
@@ -1440,18 +1428,18 @@ export class BlackjackGame {
     
     // If player has insurance (but dealer doesn't have blackjack)
     if (this.insuranceBet > 0) {
-      result.insurance = {
-        bet: this.insuranceBet,
-        payout: 0, // No payout for losing insurance
-        won: false
-      };
-      
-      // If dealer busts, ensure we show both outcomes
-      if (this.dealerHand.busted) {
-        result.finalOutcomeString = 'dealer_bust';
-        result.message = 'Dealer busts! You win!';
-        result.payout = this.currentBet * 2; // Win main bet
-      }
+        result.insurance = {
+            bet: this.insuranceBet,
+            payout: 0, // No payout for losing insurance
+            won: false
+        };
+        
+        // If dealer busts, ensure we show both outcomes
+        if (this.dealerHand.busted) {
+            result.finalOutcomeString = 'dealer_bust';
+            result.message = 'Dealer busts! You win!';
+            result.payout = this.currentBet * 2; // Win main bet
+        }
     }
     
     return result;
@@ -1546,44 +1534,51 @@ public getGameOutcome(): string {
     return 'surrender';
   }
 
-  // Handle insurance case
-  if (this.insuranceBet > 0) {
-      if (this.dealerHand.blackjack) {  // Only succeed if dealer has blackjack
-          return 'insurance_won';
-      } else {
-          return 'insurance_lose';  // Explicitly mark insurance loss
-      }
+  // Check for dealer blackjack first
+  const dealerHasBlackjack = this.dealerHand.blackjack;
+  
+  // Handle insurance with dealer blackjack case 
+  // This should take priority over other outcomes when dealer has blackjack and player has insurance
+  if (this.insuranceBet > 0 && dealerHasBlackjack) {
+    return 'insurance_won';
+  }
+
+  // Handle insurance without dealer blackjack
+  if (this.insuranceBet > 0 && this.gamePhase === 'player_turn' && this.playerHand.cards.length === 2) {
+    if (!dealerHasBlackjack) {
+      return 'insurance_lose';
+    }
   }
 
   // Handle blackjack cases
   if (this.playerHand.blackjack) {
-      if (this.dealerHand.blackjack) {
-          return 'push';
-      }
-      return 'blackjack';
+    if (dealerHasBlackjack) {
+      return 'push';
+    }
+    return 'player_blackjack';  // Changed from 'blackjack' to 'player_blackjack'
   }
 
   // Handle bust cases
   if (this.playerHand.busted) {
-      return 'player_bust';
+    return 'player_bust';
   }
   if (this.dealerHand.busted) {
-      // If dealer busts and player has insurance, return dealer_bust
-      // This ensures the dealer bust outcome is shown even with insurance
-      return 'dealer_bust';
+    // If dealer busts and player has insurance, return dealer_bust
+    // This ensures the dealer bust outcome is shown even with insurance
+    return 'dealer_bust';
   }
 
   // Compare hand values
   if (this.playerHand.value > this.dealerHand.value) {
-      return 'player_win';
+    return 'player_win';
   }
   if (this.playerHand.value < this.dealerHand.value) {
-      return 'dealer_win';
+    return 'dealer_win';
   }
 
   // If it's a tie and insurance is involved but dealer doesn't have blackjack
-  if (this.insuranceBet > 0 && !this.dealerHand.blackjack) {
-      return 'push_with_insurance_loss';
+  if (this.insuranceBet > 0 && !dealerHasBlackjack) {
+    return 'push_with_insurance_loss';
   }
 
   // Must be a push

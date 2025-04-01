@@ -1,6 +1,7 @@
 import { BlackjackServer } from './blackjackserver';
-import { ClientMessage, MessageType, createErrorMessage, ServerMessage } from '../models/message';
+import { ClientMessage, MessageType, createErrorMessage, ServerMessage, GameStateMessage } from '../models/message';
 import { ApiService } from '../services/api.service';
+import { GameSession } from '../game/gamesession';
 
 /**
  * Tracks client message rate for rate limiting
@@ -254,47 +255,90 @@ export class MessageHandler {
   /**
    * Handle game-specific action
    */
-  private handleGameAction(clientId: string, message: ClientMessage): void {
+  public async handleGameAction(clientId: string, message: ClientMessage): Promise<void> {
     const gameSession = this.server.getGameForClient(clientId);
     
     if (!gameSession) {
-      // No game exists, create one and send game state
-      this.server.sendToClient(clientId, createErrorMessage('No active game found. Creating a new game.'));
-      this.handleNewGame(clientId);
-      return;
+        throw new Error('No active game session found');
     }
-    
+
     try {
-      // Process the game action
-      gameSession.handleAction(message);
-      
-      // After handling the action, ensure we send the complete game state
-      // This is especially important for game-ending actions
-      if (['STAND', 'HIT', 'DOUBLE_DOWN', 'SURRENDER'].includes(message.type)) {
-        // For game-ending actions, ensure we send both the action result and game state
-        gameSession.sendGameState(clientId);
-        
-        // Send a final game state after a short delay to ensure proper transition
-        setTimeout(() => {
-          gameSession.sendGameState(clientId);
-          // After sending final state, return to betting phase if needed
-          gameSession.returnToBettingPhase();
-        }, 500);
-      }
+        // Process the action
+        gameSession.handleGameAction(message.type, message.data);
+
+        // Send updated game state
+        gameSession.sendGameState();
+
     } catch (error) {
-      console.error(`Error processing game action ${message.type} for client ${clientId}:`, error);
+        console.error('Error handling game action:', error);
+        // Send error message to client
+        this.server.sendToClient(clientId, createErrorMessage(
+            error instanceof Error ? error.message : 'An unknown error occurred'
+        ));
+        
+        // Send updated game state to ensure client is in sync
+        if (gameSession) {
+            gameSession.sendGameState();
+        }
+    }
+  }
+
+  private isValidActionForPhase(action: MessageType, phase: string): boolean {
+    const validActions: Record<string, MessageType[]> = {
+      'betting': [
+        MessageType.PLACE_BET, 
+        MessageType.START_GAME,
+        MessageType.REBET,
+        MessageType.CLEAR_BET
+      ],
+      'dealing': [
+        MessageType.START_GAME,
+        MessageType.INSURANCE
+      ],
+      'player_turn': [
+        MessageType.HIT, 
+        MessageType.STAND, 
+        MessageType.DOUBLE_DOWN, 
+        MessageType.SPLIT, 
+        MessageType.SURRENDER,
+        MessageType.INSURANCE
+      ],
+      'dealer_turn': [],
+      'complete': [
+        MessageType.START_GAME,
+        MessageType.PLACE_BET,
+        MessageType.REBET,
+        MessageType.RETURN_TO_BETTING
+      ]
+    };
+
+    return validActions[phase]?.includes(action) ?? false;
+  }
+
+  private validateActionParameters(action: MessageType, parameters: any): boolean {
+    switch (action) {
+      case MessageType.PLACE_BET:
+      case MessageType.START_GAME:
+        return typeof parameters?.amount === 'number' && parameters.amount > 0;
       
-      // Send error to client
-      this.server.sendToClient(clientId, createErrorMessage(
-        error instanceof Error ? error.message : `Error processing action: ${message.type}`
-      ));
+      case MessageType.INSURANCE:
+        return typeof parameters?.takeInsurance === 'boolean';
       
-      // Ensure game state is sent to keep client and server in sync
-      try {
-        gameSession.sendGameState(clientId);
-      } catch (stateError) {
-        console.error(`Failed to send game state after error:`, stateError);
-      }
+      case MessageType.DOUBLE_DOWN:
+        return typeof parameters?.amount === 'number' && parameters.amount > 0;
+      
+      case MessageType.HIT:
+      case MessageType.STAND:
+      case MessageType.SURRENDER:
+      case MessageType.SPLIT:
+      case MessageType.REBET:
+      case MessageType.CLEAR_BET:
+      case MessageType.RETURN_TO_BETTING:
+        // These actions don't require parameters
+        return !parameters || Object.keys(parameters).length === 0;
+      
+      default:
+        return false;
     }
   }
 

@@ -1,6 +1,7 @@
 import { ExternalApiResponse, LoginData, BetValidationResponse } from '../types/game.types';
 import { BlockspinAPI, UserData, BetResult } from '../server/apicalls';
 import { Environment } from '../config/env';
+import { log } from 'console';
 
 type ApiEnvironment = 'test' | 'prod';
 
