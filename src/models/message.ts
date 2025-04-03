@@ -6,15 +6,27 @@ export enum MessageType {
   CONNECTED = 'connected',
   ERROR = 'error',
   
-  // Core game flow
-  START_GAME = 'start_game',
-  DEAL_CARDS = 'deal_cards',
-  GAME_STATE = 'game_state',
-  BALANCE_UPDATE = 'balance_update',
-  GAME_OUTCOME = 'game_outcome',
-  GAME_END = 'game_end',
+  // Core game flow - ONLY THESE 4 MESSAGES WILL BE USED FOR GAME COMMUNICATION
+  START_GAME = 'start_game',     // For starting the game with initial state
+  CARD_DEALT = 'card_dealt',     // For all card dealing operations with target and card info
+  PHASE_CHANGE = 'phase_change', // For communicating game phase transitions
+  GAME_END = 'game_end',         // For game outcome, payout, balance and currentBet
+  GAME_STATE = 'game_state',     // For sending full game state (added back for gamestate synchronization)
+
+  // Authentication (still needed)
+  AUTHENTICATE = 'authenticate',
+  AUTH_SUCCESS = 'auth_success',
+  AUTH_ERROR = 'auth_error',
+  AUTH_FAILED = 'auth_failed',   // Added for consistent authentication messaging
   
-  // Player actions
+  // Leaderboard (only when asked)
+  GET_LEADERBOARD = "get_leaderboard",
+  LEADERBOARD_DATA = "leaderboard_data",
+  
+  // Special case (required for insurance/split)
+  SPECIAL_CASE = 'special_case',
+  
+  // Required for client messages to server
   PLACE_BET = 'place_bet',
   HIT = 'hit',
   STAND = 'stand',
@@ -25,37 +37,28 @@ export enum MessageType {
   REBET = 'rebet',
   CLEAR_BET = 'clear_bet',
   
-  // Special conditions
-  SPECIAL_CASE = 'special_case',
-  
-  // Legacy/compatibility types
-  PHASE_CHANGE = 'phase_change',
+  // COMMENTED OUT - NO LONGER USED IN SERVER-TO-CLIENT COMMUNICATION
+  /*
+  DEAL_CARDS = 'deal_cards',
+  BALANCE_UPDATE = 'balance_update',
+  GAME_OUTCOME = 'game_outcome',
   HAND_UPDATED = 'hand_updated',
   BET_PLACED = 'bet_placed',
   ACTION_RESULT = 'action_result',
   PLAYER_TURN = 'player_turn',
   DEALER_TURN = 'dealer_turn',
-  CARD_DEALT = 'card_dealt',
   SPLIT_RESULT = 'split_result',
   CREATE_SESSION = 'create_session',
   RETURN_TO_BETTING = 'return_to_betting',
   GAME_READY = 'game_ready',
-  
-  // Utility
   GET_PLAYER_DATA = 'get_player_data',
   GET_GAME_STATE = 'get_game_state',
-  
-  // Authentication
-  AUTHENTICATE = 'authenticate',
-  AUTH_SUCCESS = 'auth_success',
-  AUTH_ERROR = 'auth_error',
   JOIN_SESSION = "JOIN_SESSION",
   BET_VALIDATED = "BET_VALIDATED",
   RANDOM_NUMBERS = "RANDOM_NUMBERS",
   LEADERBOARD = "LEADERBOARD",
-  BET_SAVED = "BET_SAVED",
-  GET_LEADERBOARD = "get_leaderboard",
-  LEADERBOARD_DATA = "leaderboard_data"
+  BET_SAVED = "BET_SAVED"
+  */
 }
 
 /**
@@ -117,6 +120,9 @@ export interface GameStateMessage {
   allowedActions: MessageType[];
   outcome?: string;
   message?: string;
+  hasSplit?: boolean;
+  firstHand?: HandMessage;
+  secondHand?: HandMessage;
 }
 
 /**
@@ -150,6 +156,7 @@ export interface CardDealtMessage {
   target: 'player' | 'dealer' | 'split';  // Where the card should be placed
   isHoleCard?: boolean;  // Indicates this is the dealer's hidden hole card being revealed
   isAdditionalCard?: boolean; // Indicates this is an additional card after the hole card is revealed
+  allowedActions?: MessageType[]; // Optional: allowed actions after this card
 }
 
 /**
@@ -164,14 +171,15 @@ export function createErrorMessage(message: string): ServerMessage {
 }
 
 /**
- * Create a standardized success message
+ * Create a standardized phase change message
  */
-export function createSuccessMessage(message: string): ServerMessage {
+export function createPhaseChangeMessage(from: string, to: string, message: string = ""): ServerMessage {
   return {
-    type: MessageType.ACTION_RESULT,
+    type: MessageType.PHASE_CHANGE,
     data: { 
-      success: true,
-      message 
+      from,
+      to,
+      message
     }
   };
 }

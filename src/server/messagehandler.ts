@@ -1,7 +1,7 @@
 import { BlackjackServer } from './blackjackserver';
 import { ClientMessage, MessageType, createErrorMessage, ServerMessage, GameStateMessage } from '../models/message';
 import { ApiService } from '../services/api.service';
-import { GameSession } from '../game/gamesession';
+import { DisconnectionHandler } from '../game/disconnectionhandler';
 
 /**
  * Tracks client message rate for rate limiting
@@ -54,23 +54,22 @@ export class MessageHandler {
           this.handleAuthenticate(clientId, message);
           break;
           
-        case MessageType.CREATE_SESSION:
-          // Legacy support - just create/reset the game for this client
-          this.handleNewGame(clientId);
-          break;
-          
-        case MessageType.JOIN_SESSION:
-          // Legacy support - treat as getting current game state
-          this.handleGetGameState(clientId);
-          break;
-          
-        case MessageType.GET_PLAYER_DATA:
-        case MessageType.GET_GAME_STATE:
-          this.handleGetGameState(clientId);
+        case MessageType.PHASE_CHANGE:
+          // Legacy support for CREATE_SESSION - just create/reset the game for this client
+          if (message.data?.action === 'create_session') {
+            this.handleNewGame(clientId);
+          }
+          // Legacy support for JOIN_SESSION - treat as getting current game state
+          else if (message.data?.action === 'join_session') {
+            this.handleGetGameState(clientId);
+          }
+          // Handle other phase change requests
+          else {
+            this.handleGetGameState(clientId);
+          }
           break;
           
         case MessageType.PLACE_BET:
-        case MessageType.DEAL_CARDS:
         case MessageType.HIT:
         case MessageType.STAND:
         case MessageType.DOUBLE_DOWN:
@@ -79,7 +78,6 @@ export class MessageHandler {
         case MessageType.INSURANCE:
         case MessageType.REBET:
         case MessageType.CLEAR_BET:
-        case MessageType.RETURN_TO_BETTING:
           this.handleGameAction(clientId, message);
           break;
           
@@ -108,34 +106,111 @@ export class MessageHandler {
 
   private async handleAuthenticate(clientId: string, message: ClientMessage): Promise<void> {
     try {
-      if (!message.data?.loginData) {
-        this.server.sendToClient(clientId, createErrorMessage('Missing authentication data.'));
+      // Extract login data from message
+      const loginData = message.data?.loginData;
+      
+      if (!loginData) {
+        this.server.sendToClient(clientId, {
+          type: MessageType.AUTH_FAILED,
+          data: { error: 'Invalid authentication data' }
+        });
         return;
       }
-
-      // Get or create game session for this client
-      const gameSession = this.server.getOrCreateGameSession(clientId);
       
-      // Authenticate the player
-      const authSuccess = await gameSession.authenticatePlayer(message.data.loginData);
-      
-      if (!authSuccess) {
-        console.error(`Authentication failed for client ${clientId}`);
+      // Get game session
+      const gameSession = this.server.getGameForClient(clientId);
+      if (!gameSession) {
+        this.server.sendToClient(clientId, {
+          type: MessageType.AUTH_FAILED,
+          data: { error: 'No game session found' }
+        });
         return;
       }
-
-      // Send success message with user data
-      this.server.sendToClient(clientId, {
-        type: MessageType.AUTH_SUCCESS,
-        data: { 
-          message: 'Authentication successful',
-          user: gameSession.getPlayerData()
+      
+      // Authenticate player
+      const success = await gameSession.authenticatePlayer(loginData);
+      
+      if (success) {
+        // Check for saved game state
+        try {
+          console.log(`Checking for saved game state for user ${loginData.userId}`);
+          
+          // Use the disconnection handler to get saved game state
+          const disconnectionHandler = DisconnectionHandler.getInstance();
+          const savedState = await disconnectionHandler.getSavedGameState(loginData);
+          
+          if (savedState) {
+            // Only restore if not in betting or complete phase
+            if (savedState.gamePhase !== 'betting' && savedState.gamePhase !== 'complete') {
+              console.log(`Restoring saved game state: ${savedState.gamePhase}`);
+              
+              // Restore the game state
+              await gameSession.restoreGameState(savedState);
+              
+              // Clear the saved game state after successful restoration
+              await disconnectionHandler.clearSavedGameState(loginData);
+              
+              // Send success message with restored state flag
+              this.server.sendToClient(clientId, {
+                type: MessageType.AUTH_SUCCESS,
+                data: { 
+                  message: 'Authentication successful - restored saved game',
+                  user: gameSession.getPlayerData(),
+                  restoredState: true
+                }
+              });
+              
+              // Send game state immediately
+              gameSession.sendGameState();
+              return;
+            } else if (savedState.completedOffline) {
+              // Handle the case where the game was completed offline
+              console.log('Game was completed while player was offline, showing results');
+              
+              // Send special message about offline completion
+              this.server.sendToClient(clientId, {
+                type: MessageType.AUTH_SUCCESS,
+                data: { 
+                  message: 'Authentication successful - game was completed offline',
+                  user: gameSession.getPlayerData(),
+                  offlineCompletion: true,
+                  gameOutcome: savedState.outcome,
+                  payout: savedState.payout,
+                  playerHand: savedState.playerHand,
+                  dealerHand: savedState.dealerHand
+                }
+              });
+              
+              // Clear the saved game state
+              await disconnectionHandler.clearSavedGameState(loginData);
+              return;
+            } else {
+              console.log('Saved game state is in betting/complete phase, not restoring');
+            }
+          } else {
+            console.log('No valid saved game state found');
+          }
+        } catch (error) {
+          // Just log the error but continue with normal auth flow
+          console.error('Error checking for saved game state:', error);
         }
-      });
-      
+
+        // Send success message with user data (no restored state)
+        this.server.sendToClient(clientId, {
+          type: MessageType.AUTH_SUCCESS,
+          data: { 
+            message: 'Authentication successful',
+            user: gameSession.getPlayerData()
+          }
+        });
+      }
+      // Authentication failed handling occurs in the authenticatePlayer method
     } catch (error) {
       console.error(`Error authenticating client ${clientId}:`, error);
-      this.server.sendToClient(clientId, createErrorMessage('Authentication error.'));
+      this.server.sendToClient(clientId, {
+        type: MessageType.AUTH_FAILED,
+        data: { error: 'Authentication failed due to server error' }
+      });
     }
   }
 
@@ -199,8 +274,12 @@ export class MessageHandler {
       this.server.getOrCreateGameSession(clientId);
       
       this.server.sendToClient(clientId, {
-        type: MessageType.GAME_READY,
-        data: { message: "New game created" }
+        type: MessageType.PHASE_CHANGE,
+        data: { 
+          from: 'none',
+          to: 'betting',
+          message: "New game created" 
+        }
       });
     } catch (error) {
       console.error(`Error creating game for client ${clientId}:`, error);
@@ -223,10 +302,14 @@ export class MessageHandler {
         // Get the newly created game
         const newGame = this.server.getGameForClient(clientId);
         if (newGame) {
-          // Send GAME_READY first to notify client
+          // Send PHASE_CHANGE to notify client
           this.server.sendToClient(clientId, {
-            type: MessageType.GAME_READY,
-            data: { message: "Game is ready to play" }
+            type: MessageType.PHASE_CHANGE,
+            data: { 
+              from: 'none',
+              to: 'betting',
+              message: "Game is ready to play" 
+            }
           });
           
           // Then immediately send the game state so buttons can appear
@@ -308,7 +391,7 @@ export class MessageHandler {
         MessageType.START_GAME,
         MessageType.PLACE_BET,
         MessageType.REBET,
-        MessageType.RETURN_TO_BETTING
+        MessageType.PHASE_CHANGE
       ]
     };
 
@@ -333,7 +416,7 @@ export class MessageHandler {
       case MessageType.SPLIT:
       case MessageType.REBET:
       case MessageType.CLEAR_BET:
-      case MessageType.RETURN_TO_BETTING:
+      case MessageType.PHASE_CHANGE:
         // These actions don't require parameters
         return !parameters || Object.keys(parameters).length === 0;
       

@@ -33,6 +33,10 @@ interface SaveBetRequest extends BetRequest {
   chipsWon: number;
 }
 
+interface SetUserDataRequest extends UserRequest {
+  userData: Record<string, any>;
+}
+
 interface RandomRequest extends BaseRequest {
   numRandom: number;
 }
@@ -234,6 +238,64 @@ export class BlockspinAPI {
       return {
         success: false,
         error: 'Failed to get user data'
+      };
+    }
+  }
+
+  // Get user's game state data
+  public async getUserGameData(loginData: LoginData): Promise<ApiResponse<Record<string, any>>> {
+    try {
+      const request = {
+        ...this.getBaseRequest(),
+        loginData
+      };
+      
+      const response = await this.makeRequest<Record<string, any>>('externalgame/getuserdata', request);
+      
+      return {
+        success: true,
+        data: response
+      };
+    } catch (error) {
+      console.error('Error retrieving user game data:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to retrieve user game data'
+      };
+    }
+  }
+
+  // Save user's game state data
+  public async setUserGameData(loginData: LoginData, userData: Record<string, any>): Promise<ApiResponse<void>> {
+    try {
+      // Check if userData already contains MongoDB operators
+      const hasOperators = Object.keys(userData).some(key => key.startsWith('$'));
+      
+      const request: SetUserDataRequest = {
+        ...this.getBaseRequest(),
+        loginData,
+        // Only wrap in $set if not already using MongoDB operators
+        userData: hasOperators ? userData : { $set: userData }
+      };
+      
+      const response = await this.makeRequest<any>('externalgame/setuserdata', request);
+      
+      // Check if response contains an error message
+      if (response && response.error) {
+        return {
+          success: false,
+          error: response.error
+        };
+      }
+      
+      return {
+        success: true
+      };
+    } catch (error) {
+      console.error('Error saving user game data:', error);
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to save user game data'
       };
     }
   }

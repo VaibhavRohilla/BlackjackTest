@@ -2,6 +2,23 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { GameSession } from '../game/gamesession';
 import { MessageHandler } from '../server/messagehandler';
 import { ClientMessage, ServerMessage, MessageType } from '../models/message';
+import { DisconnectionHandler } from '../game/disconnectionhandler';
+
+/**
+ * BlackjackServer
+ * 
+ * This server implements a simplified WebSocket messaging protocol for blackjack:
+ * 
+ * 1. START_GAME - Sent when starting a new game with initial state
+ * 2. CARD_DEALT - Sent for each card dealt with target and card data
+ * 3. PHASE_CHANGE - Sent when game phase changes (betting, player_turn, dealer_turn, complete)
+ * 4. GAME_END - Sent at game end with outcome, payout, balance and bet information
+ * 
+ * Additionally, SPECIAL_CASE is sent for insurance and split options,
+ * and standard ERROR messages for error conditions.
+ * 
+ * This simplified protocol reduces message types and makes the system more robust.
+ */
 
 /**
  * Extended WebSocket interface with custom properties
@@ -55,6 +72,16 @@ export class BlackjackServer {
       // Handle client disconnection
       ws.on('close', () => {
         console.log(`Client disconnected: ${clientId}`);
+        
+        // Get the game session before we delete it
+        const gameSession = this.gameSessions.get(clientId);
+        
+        if (gameSession) {
+          // Handle disconnection based on game state
+          this.handleDisconnection(gameSession);
+        }
+        
+        // Remove the game session
         this.gameSessions.delete(clientId);
       });
 
@@ -128,13 +155,35 @@ export class BlackjackServer {
   }
 
   /**
-   * Handle client disconnection
+   * Handle client disconnection based on game state
+   * @param gameSession The game session for the disconnected client
    */
-  public handleClientDisconnect(clientId: string): void {
-    const gameSession = this.gameSessions.get(clientId);
-    if (gameSession) {
-      gameSession.cleanup();
-      this.gameSessions.delete(clientId);
+  private async handleDisconnection(gameSession: GameSession): Promise<void> {
+    try {
+      const loginData = gameSession.getLoginData();
+      
+      // Only handle disconnection for authenticated players
+      if (!loginData || !gameSession.isAuthenticated()) {
+        console.log('Disconnected client was not authenticated, no state to save');
+        return;
+      }
+      
+      const gameState = gameSession.getGameState();
+      const blackjackGame = gameSession.getGame();
+      
+      if (!gameState) {
+        console.log('No game state available, nothing to handle for disconnection');
+        return;
+      }
+      
+      console.log(`Handling disconnection for client with game phase: ${gameState.gamePhase}`);
+      
+      // Use the disconnection handler to process the disconnection
+      const disconnectionHandler = DisconnectionHandler.getInstance();
+      await disconnectionHandler.handleDisconnection(loginData, gameState, blackjackGame);
+      
+    } catch (error) {
+      console.error('Error handling client disconnection:', error);
     }
   }
 

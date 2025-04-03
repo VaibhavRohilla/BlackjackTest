@@ -59,14 +59,14 @@ export interface Card {
     /**
      * Shuffle the deck using Fisher-Yates algorithm
      */
-    public shuffle(): void {
+    public shuffle(randomProvider?: () => number): void {
       // Add discard pile back to the deck before shuffling
       this.cards = [...this.cards, ...this.discardPile];
       this.discardPile = [];
       
       // Perform the shuffle
       for (let i = this.cards.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor((randomProvider ? randomProvider() : Math.random()) * (i + 1));
         [this.cards[i], this.cards[j]] = [this.cards[j], this.cards[i]];
       }
     }
@@ -74,7 +74,7 @@ export interface Card {
     /**
      * Deal a card from the deck
      */
-    public dealCard(faceUp: boolean = true): Card {
+    public dealCard(faceUp: boolean = true, randomValue?: number): Card {
       if (this.cards.length === 0) {
         // If deck is empty, shuffle discard pile back in
         if (this.discardPile.length > 0) {
@@ -86,7 +86,7 @@ export interface Card {
       }
       
       // Get random index from remaining cards
-      const randomIndex = Math.floor(Math.random() * this.cards.length);
+      const randomIndex = Math.floor((randomValue !== undefined ? randomValue : Math.random()) * this.cards.length);
       console.log(`Dealing card: Random index ${randomIndex} from ${this.cards.length} remaining cards`);
       
       // Remove and return the card at random index
@@ -97,21 +97,6 @@ export interface Card {
       return card;
     }
 
-    /**
-     * Deal a card with value 10 (10, J, Q, K)
-     */
-    public dealCardOfValueTen(): Card | null {
-      const tenValueCards = this.cards.filter(card => card.value === 10);
-      if (tenValueCards.length === 0) {
-        console.log('No cards of value 10 available to deal.');
-        return null;
-      }
-      const randomIndex = Math.floor(Math.random() * tenValueCards.length);
-      const cardToDeal = tenValueCards[randomIndex];
-      this.cards = this.cards.filter(card => card !== cardToDeal);
-      console.log(`Dealt card: ${cardToDeal.rank} of ${cardToDeal.suit} (value: ${cardToDeal.value})`);
-      return cardToDeal;
-    }
 
     /**
      * Discard a card
