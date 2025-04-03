@@ -18,8 +18,6 @@ export interface GameStateData {
   payout?: number;
   outcome?: string;
   timestamp: number;
-  disconnected?: boolean;
-  completedOffline?: boolean;
 }
 
 type ApiEnvironment = 'test' | 'prod';
@@ -28,10 +26,6 @@ export class ApiService {
   private static instance: ApiService;
   private api: BlockspinAPI;
   private environment: Environment;
-
-  // Store last save timestamp to prevent too frequent API calls
-  private lastSaveTimestamp: number = 0;
-  private readonly MIN_SAVE_INTERVAL = 2000; // 2 seconds minimum between saves
 
   private constructor() {
     this.environment = 'development';
@@ -259,16 +253,7 @@ export class ApiService {
         };
       }
       
-      // Check if we've saved too recently - debounce API calls
-      const now = Date.now();
-      if (now - this.lastSaveTimestamp < this.MIN_SAVE_INTERVAL) {
-        console.log(`Skipping game state save - last save was ${now - this.lastSaveTimestamp}ms ago (min interval: ${this.MIN_SAVE_INTERVAL}ms)`);
-        return {
-          success: true
-        };
-      }
-      
-      console.log(`Saving game state for user: ${loginData.userId}, Phase: ${gameState.gamePhase}`);
+      console.log('Saving game state for user:', loginData.userId, 'Phase:', gameState.gamePhase);
       
       // Add timestamp to track when the state was saved
       const dataToSave = {
@@ -277,9 +262,6 @@ export class ApiService {
           timestamp: Date.now()
         }
       };
-      
-      // Update last save timestamp
-      this.lastSaveTimestamp = now;
       
       const response = await this.api.setUserGameData(loginData, dataToSave);
       
@@ -312,9 +294,6 @@ export class ApiService {
   async clearUserGameData(loginData: LoginData): Promise<ExternalApiResponse<void>> {
     try {
       console.log('Clearing game state for user:', loginData.userId);
-      
-      // Reset the save timestamp to ensure this API call isn't debounced
-      this.lastSaveTimestamp = 0;
       
       // Send empty object to clear existing data
       const response = await this.api.setUserGameData(loginData, { gameState: null });

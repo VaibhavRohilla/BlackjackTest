@@ -268,25 +268,13 @@ export class BlockspinAPI {
   // Save user's game state data
   public async setUserGameData(loginData: LoginData, userData: Record<string, any>): Promise<ApiResponse<void>> {
     try {
-      // Check if userData already contains MongoDB operators
-      const hasOperators = Object.keys(userData).some(key => key.startsWith('$'));
-      
       const request: SetUserDataRequest = {
         ...this.getBaseRequest(),
         loginData,
-        // Only wrap in $set if not already using MongoDB operators
-        userData: hasOperators ? userData : { $set: userData }
+        userData
       };
       
-      const response = await this.makeRequest<any>('externalgame/setuserdata', request);
-      
-      // Check if response contains an error message
-      if (response && response.error) {
-        return {
-          success: false,
-          error: response.error
-        };
-      }
+      await this.makeRequest<void>('externalgame/setuserdata', request);
       
       return {
         success: true

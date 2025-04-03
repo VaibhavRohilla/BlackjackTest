@@ -124,9 +124,6 @@ export class BlackjackGame {
   // First, add a property to track previous phase
   private previousGamePhase: string = 'betting';
   
-  // Track the next random number index to use
-  private randomNumberIndex: number = 0;
-  
   constructor() {
     this.deck = new Deck(this.numDecks);
     this.playerHand = this.createHand('player');
@@ -234,19 +231,19 @@ export class BlackjackGame {
     }
     
     // Deal first card to player face up
-    const playerCard1 = this.deck.dealCard(true, this.getNextRandomNumber());
-    this.playerHand.cards.push(playerCard1);
+    const playerCard1 = this.deck.dealCard(true);
+      this.playerHand.cards.push(playerCard1);
     
     // Deal first card to dealer face up
-    const dealerCard1 = this.deck.dealCard(true, this.getNextRandomNumber());
+    const dealerCard1 = this.deck.dealCard(true);
     this.dealerHand.cards.push(dealerCard1);
     
     // Deal second card to player face up
-    const playerCard2 = this.deck.dealCard(true, this.getNextRandomNumber());
+    const playerCard2 = this.deck.dealCard(true);
     this.playerHand.cards.push(playerCard2);
     
     // Deal second card to dealer face down
-    const dealerCard2 = this.deck.dealCard(false, this.getNextRandomNumber());
+    const dealerCard2 = this.deck.dealCard(false);
     this.dealerHand.cards.push(dealerCard2);
     
     // console.log(`Dealt initial cards: Player [${playerCard1.rank}${playerCard1.suit[0]}, ${playerCard2.rank}${playerCard2.suit[0]}], Dealer [${dealerCard1.rank}${dealerCard1.suit[0]}, ${dealerCard2.rank}${dealerCard2.suit[0]}]`);
@@ -377,7 +374,7 @@ export class BlackjackGame {
    */
   public hit(): Card {
     // Deal a card to the player
-    const card = this.deck.dealCard(true, this.getNextRandomNumber());
+    const card = this.deck.dealCard(true);
     this.playerHand.cards.push(card);
     
     // Recalculate hand values
@@ -649,7 +646,7 @@ export class BlackjackGame {
     
     // Dealer hits until 17 or higher
     while (this.dealerHand.value < 17) {
-      this.dealerHand.cards.push(this.deck.dealCard(true, this.getNextRandomNumber()));
+      this.dealerHand.cards.push(this.deck.dealCard(true));
       this.calculateHandValues();
     }
     
@@ -658,6 +655,7 @@ export class BlackjackGame {
       this.dealerHand.busted = true;
     }
     
+    // Game complete
     this.gamePhase = 'complete';
   }
   
@@ -1026,7 +1024,7 @@ export class BlackjackGame {
     
     // Dealer hits until 17 or more
     while (this.dealerHand.value < 17) {
-      const card = this.deck.dealCard(true, this.getNextRandomNumber());
+      const card = this.deck.dealCard(true);
       this.dealerHand.cards.push(card);
       this.calculateHandValues();
     }
@@ -1190,7 +1188,7 @@ export class BlackjackGame {
     }
     
     // Deal a card to the dealer
-    const card = this.deck.dealCard(true, this.getNextRandomNumber());
+    const card = this.deck.dealCard(true);
     this.dealerHand.cards.push(card);
     
     // Recalculate hand values
@@ -1675,43 +1673,5 @@ export class BlackjackGame {
    */
   public getActiveSplitHand(): 'first' | 'second' | null {
     return this.activeSplitHand;
-  }
-
-  /**
-   * Fetch 36 random numbers from external API
-   */
-  public async fetchRandomNumbers(): Promise<boolean> {
-    try {
-      const apiService = require('../services/api.service').ApiService.getInstance();
-      const response = await apiService.getRandom(36);
-      
-      if (response.success && response.data) {
-        this.randomNumbers = response.data;
-        this.randomNumberIndex = 0;
-        console.log(`Fetched ${this.randomNumbers.length} random numbers from API`);
-        return true;
-      } else {
-        console.error('Failed to fetch random numbers:', response.error);
-        return false;
-      }
-    } catch (error) {
-      console.error('Error fetching random numbers:', error);
-      return false;
-    }
-  }
-
-  /**
-   * Get the next random number from the pre-fetched array
-   * @returns A random number between 0 and 1
-   */
-  public getNextRandomNumber(): number {
-    if (this.randomNumbers.length === 0) {
-      console.warn('No pre-fetched random numbers available, using Math.random()');
-      return Math.random();
-    }
-    
-    const randomValue = this.randomNumbers[this.randomNumberIndex] / 100;
-    this.randomNumberIndex = (this.randomNumberIndex + 1) % this.randomNumbers.length;
-    return randomValue;
   }
 } 

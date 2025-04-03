@@ -2,7 +2,6 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { GameSession } from '../game/gamesession';
 import { MessageHandler } from '../server/messagehandler';
 import { ClientMessage, ServerMessage, MessageType } from '../models/message';
-import { DisconnectionHandler } from '../game/disconnectionhandler';
 
 /**
  * BlackjackServer
@@ -72,16 +71,6 @@ export class BlackjackServer {
       // Handle client disconnection
       ws.on('close', () => {
         console.log(`Client disconnected: ${clientId}`);
-        
-        // Get the game session before we delete it
-        const gameSession = this.gameSessions.get(clientId);
-        
-        if (gameSession) {
-          // Handle disconnection based on game state
-          this.handleDisconnection(gameSession);
-        }
-        
-        // Remove the game session
         this.gameSessions.delete(clientId);
       });
 
@@ -155,35 +144,13 @@ export class BlackjackServer {
   }
 
   /**
-   * Handle client disconnection based on game state
-   * @param gameSession The game session for the disconnected client
+   * Handle client disconnection
    */
-  private async handleDisconnection(gameSession: GameSession): Promise<void> {
-    try {
-      const loginData = gameSession.getLoginData();
-      
-      // Only handle disconnection for authenticated players
-      if (!loginData || !gameSession.isAuthenticated()) {
-        console.log('Disconnected client was not authenticated, no state to save');
-        return;
-      }
-      
-      const gameState = gameSession.getGameState();
-      const blackjackGame = gameSession.getGame();
-      
-      if (!gameState) {
-        console.log('No game state available, nothing to handle for disconnection');
-        return;
-      }
-      
-      console.log(`Handling disconnection for client with game phase: ${gameState.gamePhase}`);
-      
-      // Use the disconnection handler to process the disconnection
-      const disconnectionHandler = DisconnectionHandler.getInstance();
-      await disconnectionHandler.handleDisconnection(loginData, gameState, blackjackGame);
-      
-    } catch (error) {
-      console.error('Error handling client disconnection:', error);
+  public handleClientDisconnect(clientId: string): void {
+    const gameSession = this.gameSessions.get(clientId);
+    if (gameSession) {
+      gameSession.cleanup();
+      this.gameSessions.delete(clientId);
     }
   }
 

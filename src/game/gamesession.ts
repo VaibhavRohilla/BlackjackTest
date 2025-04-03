@@ -1,7 +1,7 @@
 import { Card } from "./deck";
 import { MessageType, ClientMessage, ServerMessage } from "../models/message";
 import { BlackjackServer } from "../server/blackjackserver";
-import { ApiService, GameStateData } from "../services/api.service";
+import { ApiService } from "../services/api.service";
 import { BlackjackGame } from "./blackjackgame";
 import { LoginData, ExternalApiResponse } from "../types/game.types";
 
@@ -218,15 +218,6 @@ export class GameSession {
     console.log(`[BET DEBUG] After placeBet, current bet = ${this.game.getCurrentBet()}`);
     
     this.playerBalance -= betAmount;
-
-    // Fetch random numbers before dealing cards
-    try {
-        await this.game.fetchRandomNumbers();
-        console.log("Successfully fetched random numbers for this game");
-    } catch (error) {
-        console.error("Failed to fetch random numbers:", error);
-        // Continue with local random numbers as fallback
-    }
 
     // Transition to dealing phase and deal cards
     this.game.setGamePhase('dealing');
@@ -1097,37 +1088,41 @@ export class GameSession {
   }
   
   /**
-   * Send a full game state update to the client
-   * @param targetClientId Optional target client ID (defaults to session client)
+   * Send the current game state to client
+   * Now converts to a simplified phase_change message instead of sending full game state
    */
   public sendGameState(targetClientId: string = this.clientId): void {
-    console.log(`Sending game state to client ${targetClientId}`);
-    
     const currentPhase = this.game.getGamePhase();
-    const allowedActions = this.determineAllowedActions();
+    const gameState = this.game.getGameState(this.playerBalance);
     
-    // Create game state message object that will be sent to client
-    // This is different from the GameStateData used for storing state
-    const clientGameState: any = {
-      gamePhase: currentPhase,
-      playerBalance: this.playerBalance,
-      currentBet: this.game.getCurrentBet(),
-      allowedActions: allowedActions,
-      dealerHand: this.mapHand(this.game.getDealerCards()),
-      playerHand: this.mapHand(this.game.getPlayerCards())
-    };
+    // Add allowed actions
+    gameState.allowedActions = this.determineAllowedActions();
     
-    // Add split hand data if applicable
-    if (this.game.hasSplit()) {
-      clientGameState.hasSplit = true;
-      clientGameState.activeSplitHand = this.getActiveSplitHand();
+    if (this.hasSplitHand()) {
+      gameState.hasSplit = true;
+      gameState.activeSplitHand = this.getActiveSplitHand();
       
-      const secondHand = this.game.getSplitHand();
+      // Send individual hands for split
+      const firstHand = this.game.getSplitHand('first');
+      const secondHand = this.game.getSplitHand('second');
+      
+      if (firstHand) {
+        // Convert UIHand to HandMessage
+        const firstHandUI = this.mapHand(firstHand.cards);
+        gameState.firstHand = {
+          type: 'player', // Explicit type for HandMessage
+          cards: firstHandUI.cards,
+          value: firstHandUI.value,
+          busted: firstHandUI.busted,
+          blackjack: firstHandUI.blackjack,
+          soft: firstHandUI.soft
+        };
+      }
       
       if (secondHand) {
         // Convert UIHand to HandMessage
         const secondHandUI = this.mapHand(secondHand.cards);
-        clientGameState.secondHand = {
+        gameState.secondHand = {
           type: 'split', // Explicit type for HandMessage
           cards: secondHandUI.cards,
           value: secondHandUI.value,
@@ -1137,17 +1132,21 @@ export class GameSession {
         };
       }
     } else {
-      clientGameState.hasSplit = false;
+      gameState.hasSplit = false;
     }
     
     // Send game state to client
     this.sendToClient({
       type: MessageType.GAME_STATE,
-      data: clientGameState
+      data: gameState
     });
     
-    // REMOVED: Save game state if in active game phase
-    // This was causing duplicate saves since handleGameAction already calls saveGameState
+    // Save game state if in active game phase
+    if (currentPhase !== 'betting' && 
+        currentPhase !== 'complete' && 
+        this.playerAuth.isAuthenticated) {
+      this.saveGameState();
+    }
   }
   
   /**
@@ -2201,7 +2200,7 @@ export class GameSession {
     }
     
     try {
-      console.log(`[saveGameState] Saving game state for client ${this.clientId}, phase: ${currentPhase}`);
+      console.log(`Saving game state for client ${this.clientId}, phase: ${currentPhase}`);
       
       // Get current game state
       const gameState = this.game.getGameState(this.playerBalance);
@@ -2221,17 +2220,13 @@ export class GameSession {
         timestamp: Date.now()
       };
       
-      // Add a timestamp to the save for debugging
-      const saveTimestamp = Date.now();
-      console.log(`[saveGameState] API call starting at ${new Date(saveTimestamp).toISOString()}`);
-      
       // Save state to API
       const response = await this.apiService.saveUserGameData(this.playerAuth.loginData, gameStateData);
       
       if (!response.success) {
         console.error('Failed to save game state:', response.error);
       } else {
-        console.log(`[saveGameState] Game state saved successfully (took ${Date.now() - saveTimestamp}ms)`);
+        console.log('Game state saved successfully');
       }
     } catch (error) {
       console.error('Error saving game state:', error);
@@ -2618,43 +2613,6 @@ export class GameSession {
         }
       });
     }
-  }
-
-  /**
-   * Check if the player is authenticated
-   */
-  public isAuthenticated(): boolean {
-    return this.playerAuth.isAuthenticated;
-  }
-
-  /**
-   * Get the current game state
-   */
-  public getGameState(): GameStateData {
-    // Get basic game state from the game
-    const currentState = this.game.getGameState(this.playerBalance);
-    
-    // Create a complete GameStateData object
-    return {
-      gamePhase: this.game.getGamePhase() as 'betting' | 'dealing' | 'player_turn' | 'dealer_turn' | 'complete',
-      playerBalance: this.playerBalance,
-      currentBet: this.game.getCurrentBet(),
-      lastBet: this.game.getCurrentBet(),
-      playerHand: this.game.getPlayerCards(),
-      dealerHand: this.game.getDealerCards(),
-      allowedActions: this.determineAllowedActions(),
-      activeHand: this.getActiveSplitHand(),
-      hasSplit: this.hasSplitHand(),
-      insuranceAmount: this.game.getInsuranceBet(),
-      timestamp: Date.now()
-    };
-  }
-
-  /**
-   * Get the BlackjackGame instance
-   */
-  public getGame(): BlackjackGame {
-    return this.game;
   }
 
 } 

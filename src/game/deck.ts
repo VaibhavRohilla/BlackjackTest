@@ -59,22 +59,23 @@ export interface Card {
     /**
      * Shuffle the deck using Fisher-Yates algorithm
      */
-    public shuffle(randomProvider?: () => number): void {
+    public shuffle(): void {
       // Add discard pile back to the deck before shuffling
       this.cards = [...this.cards, ...this.discardPile];
       this.discardPile = [];
       
       // Perform the shuffle
       for (let i = this.cards.length - 1; i > 0; i--) {
-        const j = Math.floor((randomProvider ? randomProvider() : Math.random()) * (i + 1));
+        const j = Math.floor(Math.random() * (i + 1));
         [this.cards[i], this.cards[j]] = [this.cards[j], this.cards[i]];
       }
     }
     
+  
     /**
      * Deal a card from the deck
      */
-    public dealCard(faceUp: boolean = true, randomValue?: number): Card {
+    public dealCard(faceUp: boolean = true): Card {
       if (this.cards.length === 0) {
         // If deck is empty, shuffle discard pile back in
         if (this.discardPile.length > 0) {
@@ -86,7 +87,7 @@ export interface Card {
       }
       
       // Get random index from remaining cards
-      const randomIndex = Math.floor((randomValue !== undefined ? randomValue : Math.random()) * this.cards.length);
+      const randomIndex = Math.floor(Math.random() * this.cards.length);
       console.log(`Dealing card: Random index ${randomIndex} from ${this.cards.length} remaining cards`);
       
       // Remove and return the card at random index
@@ -97,6 +98,7 @@ export interface Card {
       return card;
     }
 
+   
 
     /**
      * Discard a card

@@ -1,7 +1,6 @@
 import { BlackjackServer } from './blackjackserver';
 import { ClientMessage, MessageType, createErrorMessage, ServerMessage, GameStateMessage } from '../models/message';
 import { ApiService } from '../services/api.service';
-import { DisconnectionHandler } from '../game/disconnectionhandler';
 
 /**
  * Tracks client message rate for rate limiting
@@ -106,49 +105,38 @@ export class MessageHandler {
 
   private async handleAuthenticate(clientId: string, message: ClientMessage): Promise<void> {
     try {
-      // Extract login data from message
-      const loginData = message.data?.loginData;
+      if (!message.data?.loginData) {
+        this.server.sendToClient(clientId, createErrorMessage('Missing authentication data.'));
+        return;
+      }
+
+      // Get or create game session for this client
+      const gameSession = this.server.getOrCreateGameSession(clientId);
       
-      if (!loginData) {
-        this.server.sendToClient(clientId, {
-          type: MessageType.AUTH_FAILED,
-          data: { error: 'Invalid authentication data' }
-        });
+      // Authenticate the player
+      const authSuccess = await gameSession.authenticatePlayer(message.data.loginData);
+      
+      if (!authSuccess) {
+        console.error(`Authentication failed for client ${clientId}`);
         return;
       }
       
-      // Get game session
-      const gameSession = this.server.getGameForClient(clientId);
-      if (!gameSession) {
-        this.server.sendToClient(clientId, {
-          type: MessageType.AUTH_FAILED,
-          data: { error: 'No game session found' }
-        });
-        return;
-      }
-      
-      // Authenticate player
-      const success = await gameSession.authenticatePlayer(loginData);
-      
-      if (success) {
-        // Check for saved game state
-        try {
+      // Try to restore saved game state if it exists
+      const loginData = gameSession.getLoginData();
+      try {
+        if (loginData) {
           console.log(`Checking for saved game state for user ${loginData.userId}`);
+          const savedStateResponse = await this.apiService.getUserGameData(loginData);
           
-          // Use the disconnection handler to get saved game state
-          const disconnectionHandler = DisconnectionHandler.getInstance();
-          const savedState = await disconnectionHandler.getSavedGameState(loginData);
-          
-          if (savedState) {
+          if (savedStateResponse.success && savedStateResponse.data) {
+            const savedState = savedStateResponse.data;
+            
             // Only restore if not in betting or complete phase
             if (savedState.gamePhase !== 'betting' && savedState.gamePhase !== 'complete') {
               console.log(`Restoring saved game state: ${savedState.gamePhase}`);
               
               // Restore the game state
               await gameSession.restoreGameState(savedState);
-              
-              // Clear the saved game state after successful restoration
-              await disconnectionHandler.clearSavedGameState(loginData);
               
               // Send success message with restored state flag
               this.server.sendToClient(clientId, {
@@ -163,54 +151,30 @@ export class MessageHandler {
               // Send game state immediately
               gameSession.sendGameState();
               return;
-            } else if (savedState.completedOffline) {
-              // Handle the case where the game was completed offline
-              console.log('Game was completed while player was offline, showing results');
-              
-              // Send special message about offline completion
-              this.server.sendToClient(clientId, {
-                type: MessageType.AUTH_SUCCESS,
-                data: { 
-                  message: 'Authentication successful - game was completed offline',
-                  user: gameSession.getPlayerData(),
-                  offlineCompletion: true,
-                  gameOutcome: savedState.outcome,
-                  payout: savedState.payout,
-                  playerHand: savedState.playerHand,
-                  dealerHand: savedState.dealerHand
-                }
-              });
-              
-              // Clear the saved game state
-              await disconnectionHandler.clearSavedGameState(loginData);
-              return;
             } else {
               console.log('Saved game state is in betting/complete phase, not restoring');
             }
           } else {
             console.log('No valid saved game state found');
           }
-        } catch (error) {
-          // Just log the error but continue with normal auth flow
-          console.error('Error checking for saved game state:', error);
         }
-
-        // Send success message with user data (no restored state)
-        this.server.sendToClient(clientId, {
-          type: MessageType.AUTH_SUCCESS,
-          data: { 
-            message: 'Authentication successful',
-            user: gameSession.getPlayerData()
-          }
-        });
+      } catch (error) {
+        // Just log the error but continue with normal auth flow
+        console.error('Error checking for saved game state:', error);
       }
-      // Authentication failed handling occurs in the authenticatePlayer method
+
+      // Send success message with user data (no restored state)
+      this.server.sendToClient(clientId, {
+        type: MessageType.AUTH_SUCCESS,
+        data: { 
+          message: 'Authentication successful',
+          user: gameSession.getPlayerData()
+        }
+      });
+      
     } catch (error) {
       console.error(`Error authenticating client ${clientId}:`, error);
-      this.server.sendToClient(clientId, {
-        type: MessageType.AUTH_FAILED,
-        data: { error: 'Authentication failed due to server error' }
-      });
+      this.server.sendToClient(clientId, createErrorMessage('Authentication error.'));
     }
   }
 
