@@ -160,12 +160,14 @@ export class BlockspinAPI {
         }
       }
 
-      // Log request details
-      console.log(`Making API request to ${cleanEndpoint}:`, {
-        url: `${this.config.baseUrl}/${cleanEndpoint}`,
-        data: requestData,
-        // environment: this.config.baseUrl.includes('apitest') ? 'test' : 'prod'
-      });
+      // // Log request details
+      // console.log(`Making API request to ${cleanEndpoint}:`, {
+      //   url: `${this.config.baseUrl}/${cleanEndpoint}`,
+      //   data: JSON.stringify(requestData, (key, value) => 
+      //     key === 'loginData' ? (typeof value === 'string' && value.length > 10 ? value.substring(0, 10) + '...' : value) : value
+      //   , 2),
+      //   endpoint: cleanEndpoint
+      // });
 
       const response = await this.axiosInstance.post<T>(cleanEndpoint, requestData);
       
@@ -252,6 +254,34 @@ export class BlockspinAPI {
       
       const response = await this.makeRequest<Record<string, any>>('externalgame/getuserdata', request);
       
+      // Process split hand data for consistency if it exists
+      if (response && response.userData && response.userData.hasSplit === true) {
+        // If secondHand exists but splitHand doesn't, migrate the data
+        if (response.userData.secondHand && (!response.userData.splitHand || !response.userData.splitHand.cards)) {
+          console.log('getUserGameData: Migrating secondHand to splitHand');
+          response.userData.splitHand = response.userData.secondHand;
+        }
+        
+        // Remove secondHand property to use only splitHand
+        delete response.userData.secondHand;
+        
+        // Validate that splitHand has cards
+        if (response.userData.splitHand && response.userData.splitHand.cards) {
+          console.log(`getUserGameData: Split hand validation passed - ${response.userData.splitHand.cards.length} cards found in splitHand`);
+        } else {
+          console.warn('getUserGameData: Split hand validation failed - hasSplit is true but no valid cards found in splitHand');
+          // Create empty structure if splitHand is invalid
+          response.userData.splitHand = {
+            type: 'split',
+            cards: [],
+            value: 0,
+            busted: false,
+            blackjack: false,
+            soft: false
+          };
+        }
+      }
+      
       return {
         success: true,
         data: response
@@ -268,13 +298,58 @@ export class BlockspinAPI {
   // Save user's game state data
   public async setUserGameData(loginData: LoginData, userData: Record<string, any>): Promise<ApiResponse<void>> {
     try {
+      // Migrate secondHand to splitHand if needed before creating request
+      if (userData.hasSplit === true) {
+        // If secondHand exists but splitHand doesn't, migrate the data
+        if (userData.secondHand && (!userData.splitHand || !userData.splitHand.cards || userData.splitHand.cards.length === 0)) {
+          console.log('setUserGameData: Migrating secondHand to splitHand');
+          userData.splitHand = userData.secondHand;
+        }
+        
+        // Validate splitHand data
+        if (!userData.splitHand || !userData.splitHand.cards || userData.splitHand.cards.length === 0) {
+          console.error('Split hand validation error: hasSplit is true but splitHand is missing or has no cards');
+          // Create empty structure if splitHand is invalid
+          userData.splitHand = {
+            type: 'split',
+            cards: [],
+            value: 0,
+            busted: false,
+            blackjack: false,
+            soft: false
+          };
+        } else {
+          console.log(`Split hand validation passed: ${userData.splitHand.cards.length} cards found in splitHand`);
+        }
+        
+        // Remove secondHand property to use only splitHand
+        delete userData.secondHand;
+      }
+      
       const request: SetUserDataRequest = {
         ...this.getBaseRequest(),
         loginData,
         userData
       };
       
-      await this.makeRequest<void>('externalgame/setuserdata', request);
+      // Log the request data to see exactly what's being sent
+      console.log('setUserGameData request data:', JSON.stringify({
+        loginData: request.loginData,
+        hasSplit: userData.hasSplit,
+        gamePhase: userData.gamePhase,
+        splitHandPresent: userData.hasSplit ? (!!userData.splitHand && !!userData.splitHand.cards) : false,
+        splitHandCards: userData.hasSplit && userData.splitHand && userData.splitHand.cards ? userData.splitHand.cards.length : 0
+      }, null, 2));
+      
+      const response = await this.makeRequest<any>('externalgame/setuserdata', request);
+      
+      // Check if response contains an error message
+      if (response && response.error) {
+        return {
+          success: false,
+          error: response.error
+        };
+      }
       
       return {
         success: true
@@ -325,10 +400,11 @@ export class BlockspinAPI {
     }
   }
 
-  public async recordBetResult(betResult: BetResult): Promise<ApiResponse<void>> {
+  public async recordBetResult(betResult: BetResult, loginData: LoginData): Promise<ApiResponse<void>> {
     try {
-      const request = {
+      const request: SaveBetRequest = {
         ...this.getBaseRequest(),
+        loginData,
         bet: betResult.betAmount,
         chipsWon: betResult.chipsWon
       };

@@ -59,23 +59,22 @@ export interface Card {
     /**
      * Shuffle the deck using Fisher-Yates algorithm
      */
-    public shuffle(): void {
+    public shuffle(randomProvider?: () => number): void {
       // Add discard pile back to the deck before shuffling
       this.cards = [...this.cards, ...this.discardPile];
       this.discardPile = [];
       
       // Perform the shuffle
       for (let i = this.cards.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
+        const j = Math.floor((randomProvider ? randomProvider() : Math.random()) * (i + 1));
         [this.cards[i], this.cards[j]] = [this.cards[j], this.cards[i]];
       }
     }
     
-  
     /**
      * Deal a card from the deck
      */
-    public dealCard(faceUp: boolean = true): Card {
+    public dealCard(faceUp: boolean = true, randomValue?: number): Card {
       if (this.cards.length === 0) {
         // If deck is empty, shuffle discard pile back in
         if (this.discardPile.length > 0) {
@@ -86,8 +85,19 @@ export interface Card {
         }
       }
       
+      // Ensure randomValue is between 0 and 1
+      let normalizedRandomValue = randomValue;
+      if (normalizedRandomValue !== undefined) {
+        // If value is much larger than 1, it might need to be normalized
+        if (normalizedRandomValue > 1) {
+          normalizedRandomValue = (normalizedRandomValue % 1);
+        }
+        // Ensure it's between 0 and 1
+        normalizedRandomValue = Math.max(0, Math.min(0.999, normalizedRandomValue));
+      }
+      
       // Get random index from remaining cards
-      const randomIndex = Math.floor(Math.random() * this.cards.length);
+      const randomIndex = Math.floor((normalizedRandomValue !== undefined ? normalizedRandomValue : Math.random()) * this.cards.length);
       console.log(`Dealing card: Random index ${randomIndex} from ${this.cards.length} remaining cards`);
       
       // Remove and return the card at random index
@@ -98,8 +108,89 @@ export interface Card {
       return card;
     }
 
-   
+    /**
+     * Deal an Ace from the deck
+     * @param faceUp Whether the card should be dealt face up
+     * @returns The dealt Ace card, or null if no Aces remain
+     */
+    public dealAce(faceUp: boolean = true, randomValue?: number): Card {
+      if (this.cards.length === 0) {
+        // If deck is empty, shuffle discard pile back in
+        if (this.discardPile.length > 0) {
+          console.log('Deck empty, shuffling discard pile back in...');
+          this.shuffle();
+        } else {
+          throw new Error('No cards left in the deck');
+        }
+      }
 
+      // Ensure randomValue is between 0 and 1
+      let normalizedRandomValue = randomValue;
+      if (normalizedRandomValue !== undefined) {
+        // If value is much larger than 1, it might need to be normalized
+        if (normalizedRandomValue > 1) {
+          normalizedRandomValue = (normalizedRandomValue % 1);
+        }
+        // Ensure it's between 0 and 1
+        normalizedRandomValue = Math.max(0, Math.min(0.999, normalizedRandomValue));
+      }
+
+      // Find indices of all remaining Aces
+      const aceIndices = this.cards
+        .map((card, index) => card.rank === 'A' ? index : -1)
+        .filter(index => index !== -1);
+
+      if (aceIndices.length === 0) {
+        throw new Error('No Aces remaining in deck');
+      }
+
+      // Get random index from remaining Aces
+      const randomIndex = Math.floor((normalizedRandomValue !== undefined ? normalizedRandomValue : Math.random()) * aceIndices.length);
+      const aceIndex = aceIndices[randomIndex];
+      console.log(`Dealing Ace: Random index ${randomIndex} from ${aceIndices.length} remaining Aces`);
+
+      // Remove and return the Ace
+      const card = this.cards.splice(aceIndex, 1)[0];
+      card.faceUp = faceUp;
+
+      console.log(`Dealt Ace of ${card.suit}`);
+      return card;
+    }
+    /**
+     * Deal a Ten-value card (10, J, Q, K) from the deck
+     * @param faceUp Whether the card should be dealt face up
+     * @param randomValue Optional random value between 0-1 to determine card selection
+     * @returns The dealt ten-value card
+     */
+    public dealTen(faceUp: boolean = true, randomValue?: number): Card {
+        // Find indices of all remaining ten-value cards
+        const tenIndices = this.cards
+            .map((card, index) => ['10', 'J', 'Q', 'K'].includes(card.rank) ? index : -1)
+            .filter(index => index !== -1);
+
+        if (tenIndices.length === 0) {
+            throw new Error('No ten-value cards remaining in deck');
+        }
+
+        // Normalize random value between 0-1
+        let normalizedRandomValue = randomValue;
+        if (normalizedRandomValue !== undefined) {
+            if (normalizedRandomValue > 1) {
+                normalizedRandomValue = (normalizedRandomValue % 1);
+            }
+            normalizedRandomValue = Math.max(0, Math.min(0.999, normalizedRandomValue));
+        }
+
+        // Get random index from available tens
+        const randomTenIndex = tenIndices[Math.floor((normalizedRandomValue !== undefined ? normalizedRandomValue : Math.random()) * tenIndices.length)];
+        
+        // Remove and return the ten-value card
+        const ten = this.cards.splice(randomTenIndex, 1)[0];
+        ten.faceUp = faceUp;
+        
+        console.log(`Dealt ${ten.rank} of ${ten.suit}`);
+        return ten;
+    }
     /**
      * Discard a card
      */

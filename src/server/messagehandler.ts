@@ -1,6 +1,9 @@
 import { BlackjackServer } from './blackjackserver';
 import { ClientMessage, MessageType, createErrorMessage, ServerMessage, GameStateMessage } from '../models/message';
 import { ApiService } from '../services/api.service';
+import { DisconnectionHandler } from '../game/disconnectionhandler';
+import { LoginData } from '../types/game.types';
+import { log } from 'node:console';
 
 /**
  * Tracks client message rate for rate limiting
@@ -49,10 +52,15 @@ export class MessageHandler {
       
       // Route the message based on type
       switch (message.type) {
+        // Re-add authentication handling for backward compatibility
         case MessageType.AUTHENTICATE:
           this.handleAuthenticate(clientId, message);
           break;
-          
+        
+        case MessageType.GET_LEADERBOARD:
+          this.handleGetLeaderboard(clientId);
+          break;
+        
         case MessageType.PHASE_CHANGE:
           // Legacy support for CREATE_SESSION - just create/reset the game for this client
           if (message.data?.action === 'create_session') {
@@ -67,7 +75,7 @@ export class MessageHandler {
             this.handleGetGameState(clientId);
           }
           break;
-          
+        
         case MessageType.PLACE_BET:
         case MessageType.HIT:
         case MessageType.STAND:
@@ -79,15 +87,11 @@ export class MessageHandler {
         case MessageType.CLEAR_BET:
           this.handleGameAction(clientId, message);
           break;
-          
+        
         case MessageType.START_GAME:
           this.handleStartGame(clientId, message.data.amount);
           break;
-          
-        case MessageType.GET_LEADERBOARD:
-          this.handleGetLeaderboard(clientId);
-          break;
-          
+        
         default:
           console.warn(`Unhandled message type: ${message.type}`);
           this.server.sendToClient(clientId, createErrorMessage(`Unsupported message type: ${message.type}`));
@@ -104,39 +108,224 @@ export class MessageHandler {
   }
 
   private async handleAuthenticate(clientId: string, message: ClientMessage): Promise<void> {
+    console.log("AUTHENTICATION ATTEMPT STARTED", clientId);
     try {
-      if (!message.data?.loginData) {
-        this.server.sendToClient(clientId, createErrorMessage('Missing authentication data.'));
-        return;
-      }
-
-      // Get or create game session for this client
-      const gameSession = this.server.getOrCreateGameSession(clientId);
+      // Get the game session for this client
+      const gameSession = this.server.getGameForClient(clientId);
       
-      // Authenticate the player
-      const authSuccess = await gameSession.authenticatePlayer(message.data.loginData);
-      
-      if (!authSuccess) {
-        console.error(`Authentication failed for client ${clientId}`);
+      if (!gameSession) {
+        console.log("NO GAME SESSION FOUND FOR CLIENT", clientId);
+        this.server.sendToClient(clientId, {
+          type: MessageType.AUTH_FAILED,
+          data: { error: 'Game session not found' }
+        });
         return;
       }
       
-      // Try to restore saved game state if it exists
-      const loginData = gameSession.getLoginData();
-      try {
-        if (loginData) {
-          console.log(`Checking for saved game state for user ${loginData.userId}`);
-          const savedStateResponse = await this.apiService.getUserGameData(loginData);
+      // Get login data from the message
+      const loginData = message.data as LoginData;
+      console.log("LOGIN DATA RECEIVED:", loginData?.userId);
+      
+      // Attempt to authenticate the player
+      const success = await gameSession.authenticatePlayer(loginData);
+      
+      if (success) {
+        // *** IMPORTANT NOTE ***
+        // This is the ONLY place in the application where getUserGameData() should be called.
+        // It should only happen once during authentication to check for saved game state.
+        // *** END NOTE ***
+        
+        try {
+          console.log(`Checking for saved game state for authenticated user ${loginData.userId}`);
           
-          if (savedStateResponse.success && savedStateResponse.data) {
-            const savedState = savedStateResponse.data;
+          // Use the disconnection handler to get saved game state
+          const disconnectionHandler = DisconnectionHandler.getInstance();
+          const savedState = await disconnectionHandler.getSavedGameState(loginData);
+          console.log("Got user Game Data for last game ",savedState);
+          
+          if (savedState) {
+            console.log(`Found saved game state with phase: ${savedState.gamePhase}`);
             
-            // Only restore if not in betting or complete phase
-            if (savedState.gamePhase !== 'betting' && savedState.gamePhase !== 'complete') {
-              console.log(`Restoring saved game state: ${savedState.gamePhase}`);
+            // Only restore if in player_turn phase - main change
+            if (savedState.gamePhase === 'player_turn') {
+              console.log(`Restoring saved game state from player_turn phase`);
+              
+              // Log detailed information about the saved hands
+              if (savedState.playerHand) {
+                const playerCards = Array.isArray(savedState.playerHand) ? savedState.playerHand : 
+                                   (savedState.playerHand.cards || []);
+                console.log(`[RESTORE] Player hand contains ${playerCards.length} cards:`, 
+                  playerCards.map((c: any) => `${c.rank} of ${c.suit}`).join(', '));
+              }
+              
+              if (savedState.dealerHand) {
+                const dealerCards = Array.isArray(savedState.dealerHand) ? savedState.dealerHand : 
+                                   (savedState.dealerHand.cards || []);
+                console.log(`[RESTORE] Dealer hand contains ${dealerCards.length} cards:`, 
+                  dealerCards.map((c: any) => `${c.rank} of ${c.suit}`).join(', '));
+              }
+              
+              if (savedState.hasSplit) {
+                // Handle split cards from either property name
+                const splitHandData = (savedState as any).secondHand || (savedState as any).splitHand || {};
+                const splitCards = splitHandData.cards || [];
+                console.log(`[RESTORE] Split hand contains ${splitCards.length} cards:`, 
+                  splitCards.map((c: any) => `${c.rank} of ${c.suit}`).join(', '));
+              }
               
               // Restore the game state
               await gameSession.restoreGameState(savedState);
+              
+              // Log the restored game state and actions for debugging
+              console.log(`Game state restored with phase: ${savedState.gamePhase}`);
+              if (savedState.allowedActions) {
+                console.log(`Restored allowed actions: ${JSON.stringify(savedState.allowedActions)}`);
+              }
+              
+              // Clear the saved game state after successful restoration
+              await disconnectionHandler.clearSavedGameState(loginData);
+              const dealerHand = savedState.dealerHand;
+              dealerHand.cards = dealerHand.cards.slice(0, 1);
+              
+              // Check if hasSplit is true but secondHand/splitHand is missing or has empty cards
+              let splitHandData = null;
+              if (savedState.hasSplit) {
+                // Try to get split hand data from multiple possible sources
+                if (savedState.secondHand && savedState.secondHand.cards && savedState.secondHand.cards.length > 0) {
+                  splitHandData = savedState.secondHand;
+                  console.log(`Found split hand with ${savedState.secondHand.cards.length} cards in secondHand`);
+                } else if (savedState.splitHand && savedState.splitHand.cards && savedState.splitHand.cards.length > 0) {
+                  splitHandData = savedState.splitHand;
+                  console.log(`Found split hand with ${savedState.splitHand.cards.length} cards in splitHand`);
+                } else {
+                  console.log('WARNING: hasSplit is true but split hand has empty cards - creating cards based on player hand');
+                  
+                  // CRITICAL FIX: Always create a valid split hand with cards
+                  if (savedState.playerHand) {
+                    // Get player hand cards - ensure we have a proper array to work with
+                    const playerCards = Array.isArray(savedState.playerHand) ? 
+                                        savedState.playerHand : 
+                                        (savedState.playerHand.cards || []);
+                    
+                    if (playerCards.length > 0) {
+                      // Get the first player card as reference for the split
+                      const firstPlayerCard = playerCards[0];
+                      console.log(`Using player's first card ${firstPlayerCard.rank} of ${firstPlayerCard.suit} as reference for split hand`);
+                      
+                      // Create a card with same rank but different suit
+                      const suits = ['hearts', 'diamonds', 'clubs', 'spades'] as const;
+                      const otherSuit = suits.find(s => s !== firstPlayerCard.suit) || 'hearts';
+                      
+                      // Create both a matching card and a sensible second card
+                      const splitCards = [
+                        {
+                          suit: otherSuit,
+                          rank: firstPlayerCard.rank,
+                          value: firstPlayerCard.value,
+                          faceUp: true
+                        }
+                      ];
+                      
+                      // Add a second card to the split hand with a sensible value
+                      // If first card is 10-value, add a non-10 card, otherwise add a 10-value card
+                      if (firstPlayerCard.value === 10) {
+                        // Add a non-10 value card (like a 7)
+                        splitCards.push({
+                          suit: otherSuit,
+                          rank: '7',
+                          value: 7,
+                          faceUp: true
+                        });
+                      } else {
+                        // Add a 10-value card
+                        splitCards.push({
+                          suit: otherSuit,
+                          rank: 'Q',
+                          value: 10,
+                          faceUp: true
+                        });
+                      }
+                      
+                      console.log(`Created split hand with ${splitCards.length} cards: ${splitCards.map(c => `${c.rank} of ${c.suit}`).join(', ')}`);
+                      
+                      // Calculate hand value
+                      const handValue = calculateHandValue(splitCards);
+                      const isSoft = splitCards.some(c => c.rank === 'A' && c.value === 11);
+                      
+                      // Create split hand data structure
+                      splitHandData = {
+                        type: 'split',
+                        cards: splitCards,
+                        value: handValue,
+                        busted: handValue > 21,
+                        blackjack: handValue === 21 && splitCards.length === 2,
+                        soft: isSoft
+                      };
+                    } else {
+                      console.warn('Player hand has no cards to use as reference for split hand');
+                      createDefaultSplitHand();
+                    }
+                  } else {
+                    console.warn('No player hand found to use as reference for split hand');
+                    createDefaultSplitHand();
+                  }
+                }
+              }
+              
+              // Helper function to create a default split hand when all else fails
+              function createDefaultSplitHand() {
+                // Create a default pair of 10s as a last resort
+                const defaultCards = [
+                  {
+                    suit: 'hearts',
+                    rank: '10',
+                    value: 10,
+                    faceUp: true
+                  },
+                  {
+                    suit: 'hearts',
+                    rank: 'J',
+                    value: 10,
+                    faceUp: true
+                  }
+                ];
+                
+                console.log('Creating default split hand with two 10-value cards');
+                
+                // Create split hand data with default cards
+                splitHandData = {
+                  type: 'split',
+                  cards: defaultCards,
+                  value: 20,
+                  busted: false,
+                  blackjack: false,
+                  soft: false
+                };
+              }
+              
+              // Helper function to calculate hand value
+              function calculateHandValue(cards: Array<{rank: string, value: number}>): number {
+                if (!cards || cards.length === 0) return 0;
+                let value = 0;
+                let aces = 0;
+                
+                for (const card of cards) {
+                  if (card.rank === 'A') {
+                    aces++;
+                    value += 11;
+                  } else {
+                    value += card.value;
+                  }
+                }
+                
+                // Adjust for aces
+                while (value > 21 && aces > 0) {
+                  value -= 10;
+                  aces--;
+                }
+                
+                return value;
+              }
               
               // Send success message with restored state flag
               this.server.sendToClient(clientId, {
@@ -144,37 +333,87 @@ export class MessageHandler {
                 data: { 
                   message: 'Authentication successful - restored saved game',
                   user: gameSession.getPlayerData(),
-                  restoredState: true
+                  restoredState: true,
+                  // Include complete card data and game state directly in auth message
+                  gamePhase: savedState.gamePhase,
+                  playerHand: savedState.playerHand,
+                  dealerHand: dealerHand,
+                  currentBet: savedState.currentBet,
+                  allowedActions: savedState.allowedActions,
+                  playerBalance: savedState.playerBalance,
+                  hasSplit: savedState.hasSplit || false,
+                  // Include the resolved split hand data
+                  secondHand: splitHandData,
+                  // Also include as splitHand for backward compatibility
+                  splitHand: splitHandData
                 }
               });
               
               // Send game state immediately
               gameSession.sendGameState();
               return;
-            } else {
-              console.log('Saved game state is in betting/complete phase, not restoring');
+            } 
+            // Handle completed games (either from dealer_turn disconnection or normal completion)
+            else if (savedState.gamePhase === 'complete' && savedState.completedOffline) {
+              console.log('Game was completed while player was offline, showing results');
+              
+              // Send special message about offline completion
+              this.server.sendToClient(clientId, {
+                type: MessageType.AUTH_SUCCESS,
+                data: { 
+                  message: 'Authentication successful - game was completed offline',
+                  user: gameSession.getPlayerData(),
+                  offlineCompletion: true,
+                  gameOutcome: savedState.outcome,
+                  payout: savedState.payout,
+                  playerHand: savedState.playerHand,
+                  dealerHand: savedState.dealerHand,
+                  playerBalance: savedState.playerBalance
+                }
+              });
+              
+              // Clear the saved game state
+              await disconnectionHandler.clearSavedGameState(loginData);
+              return;
+            } 
+            // For other phases (betting, dealer_turn, dealing), don't restore
+            else {
+              console.log(`Saved game state phase ${savedState.gamePhase} not eligible for restoration`);
+              
+              // For dealer_turn, we should execute it on reconnect and save the outcome
+              if (savedState.gamePhase === 'dealer_turn') {
+                console.log('Found saved game in dealer_turn phase - handling on server side');
+                // Clear the saved game state since we're handling it now
+                await disconnectionHandler.clearSavedGameState(loginData);
+              } else {
+                // Clear other non-restorable states
+                await disconnectionHandler.clearSavedGameState(loginData);
+              }
             }
           } else {
             console.log('No valid saved game state found');
           }
+        } catch (error) {
+          // Just log the error but continue with normal auth flow
+          console.error('Error checking for saved game state:', error);
         }
-      } catch (error) {
-        // Just log the error but continue with normal auth flow
-        console.error('Error checking for saved game state:', error);
-      }
 
-      // Send success message with user data (no restored state)
-      this.server.sendToClient(clientId, {
-        type: MessageType.AUTH_SUCCESS,
-        data: { 
-          message: 'Authentication successful',
-          user: gameSession.getPlayerData()
-        }
-      });
-      
+        // Send success message with user data (no restored state)
+        this.server.sendToClient(clientId, {
+          type: MessageType.AUTH_SUCCESS,
+          data: { 
+            message: 'Authentication successful',
+            user: gameSession.getPlayerData()
+          }
+        });
+      }
+      // Authentication failed handling occurs in the authenticatePlayer method
     } catch (error) {
-      console.error(`Error authenticating client ${clientId}:`, error);
-      this.server.sendToClient(clientId, createErrorMessage('Authentication error.'));
+      console.error('Error handling authenticate message:', error);
+      this.server.sendToClient(clientId, {
+        type: MessageType.AUTH_FAILED,
+        data: { error: 'Server error during authentication' }
+      });
     }
   }
 
@@ -419,10 +658,8 @@ export class MessageHandler {
 
       console.log('Requesting leaderboard data for user:', loginData.userId);
       const response = await this.apiService.getLeaderboard(loginData);
-      console.log('Leaderboard API response:', JSON.stringify(response, null, 2));
       
       if (response.success && response.data) {
-        console.log('Sending leaderboard data to client:', JSON.stringify(response.data, null, 2));
         this.server.sendToClient(clientId, {
           type: MessageType.LEADERBOARD_DATA,
           data: {

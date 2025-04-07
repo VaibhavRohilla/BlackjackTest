@@ -1,7 +1,7 @@
 import { Card } from "./deck";
 import { MessageType, ClientMessage, ServerMessage } from "../models/message";
 import { BlackjackServer } from "../server/blackjackserver";
-import { ApiService } from "../services/api.service";
+import { ApiService, GameStateData } from "../services/api.service";
 import { BlackjackGame } from "./blackjackgame";
 import { LoginData, ExternalApiResponse } from "../types/game.types";
 
@@ -68,6 +68,15 @@ export class GameSession {
   
   // Flag to track if we need to save game state
   private shouldSaveGameState: boolean = false;
+  
+  // Add a flag to track if we have restored allowed actions from a saved state
+  private isRestoredState: boolean = false;
+  
+  // Add a class-level property to store the restored allowed actions
+  private restoredAllowedActions: MessageType[] = [];
+  
+  // Add a class-level property to store the last saved split cards
+  private lastSavedSplitCards: Card[] = [];
   
   constructor(clientId: string, _unusedParam: string, server: BlackjackServer) {
     this.clientId = clientId;
@@ -218,6 +227,15 @@ export class GameSession {
     console.log(`[BET DEBUG] After placeBet, current bet = ${this.game.getCurrentBet()}`);
     
     this.playerBalance -= betAmount;
+
+    // Fetch random numbers before dealing cards
+    try {
+        await this.game.fetchRandomNumbers();
+        console.log("Successfully fetched random numbers for this game");
+    } catch (error) {
+        console.error("Failed to fetch random numbers:", error);
+        // Continue with local random numbers as fallback
+    }
 
     // Transition to dealing phase and deal cards
     this.game.setGamePhase('dealing');
@@ -488,6 +506,18 @@ export class GameSession {
                 this.playerBalance += betAmount;
             }
             
+            // Record bet result to API if player is authenticated
+            if (this.playerAuth.isAuthenticated && this.playerAuth.loginData) {
+                try {
+                    const chipsWon = outcomeType === 'push' ? 0 : -betAmount;
+                    console.log(`[BET TRACKING] Saving bet result for special case (dealer blackjack): bet=${betAmount}, chipsWon=${chipsWon >= 0 ? chipsWon : 0}`);
+                    await this.apiService.saveBet(this.playerAuth.loginData, betAmount, chipsWon >= 0 ? chipsWon : 0);
+                } catch (error) {
+                    console.error('Error saving bet result:', error);
+                    // Continue game flow even if saving bet result fails
+                }
+            }
+            
             // After a delay, return to betting phase
             setTimeout(() => {
                 this.returnToBettingPhase();
@@ -592,6 +622,29 @@ export class GameSession {
                 detailedResult: detailedResult.outcomeType === 'split' ? detailedResult : undefined
             }
         });
+        
+        // Record bet result to API if player is authenticated
+        if (this.playerAuth.isAuthenticated && this.playerAuth.loginData) {
+            try {
+                // Calculate net chips won/lost. For a regular win, chipsWon is already the net amount.
+                // For other outcomes, we need to ensure we're recording the correct amount.
+                let netChipsWon = chipsWon;
+                if (outcomeType === 'push') {
+                    // For push, no net win/loss (get original bet back)
+                    netChipsWon = 0;
+                } else if (outcomeType === 'player_bust' || outcomeType === 'dealer_win') {
+                    // For losses, use 0 instead of negative value
+                    netChipsWon = 0;
+                }
+                
+                console.log(`[BET TRACKING] Saving bet result for regular game end: bet=${betAmount}, chipsWon=${netChipsWon}, outcome=${outcomeType}`);
+                await this.apiService.saveBet(this.playerAuth.loginData, betAmount, netChipsWon);
+                console.log(`Bet result saved: bet=${betAmount}, chipsWon=${netChipsWon}`);
+            } catch (error) {
+                console.error('Error saving bet result:', error);
+                // Continue game flow even if saving bet result fails
+            }
+        }
         
         // After a delay, return to betting phase
         setTimeout(() => {
@@ -872,27 +925,50 @@ export class GameSession {
     
     // Don't allow insurance if it's already been decided
     if (this.insuranceDecided) {
+      console.log("Insurance already decided, can't take insurance");
       return false;
     }
     
+    // Get player cards based on whether this is a split hand
+    let playerCards;
+    const hasSplit = this.game.hasSplit();
+    
+    if (hasSplit) {
+      // When handling split hands, only check for insurance eligibility
+      // on the first hand (if it's the active one)
+      if (this.getActiveSplitHand() === 'first') {
+        playerCards = this.game.getPlayerCards();
+      } else {
+        // Don't allow insurance on second split hand
+        console.log("Can't take insurance on second split hand");
+        return false;
+      }
+    } else {
+      // Normal hand
+      playerCards = this.game.getPlayerCards();
+    }
+    
     // Only offer insurance at the very start of the hand (player has exactly 2 cards)
-    const playerCards = this.game.getPlayerCards();
-    if (playerCards.length !== 2) {
+    if (!playerCards || playerCards.length !== 2) {
+      console.log(`Player doesn't have exactly 2 cards (has ${playerCards?.length || 0}), can't take insurance`);
       return false;
     }
     
     // Check if dealer's up card is an Ace
     const dealerUpCard = this.game.getDealerUpCard();
     if (!dealerUpCard || dealerUpCard.rank !== 'A') {
+      console.log("Dealer's up card is not Ace, can't take insurance");
       return false;
     }
     
     // Check if player has sufficient balance for insurance bet
     const insuranceBet = this.game.getCurrentBet() / 2;
     if (this.playerBalance < insuranceBet) {
+      console.log("Insufficient balance for insurance bet");
       return false;
     }
     
+    console.log("Insurance is available");
     return true;
   }
   
@@ -900,6 +976,18 @@ export class GameSession {
    * Determine the allowed actions based on current game state
    */
   private determineAllowedActions(): MessageType[] {
+    // If we have restored allowed actions from a saved state, use those instead
+    if (this.isRestoredState && this.restoredAllowedActions && this.restoredAllowedActions.length > 0) {
+      console.log('Using restored allowed actions:', this.restoredAllowedActions);
+      
+      // Clear the restored flag to ensure we only use these actions once
+      // until another restore happens
+      const actions = [...this.restoredAllowedActions];
+      this.isRestoredState = false;
+      this.restoredAllowedActions = [];
+      return actions;
+    }
+    
     const allowedActions: MessageType[] = [];
     const phase = this.game.getGamePhase();
     
@@ -951,13 +1039,26 @@ export class GameSession {
       const playerCards = this.game.getPlayerCards();
       
       // Insurance check - only available when dealer shows an Ace at the start of hand
-      // AND insurance has not already been decided
+      // AND insurance has not already been decided AND player has not split
       if (!this.insuranceDecided &&
+          !this.game.hasSplit() &&
           this.canTakeInsurance() &&
           this.game.getPlayerCards().length === 2) { // Only include at the start
         // Only include INSURANCE in allowed actions if the player still has exactly 2 cards
         // This ensures insurance is removed from options after the first hit
         allowedActions.push(MessageType.INSURANCE);
+        console.log("Insurance added to allowed actions - insurance is available");
+      } else {
+        // Log why insurance is not available
+        if (this.insuranceDecided) {
+          console.log("Insurance not in allowed actions - already decided");
+        } else if (this.game.hasSplit()) {
+          console.log("Insurance not in allowed actions - player has split");
+        } else if (!this.canTakeInsurance()) {
+          console.log("Insurance not in allowed actions - not eligible");
+        } else if (this.game.getPlayerCards().length !== 2) {
+          console.log(`Insurance not in allowed actions - player has ${this.game.getPlayerCards().length} cards instead of 2`);
+        }
       }
       
       // Surrender only available initially with exactly 2 cards and not in split mode
@@ -970,11 +1071,12 @@ export class GameSession {
         allowedActions.push(MessageType.DOUBLE_DOWN);
       }
       
-      // Split only available initially with matching cards and sufficient balance
-      // Even if insurance was already taken or declined
+      // Split only available initially with matching cards, sufficient balance, and insurance has not been decided
+      // (Neither taken nor declined)
       if (playerCards.length === 2 && 
           playerCards[0].value === playerCards[1].value && 
           !this.game.hasSplit() && 
+          !this.insuranceDecided &&
           this.playerBalance >= this.game.getCurrentBet()) {
         allowedActions.push(MessageType.SPLIT);
       }
@@ -1088,64 +1190,111 @@ export class GameSession {
   }
   
   /**
-   * Send the current game state to client
-   * Now converts to a simplified phase_change message instead of sending full game state
+   * Send a full game state update to the client
+   * @param targetClientId Optional target client ID (defaults to session client)
    */
   public sendGameState(targetClientId: string = this.clientId): void {
-    const currentPhase = this.game.getGamePhase();
-    const gameState = this.game.getGameState(this.playerBalance);
-    
-    // Add allowed actions
-    gameState.allowedActions = this.determineAllowedActions();
-    
-    if (this.hasSplitHand()) {
-      gameState.hasSplit = true;
-      gameState.activeSplitHand = this.getActiveSplitHand();
+    try {
+      console.log(`Sending game state to client ${targetClientId}`);
       
-      // Send individual hands for split
-      const firstHand = this.game.getSplitHand('first');
-      const secondHand = this.game.getSplitHand('second');
+      // Ensure this method doesn't fail if called before game is fully initialized
+      if (!this.game) {
+        console.warn('Attempted to send game state but game is not initialized yet');
+        this.sendToClient({
+          type: MessageType.GAME_STATE,
+          data: {
+            gamePhase: 'betting',
+            playerBalance: this.playerBalance,
+            currentBet: 0,
+            allowedActions: [MessageType.PLACE_BET, MessageType.START_GAME]
+          }
+        });
+        return;
+      }
       
-      if (firstHand) {
-        // Convert UIHand to HandMessage
-        const firstHandUI = this.mapHand(firstHand.cards);
-        gameState.firstHand = {
-          type: 'player', // Explicit type for HandMessage
-          cards: firstHandUI.cards,
-          value: firstHandUI.value,
-          busted: firstHandUI.busted,
-          blackjack: firstHandUI.blackjack,
-          soft: firstHandUI.soft
+      // Log current game status before sending state
+      const playerCards = this.game.getPlayerCards();
+      const dealerCards = this.game.getDealerCards();
+      console.log(`[GAME STATE DEBUG] Player hand with ${playerCards.length} cards:`, 
+        playerCards.map(c => `${c.rank} of ${c.suit}`).join(', '));
+      console.log(`[GAME STATE DEBUG] Dealer hand with ${dealerCards.length} cards:`, 
+        dealerCards.map(c => `${c.rank} of ${c.suit}`).join(', '));
+      
+      const currentPhase = this.game.getGamePhase();
+      
+      // Determine allowed actions, potentially using restored actions if available
+      let allowedActions: MessageType[] = [];
+      
+      // If we have restored allowed actions, use those and log it
+      if (this.isRestoredState && this.restoredAllowedActions && this.restoredAllowedActions.length > 0) {
+        console.log('Using restored allowed actions for game state:', this.restoredAllowedActions);
+        allowedActions = [...this.restoredAllowedActions];
+        
+        // We don't clear the restored state here as determineAllowedActions may still need to use it
+        // The restore state will be cleared in determineAllowedActions
+      } else {
+        // Otherwise use the normal determine function
+        allowedActions = this.determineAllowedActions();
+      }
+      
+      // Create game state message object that will be sent to client
+      // This is different from the GameStateData used for storing state
+      let clientGameState: any = {
+        gamePhase: currentPhase,
+        playerBalance: this.playerBalance,
+        currentBet: this.game.getCurrentBet(),
+        allowedActions: allowedActions,
+        dealerHand: this.mapHand(this.game.getDealerCards()),
+        playerHand: this.mapHand(this.game.getPlayerCards()),
+        insuranceDecided: this.insuranceDecided // Add insurance decision state to client state
+      };
+
+      if(this.isRestoredState && this.restoredAllowedActions && this.restoredAllowedActions.length > 0)
+      {
+        const dealerHand = this.mapHand(this.game.getDealerCards());
+        dealerHand.cards = dealerHand.cards[0];
+        clientGameState = {
+          gamePhase: currentPhase,
+          playerBalance: this.playerBalance,
+          currentBet: this.game.getCurrentBet(),
+          allowedActions: allowedActions,
+          dealerHand: dealerHand,
+          playerHand: this.mapHand(this.game.getPlayerCards())
         };
       }
       
-      if (secondHand) {
-        // Convert UIHand to HandMessage
-        const secondHandUI = this.mapHand(secondHand.cards);
-        gameState.secondHand = {
-          type: 'split', // Explicit type for HandMessage
-          cards: secondHandUI.cards,
-          value: secondHandUI.value,
-          busted: secondHandUI.busted,
-          blackjack: secondHandUI.blackjack,
-          soft: secondHandUI.soft
-        };
+      // Add split hand data if applicable
+      if (this.game.hasSplit()) {
+        clientGameState.hasSplit = true;
+        clientGameState.activeSplitHand = this.getActiveSplitHand();
+        
+        const secondHand = this.game.getSplitHand();
+        
+        if (secondHand) {
+          // Convert UIHand to HandMessage
+          const secondHandUI = this.mapHand(secondHand.cards);
+          clientGameState.secondHand = {
+            type: 'split', // Explicit type for HandMessage
+            cards: secondHandUI.cards,
+            value: secondHandUI.value,
+            busted: secondHandUI.busted,
+            blackjack: secondHandUI.blackjack,
+            soft: secondHandUI.soft
+          };
+        }
+      } else {
+        clientGameState.hasSplit = false;
       }
-    } else {
-      gameState.hasSplit = false;
-    }
-    
-    // Send game state to client
-    this.sendToClient({
-      type: MessageType.GAME_STATE,
-      data: gameState
-    });
-    
-    // Save game state if in active game phase
-    if (currentPhase !== 'betting' && 
-        currentPhase !== 'complete' && 
-        this.playerAuth.isAuthenticated) {
-      this.saveGameState();
+      
+      // Send game state to client
+      this.sendToClient({
+        type: MessageType.GAME_STATE,
+        data: clientGameState
+      });
+      
+      console.log(`Game state sent: ${currentPhase} with ${allowedActions.length} allowed actions`);
+    } catch (error) {
+      console.error('Error sending game state:', error);
     }
   }
   
@@ -1497,91 +1646,117 @@ export class GameSession {
    */
   private handleSplit(): void {
     console.log(`Player split request in session ${this.clientId}`);
-    
-    // Verify we're in the player turn phase
-    if (this.game.getGamePhase() !== 'player_turn') {
-      throw new Error('Cannot split - not in player turn phase');
-    }
-    
-    // Verify splitting is valid
-    if (!this.game.canSplit()) {
-      throw new Error('Cannot split - not eligible (must have 2 cards of same rank)');
-    }
-    
-    // Get the current bet amount which will be needed for the second hand
-    const betAmount = this.game.getCurrentBet();
-    
-    // Check if player has enough balance for the split bet
-    if (this.playerBalance < betAmount) {
-      throw new Error(`Insufficient balance for split (need ${betAmount}, have ${this.playerBalance})`);
-    }
-    
-    // Deduct the bet for the second hand
-    this.playerBalance -= betAmount;
-    console.log(`Split bet placed: ${betAmount}, new balance: ${this.playerBalance}`);
-    
-    // Execute split in game logic
-    const [firstCard, secondCard] = this.game.split();
-    console.log(`Split performed: first hand with ${firstCard.rank} of ${firstCard.suit}, second hand with ${secondCard.rank} of ${secondCard.suit}`);
-    
-    // Update balance first
-    this.sendToClient({
-      type: MessageType.PHASE_CHANGE,
-      data: {
-        from: this.game.getGamePhase(),
-        to: this.game.getGamePhase(),
-        balance: this.playerBalance,
-        message: "Split bet placed"
-      }
-    });
-    
-    // Send first card to first hand (player hand)
-    this.sendToClient({
-      type: MessageType.CARD_DEALT,
-      data: {
-        card: firstCard,
-        target: 'player'
-      }
-    });
-    
-    // Small delay between cards
-    const delay = 300;
-    const start = Date.now();
-    while (Date.now() - start < delay) {
-      // Simple delay
-    }
-    
-    // Send second card to split hand
-    this.sendToClient({
-      type: MessageType.CARD_DEALT,
-      data: {
-        card: secondCard,
-        target: 'split'
-      }
-    });
 
-    // Note: Keep insurance option if player has split but insurance still available
-    // Determine allowed actions, including insurance if it's still available
-    const allowedActions = this.determineAllowedActions();
-    
-    // After cards are dealt, send complete split result
-    this.sendToClient({
-      type: MessageType.PHASE_CHANGE,
-      data: {
-        success: true,
-        playerHand: this.mapHand(this.game.getPlayerCards()),
-        splitHand: this.mapHand(this.game.getSplitCards() || []),
-        activeHand: 'first',
-        playerBalance: this.playerBalance,
-        currentBet: this.game.getCurrentBet(),
-        splitBet: betAmount, // Add the split bet to the message
-        message: "Hand split successfully",
-        allowedActions: allowedActions
+    try {
+      // Validate the player can split
+      if (!this.canPlayerSplit()) {
+        throw new Error('Cannot split - cards are not eligible');
       }
-    });
-    
-    // Show the first hand as active
-    this.handleSplitHandSwitch('first');
+      
+      // Get current bet amount - this needs to be matched for the split bet
+      const betAmount = this.game.getCurrentBet();
+      
+      // Validate the player has enough chips for the split bet
+      if (this.playerBalance < betAmount) {
+        throw new Error('Not enough chips to split');
+      }
+      
+      // Deduct the split bet from player balance
+      this.playerBalance -= betAmount;
+      console.log(`Split bet placed: ${betAmount}, new balance: ${this.playerBalance}`);
+      
+      // Send animation preparation message
+      this.sendToClient({
+        type: MessageType.PHASE_CHANGE,
+        data: {
+          animation: 'split',
+          message: 'Preparing to split cards'
+        }
+      });
+      
+      // Execute split in game logic
+      const [firstCard, secondCard] = this.game.split();
+      console.log(`Split performed: first hand with ${firstCard.rank} of ${firstCard.suit}, second hand with ${secondCard.rank} of ${secondCard.suit}`);
+      
+      // Store the split cards for potential recovery
+      const splitCards = this.game.getSplitCards();
+      if (splitCards && splitCards.length > 0) {
+        this.setLastSavedSplitCards(splitCards);
+        console.log(`Stored split hand with ${splitCards.length} cards immediately after split`);
+        
+        // Force an immediate save to API to ensure split data is persisted
+        if (this.playerAuth.isAuthenticated && this.playerAuth.loginData) {
+          // Create a temporary game state with the split data
+          const tempGameState = {
+            gamePhase: this.game.getGamePhase(),
+            playerBalance: this.playerBalance,
+            currentBet: this.game.getCurrentBet(),
+            lastBet: this.game.getCurrentBet(),
+            playerHand: this.game.getPlayerCards(),
+            dealerHand: this.game.getDealerCards(),
+            allowedActions: this.determineAllowedActions(),
+            activeHand: this.getActiveSplitHand(),
+            hasSplit: true,
+            splitHand: {
+              type: 'split',
+              cards: JSON.parse(JSON.stringify(splitCards)), // Deep clone to ensure data integrity
+              value: this.game.getSplitHandValue() || 0,
+              busted: false,
+              blackjack: false,
+              soft: false
+            },
+            insuranceAmount: this.game.getInsuranceBet(),
+            insuranceDecided: this.insuranceDecided,
+            timestamp: Date.now()
+          };
+          
+          console.log('Performing emergency save of split data to ensure persistence');
+          this.apiService.saveUserGameData(this.playerAuth.loginData, tempGameState)
+            .then(response => {
+              console.log(`Emergency split data save result: ${response.success ? 'success' : 'failed'}, split cards: ${tempGameState.splitHand.cards.length}`);
+            })
+            .catch(err => {
+              console.error('Error during emergency split data save:', err);
+            });
+        }
+      }
+      
+      // Mark insurance as decided to prevent taking insurance after split
+      this.insuranceDecided = true;
+      
+      // Send first card back to player hand
+      this.sendToClient({
+        type: MessageType.CARD_DEALT,
+        data: {
+          card: firstCard,
+          target: 'player'
+        }
+      });
+      
+      // Short delay for animation clarity
+      const delay = 300;
+      const start = Date.now();
+      while (Date.now() - start < delay) {
+        // Simple delay
+      }
+      
+      // Send second card to split hand
+      this.sendToClient({
+        type: MessageType.CARD_DEALT,
+        data: {
+          card: secondCard,
+          target: 'split'
+        }
+      });
+    } catch (error) {
+      console.error('Error handling split:', error);
+      this.sendToClient({
+        type: MessageType.ERROR,
+        data: {
+          error: error instanceof Error ? error.message : 'Unknown error processing split'
+        }
+      });
+    }
   }
   
   /**
@@ -1721,7 +1896,7 @@ export class GameSession {
             
             // Insurance bet is already deducted, no further action needed
             
-            // Get allowed actions for continuing play - include split if still eligible
+            // Get allowed actions for continuing play - split is no longer eligible after insurance
             const allowedActionsAfterInsuranceLoss = this.determineAllowedActions();
             
             // Send insurance loss outcome as ACTION_RESULT with clear instructions to continue play
@@ -2199,11 +2374,69 @@ export class GameSession {
       return;
     }
     
+    // Reset save flag
+    this.shouldSaveGameState = false;
+    
     try {
-      console.log(`Saving game state for client ${this.clientId}, phase: ${currentPhase}`);
+      console.log(`[saveGameState] Saving game state for client ${this.clientId}, phase: ${currentPhase}`);
       
       // Get current game state
       const gameState = this.game.getGameState(this.playerBalance);
+      
+      // Determine allowed actions for current state - this is crucial for proper restoration
+      const allowedActions = this.determineAllowedActions();
+      console.log(`[saveGameState] Saving allowed actions: ${JSON.stringify(allowedActions)}`);
+      
+      // Get raw player and dealer cards to ensure proper saving and restoration
+      const playerCards = this.game.getPlayerCards();
+      const dealerCards = this.game.getDealerCards();
+      
+      console.log(`[saveGameState] Saving player hand with ${playerCards.length} cards:`, 
+        playerCards.map(c => `${c.rank} of ${c.suit}`).join(', '));
+      console.log(`[saveGameState] Saving dealer hand with ${dealerCards.length} cards:`, 
+        dealerCards.map(c => `${c.rank} of ${c.suit}`).join(', '));
+      
+      // Check for split hand
+      const hasSplit = this.game.hasSplit();
+      let splitCards = null;
+      
+      if (hasSplit) {
+        splitCards = this.game.getSplitCards();
+        // Double-check that we actually have split cards
+        if (!splitCards || splitCards.length === 0) {
+          // Try to get split hand directly from the game as a fallback
+          const splitHand = this.game.getSplitHand();
+          if (splitHand && splitHand.cards && splitHand.cards.length > 0) {
+            splitCards = splitHand.cards;
+            console.log(`[saveGameState] Recovered split cards from direct split hand access: ${splitCards.length} cards`);
+          } else {
+            console.error('[saveGameState] CRITICAL ERROR: Game indicates split but no split cards found');
+            
+            // Try a last ditch recovery from saved state data
+            const savedSplitCards = this.lastSavedSplitCards;
+            if (savedSplitCards && savedSplitCards.length > 0) {
+              console.log(`[saveGameState] Recovering split cards from last saved state: ${savedSplitCards.length} cards`);
+              splitCards = savedSplitCards;
+            }
+          }
+        } else {
+          console.log(`[saveGameState] Saving split hand with ${splitCards.length} cards:`, 
+            splitCards.map(c => `${c.rank} of ${c.suit}`).join(', '));
+          
+          // Store these cards for potential future recovery
+          this.lastSavedSplitCards = [...splitCards];
+        }
+      }
+      
+      // Common split hand data structure to ensure consistency
+      const splitHandData = (hasSplit && splitCards && splitCards.length > 0) ? { 
+        cards: JSON.parse(JSON.stringify(splitCards)), // Deep clone to ensure we don't lose data
+        type: 'split',
+        value: this.game.getSplitHand()?.value || 0,
+        busted: this.game.getSplitHand()?.busted || false,
+        blackjack: this.game.getSplitHand()?.blackjack || false,
+        soft: this.game.getSplitHand()?.soft || false
+      } : null;
       
       // Create game state object with all necessary data for reconnection
       const gameStateData = {
@@ -2211,14 +2444,70 @@ export class GameSession {
         playerBalance: this.playerBalance,
         currentBet: this.game.getCurrentBet(),
         lastBet: this.game.getCurrentBet(),
-        playerHand: gameState.playerHand,
-        dealerHand: gameState.dealerHand,
-        allowedActions: this.determineAllowedActions(),
-        activeHand: this.getActiveSplitHand(),
-        hasSplit: this.hasSplitHand(),
+        playerHand: playerCards,
+        dealerHand: dealerCards,
+        allowedActions: allowedActions,
+        activeHand: hasSplit ? this.getActiveSplitHand() : null, // Only include activeHand if split is true
+        hasSplit: hasSplit,
+        // Add split hand data if it exists
+        splitHand: splitHandData,
         insuranceAmount: this.game.getInsuranceBet(),
+        insuranceDecided: this.insuranceDecided, // Save the insurance decision state
         timestamp: Date.now()
       };
+      
+      // Add timestamp to track when the state was saved
+      const saveTimestamp = Date.now();
+      console.log(`[saveGameState] API call starting at ${new Date(saveTimestamp).toISOString()}`);
+      
+      // DIAGNOSTIC: Log full game state data before saving to API
+      console.log('[saveGameState] Detailed game state data:', JSON.stringify({
+        gamePhase: gameStateData.gamePhase,
+        playerBalance: gameStateData.playerBalance,
+        currentBet: gameStateData.currentBet,
+        hasSplit: gameStateData.hasSplit,
+        activeSplitHand: gameStateData.activeHand,
+        splitHandExists: !!gameStateData.splitHand,
+        splitHandCards: gameStateData.splitHand ? gameStateData.splitHand.cards.length : 0
+      }, null, 2));
+      
+      // CRITICAL: Final validation of split hand data before API call
+      if (gameStateData.hasSplit === true && (!gameStateData.splitHand || !gameStateData.splitHand.cards || !gameStateData.splitHand.cards.length)) {
+        console.warn('[saveGameState] Split hand data is incomplete but hasSplit is true - attempting recovery');
+        
+        // Create or repair split hand data instead of disabling
+        const emptySplitHand = {
+          type: 'split',
+          cards: [] as any[],
+          value: 0,
+          busted: false,
+          blackjack: false,
+          soft: false
+        };
+        
+        // If we have previously saved split cards, use them for recovery
+        if (this.lastSavedSplitCards && this.lastSavedSplitCards.length > 0) {
+          console.log(`[saveGameState] Recovering split hand from lastSavedSplitCards with ${this.lastSavedSplitCards.length} cards`);
+          emptySplitHand.cards = JSON.parse(JSON.stringify(this.lastSavedSplitCards));
+          // Try to get proper value from game if available
+          emptySplitHand.value = this.game.getSplitHandValue() || 0;
+        } else {
+          // Create a placeholder card to ensure split hand is preserved
+          console.log('[saveGameState] Creating placeholder card for split hand preservation');
+          const placeholderCard = {
+            suit: 'hearts' as const,
+            rank: 'A' as const,
+            value: 11,
+            faceUp: true
+          };
+          emptySplitHand.cards = [placeholderCard];
+        }
+        
+        // Use the recovered or placeholder split hand data
+        gameStateData.splitHand = emptySplitHand;
+        
+        console.log('[saveGameState] Split hand data repaired to maintain split functionality');
+      }
       
       // Save state to API
       const response = await this.apiService.saveUserGameData(this.playerAuth.loginData, gameStateData);
@@ -2226,7 +2515,7 @@ export class GameSession {
       if (!response.success) {
         console.error('Failed to save game state:', response.error);
       } else {
-        console.log('Game state saved successfully');
+        console.log(`[saveGameState] Game state saved successfully (took ${Date.now() - saveTimestamp}ms)`);
       }
     } catch (error) {
       console.error('Error saving game state:', error);
@@ -2240,6 +2529,7 @@ export class GameSession {
   public async restoreGameState(savedState: any): Promise<boolean> {
     try {
       console.log('Restoring game state:', savedState.gamePhase);
+      console.log('Saved state content:', JSON.stringify(savedState, null, 2));
       
       // Update player balance
       this.playerBalance = savedState.playerBalance;
@@ -2255,18 +2545,60 @@ export class GameSession {
       // Set the correct game phase
       this.game.setGamePhase(savedState.gamePhase);
       
-      // Restore player and dealer hands
-      if (savedState.playerHand && savedState.playerHand.cards) {
-        this.game.restorePlayerHand(savedState.playerHand.cards);
+      // Restore player and dealer hands with proper card data
+      if (savedState.playerHand) {
+        if (Array.isArray(savedState.playerHand)) {
+          // Handle case where playerHand is a direct array of cards
+          this.game.restorePlayerHand(savedState.playerHand);
+          console.log('Restored player hand from array:', savedState.playerHand);
+        } else if (savedState.playerHand.cards) {
+          // Handle case where playerHand is an object with a cards property
+          this.game.restorePlayerHand(savedState.playerHand.cards);
+          console.log('Restored player hand from object:', savedState.playerHand.cards);
+        } else {
+          console.warn('Invalid player hand format in saved state:', savedState.playerHand);
+        }
       }
       
-      if (savedState.dealerHand && savedState.dealerHand.cards) {
-        this.game.restoreDealerHand(savedState.dealerHand.cards);
+      if (savedState.dealerHand) {
+        if (Array.isArray(savedState.dealerHand)) {
+          // Handle case where dealerHand is a direct array of cards
+          this.game.restoreDealerHand(savedState.dealerHand);
+          console.log('Restored dealer hand from array:', savedState.dealerHand);
+        } else if (savedState.dealerHand.cards) {
+          // Handle case where dealerHand is an object with a cards property
+          this.game.restoreDealerHand(savedState.dealerHand.cards);
+          console.log('Restored dealer hand from object:', savedState.dealerHand.cards);
+        } else {
+          console.warn('Invalid dealer hand format in saved state:', savedState.dealerHand);
+        }
       }
       
       // Restore insurance if applicable
       if (savedState.insuranceAmount && savedState.insuranceAmount > 0) {
         this.game.setInsuranceBet(savedState.insuranceAmount);
+        console.log('Restored insurance bet:', savedState.insuranceAmount);
+        
+        // Set insurance as decided since there's an insurance bet
+        this.insuranceDecided = true;
+        console.log('Setting insuranceDecided to true because insurance bet exists');
+      } else if (savedState.insuranceDecided !== undefined) {
+        // If the saved state explicitly includes the insuranceDecided flag, use it
+        this.insuranceDecided = savedState.insuranceDecided;
+        console.log(`Restoring insuranceDecided from saved state: ${this.insuranceDecided}`);
+      } else if (savedState.allowedActions) {
+        // If allowed actions include insurance, set insuranceDecided to false
+        // Otherwise, set it to true (meaning insurance is no longer available)
+        const hasInsuranceAction = savedState.allowedActions.includes(MessageType.INSURANCE);
+        this.insuranceDecided = !hasInsuranceAction;
+        console.log(`Setting insuranceDecided based on allowed actions: ${this.insuranceDecided}`);
+        
+        // Special case: if dealer's up card is not Ace, always set insuranceDecided to true
+        const dealerUpCard = this.game.getDealerUpCard();
+        if (dealerUpCard && dealerUpCard.rank !== 'A') {
+          this.insuranceDecided = true;
+          console.log('Setting insuranceDecided to true because dealer up card is not Ace');
+        }
       }
       
       // Handle split hands if applicable
@@ -2274,7 +2606,88 @@ export class GameSession {
         // Add logic to restore split hands if your game supports it
         console.log('Restoring split hand state');
         this.game.restoreSplitState(savedState.activeHand || 'first');
+        
+        // Handle split hand cards if available
+        let splitCardsRestored = false;
+        
+        // Use splitHand from the saved state if available
+        if (savedState.splitHand && savedState.splitHand.cards && savedState.splitHand.cards.length > 0) {
+          // Restore split hand cards from splitHand property
+          console.log('Restoring split hand cards from splitHand property:', savedState.splitHand.cards);
+          this.game.restoreSplitHandCards(savedState.splitHand.cards);
+          // Save these cards for potential recovery
+          this.lastSavedSplitCards = [...savedState.splitHand.cards];
+          splitCardsRestored = true;
+        } else if (savedState.secondHand && savedState.secondHand.cards && savedState.secondHand.cards.length > 0) {
+          // For backward compatibility, try secondHand if splitHand is not available
+          console.log('Restoring split hand cards from secondHand property (backward compatibility):', savedState.secondHand.cards);
+          this.game.restoreSplitHandCards(savedState.secondHand.cards);
+          // Save these cards for potential recovery
+          this.lastSavedSplitCards = [...savedState.secondHand.cards];
+          splitCardsRestored = true;
+        } else if (Array.isArray(savedState.splitHand)) {
+          // Handle case where splitHand is a direct array of cards
+          console.log('Restoring split hand from direct array format:', savedState.splitHand);
+          this.game.restoreSplitHandCards(savedState.splitHand);
+          // Save these cards for potential recovery
+          this.lastSavedSplitCards = [...savedState.splitHand];
+          splitCardsRestored = true;
+        } else if (Array.isArray(savedState.secondHand)) {
+          // Handle case where secondHand is a direct array of cards (backward compatibility)
+          console.log('Restoring split hand from direct array format (backward compatibility):', savedState.secondHand);
+          this.game.restoreSplitHandCards(savedState.secondHand);
+          // Save these cards for potential recovery
+          this.lastSavedSplitCards = [...savedState.secondHand];
+          splitCardsRestored = true;
+        } else {
+          console.warn('Split hand state was marked as true but no split cards found in saved state');
+        }
+        
+        // Verify the split hand was properly restored
+        const splitCards = this.game.getSplitCards();
+        if (splitCards && splitCards.length > 0) {
+          console.log(`Split hand restored successfully with ${splitCards.length} cards`);
+          console.log('Split cards after restoration:', JSON.stringify(splitCards.map(card => `${card.rank} of ${card.suit}`)));
+          
+          // Store in lastSavedSplitCards for safety
+          this.lastSavedSplitCards = [...splitCards];
+        } else {
+          console.warn('Failed to restore split hand cards - no cards found after restoration');
+          
+          // If we couldn't restore from state but have saved cards, use them
+          if (!splitCardsRestored && this.lastSavedSplitCards && this.lastSavedSplitCards.length > 0) {
+            console.log(`Attempting to restore split hand from previously saved cards: ${this.lastSavedSplitCards.length} cards`);
+            this.game.restoreSplitHandCards(this.lastSavedSplitCards);
+            
+            // Check if that worked
+            const recoveredCards = this.game.getSplitCards();
+            if (recoveredCards && recoveredCards.length > 0) {
+              console.log(`Successfully recovered split hand from saved cards: ${recoveredCards.length} cards`);
+              console.log('Recovered cards:', JSON.stringify(recoveredCards.map(card => `${card.rank} of ${card.suit}`)));
+            } else {
+              console.warn('Failed to recover split hand from saved cards');
+              // If we still can't recover, disable split to prevent issues
+              savedState.hasSplit = false;
+            }
+          } else if (!splitCardsRestored) {
+            // If no recovery options, disable split to prevent issues
+            savedState.hasSplit = false;
+          }
+        }
       }
+      
+      // Store the original allowed actions from saved state to use later
+      if (savedState.allowedActions && savedState.allowedActions.length > 0) {
+        console.log('Restoring original allowed actions:', savedState.allowedActions);
+        this.restoredAllowedActions = [...savedState.allowedActions];
+        this.isRestoredState = true;
+      }
+      
+      // After restoration, verify if the hand data was correctly restored
+      const playerCards = this.game.getPlayerCards();
+      const dealerCards = this.game.getDealerCards();
+      console.log('Restored player cards:', playerCards);
+      console.log('Restored dealer cards:', dealerCards);
       
       console.log('Game state restored successfully');
       return true;
@@ -2612,6 +3025,81 @@ export class GameSession {
           error: error instanceof Error ? error.message : 'Unknown error processing action'
         }
       });
+    }
+  }
+
+  /**
+   * Check if the player is authenticated
+   */
+  public isAuthenticated(): boolean {
+    return this.playerAuth.isAuthenticated;
+  }
+
+  /**
+   * Get the current game state
+   */
+  public getGameState(): GameStateData {
+    // Get basic game state from the game
+    const currentState = this.game.getGameState(this.playerBalance);
+    
+    // Create a complete GameStateData object
+    const gameState: GameStateData = {
+      gamePhase: this.game.getGamePhase() as 'betting' | 'dealing' | 'player_turn' | 'dealer_turn' | 'complete',
+      playerBalance: this.playerBalance,
+      currentBet: this.game.getCurrentBet(),
+      lastBet: this.game.getCurrentBet(),
+      playerHand: this.game.getPlayerCards(),
+      dealerHand: this.game.getDealerCards(),
+      allowedActions: this.determineAllowedActions(),
+      activeHand: this.getActiveSplitHand(),
+      hasSplit: this.hasSplitHand(),
+      insuranceAmount: this.game.getInsuranceBet(),
+      timestamp: Date.now()
+    };
+    
+    // Add split hand cards count if game has split
+    if (gameState.hasSplit) {
+      const splitCards = this.game.getSplitCards();
+      if (splitCards && splitCards.length > 0) {
+        gameState.splitHandCards = splitCards.length;
+      } else if (this.lastSavedSplitCards && this.lastSavedSplitCards.length > 0) {
+        gameState.splitHandCards = this.lastSavedSplitCards.length;
+      }
+    }
+    
+    return gameState;
+  }
+
+  /**
+   * Get the BlackjackGame instance
+   */
+  public getGame(): BlackjackGame {
+    return this.game;
+  }
+
+  /**
+   * Set login data for this session
+   * This is used when login data is extracted from URL parameters
+   */
+  public setLoginData(loginData: LoginData): void {
+    this.playerAuth.loginData = loginData;
+    console.log(`Login data set for session ${this.clientId}: userId=${loginData.userId}`);
+  }
+
+  /**
+   * Get the last saved split cards
+   */
+  public getLastSavedSplitCards(): any[] {
+    return this.lastSavedSplitCards || [];
+  }
+  
+  /**
+   * Set the last saved split cards
+   */
+  public setLastSavedSplitCards(cards: any[]): void {
+    if (cards && cards.length > 0) {
+      this.lastSavedSplitCards = [...cards];
+      console.log(`Stored ${cards.length} split cards for potential recovery`);
     }
   }
 

@@ -15,26 +15,23 @@ export interface EnvConfig {
   GAME_PASSWORD: string;
 }
 
-// Default values
-const defaults: EnvConfig = {
+// Default values for non-sensitive configuration
+const defaults: Partial<EnvConfig> = {
   NODE_ENV: 'development',
-  PORT: 3001,
-  TEST_API_URL: 'https://apitest.blockspingaming.com/',
-  PROD_API_URL: 'https://api.blockspingaming.com/',
-  GAME_PASSWORD: ''
+  PORT: 3001
 };
 
 // Validate and export environment variables
 export const env: EnvConfig = {
-  NODE_ENV: (process.env.NODE_ENV as Environment) || defaults.NODE_ENV,
-  PORT: parseInt(process.env.PORT || defaults.PORT.toString(), 10),
-  TEST_API_URL: process.env.TEST_API_URL || defaults.TEST_API_URL,
-  PROD_API_URL: process.env.PROD_API_URL || defaults.PROD_API_URL,
-  GAME_PASSWORD: process.env.GAME_PASSWORD || defaults.GAME_PASSWORD
+  NODE_ENV: (process.env.NODE_ENV as Environment) || defaults.NODE_ENV as Environment,
+  PORT: parseInt(process.env.PORT || defaults.PORT?.toString() || "3001", 10),
+  TEST_API_URL: process.env.TEST_API_URL || '',
+  PROD_API_URL: process.env.PROD_API_URL || '',
+  GAME_PASSWORD: process.env.GAME_PASSWORD || ''
 };
 
 // Validate required environment variables
-const requiredEnvVars: (keyof EnvConfig)[] = ['GAME_PASSWORD'];
+const requiredEnvVars: (keyof EnvConfig)[] = ['GAME_PASSWORD', 'TEST_API_URL', 'PROD_API_URL'];
 for (const envVar of requiredEnvVars) {
   if (!env[envVar]) {
     throw new Error(`Missing required environment variable: ${envVar}`);
@@ -45,7 +42,7 @@ for (const envVar of requiredEnvVars) {
 console.log('Environment Configuration:', {
   NODE_ENV: env.NODE_ENV,
   PORT: env.PORT,
-  TEST_API_URL: env.TEST_API_URL,
-  PROD_API_URL: env.PROD_API_URL,
+  TEST_API_URL: env.TEST_API_URL ? '[SET]' : undefined,
+  PROD_API_URL: env.PROD_API_URL ? '[SET]' : undefined,
   GAME_PASSWORD: env.GAME_PASSWORD ? '[REDACTED]' : undefined
 }); 
